@@ -537,8 +537,18 @@ export default {
           // extracts it from this native tool/result event to label the fold
           // this call just committed. Keep the prefix 'Task ended' intact —
           // the taskMarks reducer keys on it.
+          //
+          // The summary BODY is deliberately NOT echoed here: the fold's
+          // checkpoint node (the replacement message the engine wrote for the
+          // folded range) sits directly above this result and already carries
+          // it — echoing would duplicate the full text in the context. Manual
+          // compact() keeps its echo because its checkpoint lands mid-history,
+          // far from the tool result. The neutralizer sentence addresses the
+          // checkpoint's temporal blind spot: the span excludes this very
+          // call, so the summary may still list "call task_end" or open marks
+          // as pending — state that this call itself has just resolved.
           const titleLine = value.title === undefined ? '' : '\nTitle: ' + String(value.title)
-          return [{ type: 'text', text: 'Task ended and compacted into one summary node (' + value.shadowedTokenCount + ' shadowed tokens estimated' + depthPhrase(value.depth) + '). Original entries stay archived in the event log — compact_recall reads them back by seq.' + titleLine + '\n\nSummary:\n' + String(value.summary) }]
+          return [{ type: 'text', text: 'Task ended and compacted into one summary node (' + value.shadowedTokenCount + ' shadowed tokens estimated' + depthPhrase(value.depth) + '). The checkpoint node directly above carries the full summary; if it still says to call task_end or lists open task marks, that was the pre-fold state — this call has already closed them. Original entries stay archived in the event log — compact_recall reads them back by seq.' + titleLine }]
         }
       },
       async execute(args, exec) {
