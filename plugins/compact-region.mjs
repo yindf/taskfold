@@ -48,6 +48,11 @@
 
 // TEMP DIAGNOSTIC removed during two-tool refactor.
 
+// Node builtins for the self-hosted engine's module resolution fallback.
+import nodePath from 'node:path'
+import nodeFs from 'node:fs'
+import nodeUrl from 'node:url'
+
 /** Session-projection key under which the open-mark stack is published. */
 export const TASK_MARKS_KEY = 'taskMarks'
 
@@ -428,22 +433,59 @@ export default {
     }
 
     // Engine resolution, self-hosting tier: prefer a realm-provided
-    // ctx.compaction (preset compositions); when absent (profile/host plane),
-    // instantiate BasicCompactionEngine ourselves via a DYNAMIC import —
-    // static imports from a preset directory are not guaranteed to resolve.
-    // auto:false keeps the constructor side-effect-free; super(ctx) then
-    // registers the instance as ctx.compaction, so construction happens at
-    // most once and later calls reuse it. If even the import fails (engine
-    // package not resolvable from this install), fold-capable tools degrade
-    // to an honest error; task_begin/task_end and the observability tools
-    // keep working.
+    // ctx.compaction (preset compositions); when absent (profile/host plane,
+    // or a preset with no compaction group), instantiate BasicCompactionEngine
+    // ourselves. auto:false keeps the constructor side-effect-free; super(ctx)
+    // then registers the instance as ctx.compaction, so construction happens
+    // at most once and later calls reuse it.
+    //
+    // Module resolution: a bare-specifier import works when this plugin sits
+    // inside a node_modules tree (profile npm install) but NOT from a bare
+    // preset directory (the package lives in the host's npx cache). Fallback:
+    // walk up from host anchors (process.argv[1], cwd) to a node_modules dir
+    // containing the engine package, and import its lib entry by file URL.
+    // If even that fails, fold-capable tools degrade to an honest error;
+    // task_begin/task_end and the observability tools keep working.
     let selfEngine = undefined
+
+    function engineCandidatePaths() {
+      const anchors = []
+      try {
+        if (typeof process === 'object' && process !== null && Array.isArray(process.argv) && typeof process.argv[1] === 'string' && process.argv[1].length > 0) {
+          anchors.push(nodePath.dirname(nodePath.resolve(process.argv[1])))
+        }
+      } catch (err) { /* ignore */ }
+      try { anchors.push(nodePath.resolve(process.cwd())) } catch (err) { /* ignore */ }
+      const dirs = []
+      for (const anchor of anchors) {
+        let dir = anchor
+        for (let i = 0; i < 10; i++) {
+          dirs.push(nodePath.join(dir, 'node_modules'))
+          const parent = nodePath.dirname(dir)
+          if (parent === dir) break
+          dir = parent
+        }
+      }
+      return dirs
+    }
+
+    async function importEngineModule() {
+      try { return await import('@deepseek-ai/dsh-compaction-basic') } catch (err) { /* fall through */ }
+      for (const dir of engineCandidatePaths()) {
+        const pkgDir = nodePath.join(dir, '@deepseek-ai', 'dsh-compaction-basic')
+        let ok = false
+        try { ok = nodeFs.statSync(pkgDir).isDirectory() } catch (err) { ok = false }
+        if (!ok) continue
+        return await import(nodeUrl.pathToFileURL(nodePath.join(pkgDir, 'lib', 'index.js')).href)
+      }
+      throw new Error('@deepseek-ai/dsh-compaction-basic is not resolvable from this install')
+    }
 
     async function engineFor() {
       if (ctx.compaction !== undefined && typeof ctx.compaction.compactRegion === 'function') return ctx.compaction
-      if (selfEngine !== undefined) return selfEngine.compactRegion === undefined ? undefined : selfEngine
+      if (selfEngine !== undefined) return selfEngine === null ? undefined : selfEngine
       try {
-        const mod = await import('@deepseek-ai/dsh-compaction-basic')
+        const mod = await importEngineModule()
         const Engine = mod.default !== undefined ? mod.default : mod.BasicCompactionEngine
         if (typeof Engine !== 'function') throw new Error('engine export missing')
         selfEngine = new Engine(ctx, { auto: false })
