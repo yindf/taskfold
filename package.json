@@ -1,0 +1,19 @@
+{
+  "name": "dsh-cmpct",
+  "version": "0.1.0",
+  "description": "Task-lifecycle conversation compaction for DeepSeek Harness: named tasks (task_begin/task_end/task_commit), manual region folds (compact/compact_inspect), archive recall (compact_stats/compact_recall). Self-hosted engine tier — works in any composition, including ones with no compaction rows.",
+  "type": "module",
+  "license": "MIT",
+  "main": "plugins/compact-region.mjs",
+  "files": [
+    "plugins",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}
