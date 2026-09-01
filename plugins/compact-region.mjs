@@ -270,7 +270,18 @@ function depthPhrase(depth) {
 
 export default {
   name: 'compact-region',
-  inject: ['compaction', 'tools', 'systemPrompt', 'sessionProjections'],
+  // NOTE: 'compaction' is deliberately NOT injected. The engine used to be a
+  // hard requirement, which pinned this plugin to compositions carrying a
+  // `dsh-compaction-basic` row in a realm this plugin shares (every agent
+  // preset does, but the host/profile plane does not). engineFor() below now
+  // resolves the engine lazily: it prefers an already-registered
+  // ctx.compaction (preset realm), and when none exists (profile-level
+  // install) it instantiates BasicCompactionEngine itself with auto:false —
+  // the constructor registers no listeners in that mode, and cordis Service
+  // registration makes it ctx.compaction for every later call. All other
+  // dependencies (tools, systemPrompt, sessionProjections, and — via the
+  // engine's own ctx use — tokenMeter/llm) are host-plane services.
+  inject: ['tools', 'systemPrompt', 'sessionProjections'],
   apply(ctx) {
     const PREVIEW_LIMIT = 60
     const TAIL_WINDOW = 50
@@ -416,8 +427,31 @@ export default {
       return { category: 'other', message }
     }
 
-    function engineFor() {
-      return ctx.compaction !== undefined && typeof ctx.compaction.compactRegion === 'function' ? ctx.compaction : undefined
+    // Engine resolution, self-hosting tier: prefer a realm-provided
+    // ctx.compaction (preset compositions); when absent (profile/host plane),
+    // instantiate BasicCompactionEngine ourselves via a DYNAMIC import —
+    // static imports from a preset directory are not guaranteed to resolve.
+    // auto:false keeps the constructor side-effect-free; super(ctx) then
+    // registers the instance as ctx.compaction, so construction happens at
+    // most once and later calls reuse it. If even the import fails (engine
+    // package not resolvable from this install), fold-capable tools degrade
+    // to an honest error; task_begin/task_end and the observability tools
+    // keep working.
+    let selfEngine = undefined
+
+    async function engineFor() {
+      if (ctx.compaction !== undefined && typeof ctx.compaction.compactRegion === 'function') return ctx.compaction
+      if (selfEngine !== undefined) return selfEngine.compactRegion === undefined ? undefined : selfEngine
+      try {
+        const mod = await import('@deepseek-ai/dsh-compaction-basic')
+        const Engine = mod.default !== undefined ? mod.default : mod.BasicCompactionEngine
+        if (typeof Engine !== 'function') throw new Error('engine export missing')
+        selfEngine = new Engine(ctx, { auto: false })
+        return selfEngine
+      } catch (err) {
+        selfEngine = null
+        return undefined
+      }
     }
 
     function summaryTextOf(result) {
@@ -526,7 +560,7 @@ export default {
       async execute(args, exec) {
         const agent = exec.agent
         if (agent === undefined) return { ok: false, category: 'invalid', error: 'compact requires an agent context' }
-        const engine = engineFor()
+        const engine = await engineFor()
         if (engine === undefined) return { ok: false, category: 'invalid', error: 'compaction service is unavailable in this composition' }
         const start = args.start
         const end = args.end
@@ -689,7 +723,7 @@ export default {
       async execute(args, exec) {
         const agent = exec.agent
         if (agent === undefined) return { ok: false, category: 'invalid', error: 'task_commit requires an agent context' }
-        const engine = engineFor()
+        const engine = await engineFor()
         if (engine === undefined) return { ok: false, category: 'invalid', error: 'compaction service is unavailable in this composition' }
         const session = agent.session
         const record = lastEndedOf(session)
