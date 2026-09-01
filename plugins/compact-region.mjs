@@ -710,7 +710,7 @@ export default {
     ctx.systemPrompt.section({
       name: 'task-marker-compaction',
       order: 650,
-      text: '## Task lifecycle compaction\n\nTasks are NAMED. When you start a discrete task, call task_begin({ name: "…" }) (alone in a step) — the name is the task\u0027s identity. When it completes, call task_end({ name: "…" }) (alone in a step): the task is closed (state transition only; its output lists what ended and what remains open — nothing is injected into context). Then call task_commit (alone in a step) to compress the task\u0027s full span — begin pair, body, end pair — into one summary node; the summary sees the completed task, so it carries no stale "call task_end" pending, and the fold is labelled by the task name. If the span is too small, task_commit reports it and the history stays as-is. Close tasks by name, not by stack position — a name mismatch cannot corrupt other tasks. Never track message positions yourself; use compact(start, end) only for ranges that do not align with task marks.\n\nThe runtime context carries a todo bridge: when a todo item is in progress without a matching task it asks for task_begin, when the in-progress list shrank while tasks remain open it asks for task_end, and when an ended task awaits its fold it asks for task_commit. Follow those nudges so task spans stay compactable.'
+      text: '## Task lifecycle compaction\n\nTasks are NAMED. When you start a discrete task, call task_begin({ name: "…" }) (alone in a step) — the name is the task\u0027s identity. When it completes, call task_end({ name: "…" }) (alone in a step): the task is closed (state transition only; its output lists what ended and what remains open — nothing is injected into context). Then call task_commit (alone in a step) to compress the task\u0027s full span — begin pair, body, end pair — into one summary node; the summary sees the completed task, so it carries no stale "call task_end" pending, and the fold is labelled by the task name. If the span is too small, task_commit reports it and the history stays as-is. Close tasks by name, not by stack position — a name mismatch cannot corrupt other tasks. Never track message positions yourself; use compact(start, end) only for ranges that do not align with task marks.\n\nThe runtime context carries a todo bridge: when a todo item is in progress without a matching task it asks for task_begin, and when the in-progress list shrank while tasks remain open it asks for task_end. Follow those nudges so task spans stay compactable.'
     })
 
     ctx.systemPrompt.context({
@@ -726,18 +726,14 @@ export default {
         if (session === null || session === undefined) return ''
         const lines = []
         const ownDepth = marksOf(session).length
-        // An ended task awaiting its fold is cross-tool state the model
-        // cannot read from any single message — surface it as a nudge.
-        if (lastEndedOf(session) !== undefined) {
-          lines.push('Todo bridge: the task "' + lastEndedOf(session).name + '" awaits its fold — call task_commit (alone in a step) to compress it into one summary node.')
-        }
-        // Deliberately NO standing "Open task marks: N" line: depth and the
-        // closing reminder already ride in every task_begin/task_end result
-        // text (and those texts ARE the state changes the reducer derives
-        // from), so echoing them in a snapshot would re-inject after every
-        // lifecycle call for no new information. This context exists ONLY
-        // for the todo bridge — cross-state pairing the model cannot read
-        // from any single message.
+        // Deliberately NO standing "Open task marks: N" line and NO
+        // lastEnded nudge: depth and the closing reminder already ride in
+        // every task_begin/task_end result text, and the task_end result
+        // itself says "Recorded for folding — call task_commit", so echoing
+        // either in a snapshot would re-inject after every lifecycle call
+        // for no new information. This context exists ONLY for the todo
+        // bridge — cross-state pairing the model cannot read from any
+        // single message.
         // Read the stock `todos` projection when the todo tool is mounted.
         // The bridge engages only once the model has written a list this
         // turn (the projection is null between turn/start and the first
