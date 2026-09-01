@@ -138,13 +138,16 @@ test('legacy task/mark snapshots are authoritative resets that clear pending', (
   state = applyTaskMarks(state, toolResult('c2', 'task_end failed (summary): summary is not smaller…'))
   assert.deepEqual(state.marks, [{ seq: 100, name: 'alpha' }], 'unlogged abort leaves a phantom mark')
   // …until a v1 whole-value snapshot baselines the stack. v1 numeric seqs are
-  // coerced to unnamed marks; the reset must also consume the pending intent.
+  // DROPPED (v6): they predate named tasks, can never be closed by name, and
+  // their spans are long folded. The reset must also consume pending intents.
   state = applyTaskMarks(state, assistantCall(300, [{ id: 'c3', name: 'task_begin' }]))
   state = applyTaskMarks(state, { type: 'task/mark', data: { marks: [300] } })
-  assert.deepEqual(state.marks, [{ seq: 300, name: '' }], 'snapshot replaces the whole stack, numeric seqs coerced')
-  assert.equal(state.pending.c3, undefined, 'snapshot clears pending intents')
+  assert.equal(state, null, 'snapshot of only-numeric marks drops them all and normalizes to null')
   state = applyTaskMarks(state, toolResult('c3', BEGIN_OK('alpha')))
-  assert.deepEqual(state.marks, [{ seq: 300, name: '' }], 'result after a snapshot is inert')
+  assert.equal(state, null, 'result after a cleared snapshot is inert (its pending intent was consumed)')
+  // Named marks inside a snapshot pass through.
+  state = applyTaskMarks(null, { type: 'task/mark', data: { marks: [{ seq: 42, name: 'beta' }, { seq: 7, name: '' }, 99] } })
+  assert.deepEqual(state.marks, [{ seq: 42, name: 'beta' }], 'named snapshot marks kept, nameless/numeric dropped')
   state = applyTaskMarks(state, { type: 'task/mark', data: { marks: [] } })
   assert.equal(state, null, 'empty snapshot normalizes to null')
   assert.equal(applyTaskMarks(null, { type: 'task/mark', data: {} }), null, 'malformed snapshot ignored')
@@ -175,6 +178,7 @@ test('lastEnded survives non-covering folds; coverage clears it (seqs or range)'
 })
 
 test('schema validates optional lastEnded; legacy resets clear it', () => {
+
   const ok = { pending: {}, marks: [], lastEnded: { beginSeq: 100, endSeq: 201, name: 'alpha' } }
   assert.equal(taskMarksStateSchema.parse(ok), ok)
   assert.throws(() => taskMarksStateSchema.parse({ pending: {}, marks: [], lastEnded: { beginSeq: 0, endSeq: 201, name: 'x' } }))
@@ -183,6 +187,18 @@ test('schema validates optional lastEnded; legacy resets clear it', () => {
   let state = { pending: {}, marks: [], lastEnded: { beginSeq: 100, endSeq: 201, name: 'alpha' } }
   state = applyTaskMarks(state, { type: 'task/mark', data: { marks: [] } })
   assert.equal(state, null, 'legacy whole-value reset also drops the pending fold request')
+})
+
+test('schema self-heals persisted rows carrying nameless phantom marks', () => {
+  const phantom = { pending: {}, marks: [{ seq: 211961, name: '' }, { seq: 100, name: 'alpha' }] }
+  const healed = taskMarksStateSchema.parse(phantom)
+  assert.deepEqual(healed.marks, [{ seq: 100, name: 'alpha' }], 'nameless marks dropped on load, named kept')
+  const onlyPhantoms = taskMarksStateSchema.parse({ pending: {}, marks: [{ seq: 1, name: '' }] })
+  assert.deepEqual(onlyPhantoms.marks, [], 'all-nameless row heals to an empty stack')
+  const phantomEnded = taskMarksStateSchema.parse({ pending: {}, marks: [], lastEnded: { beginSeq: 1, endSeq: 2, name: '' } })
+  assert.equal(phantomEnded.lastEnded, undefined, 'nameless lastEnded dropped too')
+  const ok = { pending: {}, marks: [{ seq: 5, name: 'x' }] }
+  assert.equal(taskMarksStateSchema.parse(ok), ok, 'clean rows returned untouched (same reference)')
 })
 
 test('name normalization: whitespace and multi-name closing', () => {

@@ -56,8 +56,8 @@ export const TASK_MARKS_KEY = 'taskMarks'
  * calls `.parse(value)` on persisted rows, so a hand validator satisfies the
  * contract without importing zod (whose module resolution from a preset
  * directory is not guaranteed). Throws on malformed state, returns it as-is
- * otherwise. v2 state: null, or { pending: { [callId]: {kind, anchorSeq} },
- * marks: [seq...] }.
+ * otherwise. v6 state: null, or { pending: { [callId]: {kind, anchorSeq} },
+ * marks: [{seq, name}...] } with only non-empty names retained.
  */
 export const taskMarksStateSchema = {
   parse(value) {
@@ -90,6 +90,17 @@ export const taskMarksStateSchema = {
         || !Number.isInteger(le.endSeq) || le.endSeq <= 0 || typeof le.name !== 'string') {
         throw new Error('taskMarks state .lastEnded must be { beginSeq, endSeq, name }')
       }
+    }
+    // Nameless marks are unclosable legacy phantoms (v1 numeric coercions /
+    // v4-era begins) — a named task_end can never match them, so they would
+    // pin the depth above zero forever and suppress the no-task nudge. Drop
+    // them here too (the reducer already drops them at fold time), so even a
+    // persisted row carrying one self-heals on load.
+    const named = marks.filter((m) => normalizeName(m.name) !== '')
+    if (named.length !== marks.length || (value.lastEnded !== undefined && normalizeName(value.lastEnded.name) === '')) {
+      const healed = { pending: value.pending, marks: named }
+      if (value.lastEnded !== undefined && normalizeName(value.lastEnded.name) !== '') healed.lastEnded = value.lastEnded
+      return healed
     }
     return value
   }
@@ -137,9 +148,10 @@ function taskNameFromText(text, prefix) {
  *    corruption — ending by name can't mis-close the wrong nesting level).
  *    Anything else changes nothing.
  *  - legacy `task/mark` events (v1 whole-value snapshots) are AUTHORITATIVE
- *    RESET points: replace the whole stack AND clear pending, coercing the
- *    v1 numeric seqs to unnamed { seq, name: '' } marks. This baselines away
- *    pre-v2 ghosts.
+ *    RESET points: replace the whole stack AND clear pending. v1 numeric seqs
+ *    are DROPPED (not coerced to nameless marks): they predate the named-task
+ *    era, can never be closed by name, and their spans are long folded. This
+ *    baselines away pre-v2 ghosts.
  *  - `turn/start` does NOT reset the stack — tasks span user turns.
  */
 export function applyTaskMarks(state, event) {
@@ -149,10 +161,11 @@ export function applyTaskMarks(state, event) {
       ? event.data.marks
       : null
     if (marks === null) return state
-    // v1 numeric seqs become unnamed marks; v5 objects pass through.
+    // v5 objects with a non-empty name pass through; v1 numeric seqs and any
+    // nameless mark are dropped — nameless marks are unclosable phantoms.
     const coerced = marks.map((m) => (typeof m === 'object' && m !== null && Number.isInteger(m.seq))
       ? { seq: m.seq, name: typeof m.name === 'string' ? normalizeName(m.name) : '' }
-      : (Number.isInteger(m) ? { seq: m, name: '' } : null)).filter((m) => m !== null)
+      : null).filter((m) => m !== null && m.name !== '')
     return normalizeTaskMarks({ pending: Object.create(null), marks: coerced })
   }
   if (event.type === 'compaction/summary') {
@@ -263,16 +276,16 @@ export default {
     const TAIL_WINDOW = 50
 
     // Native-event derivation folds into this projection; the registration's
-    // disposer rides the plugin fiber, so it unloads with us. stateVersion 5
+    // disposer rides the plugin fiber, so it unloads with us. stateVersion 6
     // discards persisted rows from earlier reducer generations (v1 whole-value
-    // seqs; v2/v3 result matching; v4 pre-name shape) and folds fresh from the
-    // log.
+    // seqs; v2/v3 result matching; v4 pre-name shape; v5 nameless phantoms)
+    // and folds fresh from the log.
     ctx.sessionProjections.register({
       key: TASK_MARKS_KEY,
       stateSchema: taskMarksStateSchema,
       init: () => null,
       apply: applyTaskMarks,
-      stateVersion: 5
+      stateVersion: 6
     })
 
     // ── ended-task state (consumed by the explicit task_commit tool) ──────
@@ -765,7 +778,9 @@ export default {
         const sessionId = String(session.id !== undefined ? session.id : '')
         const seq = currentSeq(session)
         const lines = []
-        const marks = marksOf(session)
+        // Only NAMED marks count: nameless entries are unclosable legacy
+        // phantoms (self-healed at projection load, but guard here too).
+        const marks = marksOf(session).filter((m) => m.name !== '')
         const ownDepth = marks.length
         // Deliberately NO standing "Open task marks: N" line and NO
         // lastEnded nudge: depth and the closing reminder already ride in
