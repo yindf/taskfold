@@ -34,7 +34,17 @@ Open tasks are **named derived state**: the `taskMarks` session projection folds
 
 ### Todo bridge
 
-The plugin reads the stock `todos` projection (registered by the `dsh-tool-todo` row; the `todo_write` tool itself is never wrapped) and nudges pairing through runtime context: when a todo item is in progress without a matching task it asks for `task_begin`; when the in-progress list shrank while tasks remain open it asks for `task_end`; when an ended task awaits its fold it asks for `task_commit` (by name). The bridge engages only once the model has written a list in the current turn; todo state is never destroyed or rewritten. Task lifecycle calls themselves produce NO runtime-context snapshots — their outputs already carry the state (what began/ended, what remains open).
+The plugin reads the stock `todos` projection (registered by the `dsh-tool-todo` row; the `todo_write` tool itself is never wrapped) and nudges pairing through runtime context: when a todo item is in progress without a matching task it asks for `task_begin`; when the in-progress list shrank while tasks remain open it asks for `task_end`. The bridge engages only once the model has written a list in the current turn; todo state is never destroyed or rewritten. Task lifecycle calls themselves produce NO runtime-context snapshots — their outputs already carry the state (what began/ended, what remains open, and the `task_commit` reminder right after an end).
+
+### Lifecycle nudges
+
+Beyond the todo bridge, the context watches for three ways the lifecycle gets skipped, and speaks up only then — a clean begin→work→end→commit flow stays completely silent. All ages and cooldowns are measured in **model rounds** (assistant messages), never raw event seqs: one tool call can append thousands of events, so seq distance is meaningless as time. Each nudge type re-fires at most once per **10 rounds** until its signal clears.
+
+| Signal | Fires when | Asks for |
+| --- | --- | --- |
+| Work without a task | no open task and ≥3 non-task tool calls in the last 10 rounds | `task_begin({ name })` |
+| A task left open | the newest open mark is ≥20 rounds old | `task_end({ name })` (names the task) |
+| An end never committed | a `lastEnded` record is ≥10 rounds old — the immediate reminder rode the `task_end` output; this is the backstop when the model kept working instead | `task_commit` (names the task) |
 
 ### Tool-name collisions
 
