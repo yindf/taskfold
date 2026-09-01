@@ -759,12 +759,31 @@ export default {
       return events.length > 0 ? Number(events[events.length - 1].seq) || 0 : 0
     }
 
-    function shouldNudge(sessionId, kind, seq) {
+    // Age and cooldown are measured in MODEL ROUNDS (assistant messages),
+    // not raw seq distance: one tool call can append anywhere from a handful
+    // to thousands of events, so seq deltas are meaningless as "time". The
+    // scan is bounded (stops at `seq` or after `cap` hits), so cost per
+    // request is negligible.
+    function countAssistantSince(session, seq, cap) {
+      const events = session !== undefined && session !== null && Array.isArray(session.events) ? session.events : []
+      let count = 0
+      for (let i = events.length - 1; i >= 0 && count < cap; i--) {
+        const e = events[i]
+        if (e === null || typeof e !== 'object') continue
+        if (Number.isInteger(e.seq) && e.seq <= seq) break
+        if (e.type === 'assistant/message') count++
+      }
+      return count
+    }
+
+    const NUDGE_COOLDOWN_ROUNDS = 5
+
+    function shouldNudge(sessionId, kind, session) {
       let byKind = lastNudge.get(sessionId)
       if (byKind === undefined) { byKind = new Map(); lastNudge.set(sessionId, byKind) }
       const last = byKind.get(kind)
-      if (last !== undefined && seq - last < 15) return false
-      byKind.set(kind, seq)
+      if (last !== undefined && countAssistantSince(session, last, NUDGE_COOLDOWN_ROUNDS) < NUDGE_COOLDOWN_ROUNDS) return false
+      byKind.set(kind, currentSeq(session))
       return true
     }
 
@@ -780,7 +799,6 @@ export default {
         try { session = agent.session } catch (err) { session = undefined }
         if (session === null || session === undefined) return ''
         const sessionId = String(session.id !== undefined ? session.id : '')
-        const seq = currentSeq(session)
         const lines = []
         // Only NAMED marks count: nameless entries are unclosable legacy
         // phantoms (self-healed at projection load, but guard here too).
@@ -800,7 +818,7 @@ export default {
         // it may be skipping the lifecycle. Detect after ≥3 work calls in
         // the last 10 assistant messages.
         if (ownDepth === 0 && recentWorkCallCount(session) >= 3) {
-          if (shouldNudge(sessionId, 'no-task', seq)) {
+          if (shouldNudge(sessionId, 'no-task', session)) {
             lines.push('Task lifecycle: no open task marks, but you are making tool calls. If this is a discrete task, call task_begin({ name: "…" }) (alone in a step) so the span can be folded when it finishes.')
           }
         }
@@ -808,11 +826,16 @@ export default {
         // ── Nudge 2: task open for a long time ─────────────────────────
         // If the newest open mark is ≥20 events old, the task may be done
         // and forgotten. Nudge task_end for that specific task.
+        // ── Nudge 2: task open for a long time ─────────────────────────
+        // If the newest open mark spans ≥10 model rounds (assistant
+        // messages — event seqs are useless as "time": one tool call can
+        // append thousands), the task may be done and forgotten. Nudge
+        // task_end for that specific task.
         if (ownDepth > 0) {
           const newest = marks[marks.length - 1]
-          const age = seq - newest.seq
-          if (age >= 20 && shouldNudge(sessionId, 'stale-task', seq)) {
-            lines.push('Task lifecycle: the task "' + newest.name + '" has been open for ~' + age + ' events. If it is done, call task_end({ name: "' + newest.name + '" }) (alone in a step), then task_commit to fold it.')
+          const age = countAssistantSince(session, newest.seq, 11)
+          if (age >= 10 && shouldNudge(sessionId, 'stale-task', session)) {
+            lines.push('Task lifecycle: the task "' + newest.name + '" has been open for ~' + age + ' model rounds. If it is done, call task_end({ name: "' + newest.name + '" }) (alone in a step), then task_commit to fold it.')
           }
         }
 
