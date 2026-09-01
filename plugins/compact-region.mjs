@@ -79,16 +79,16 @@ export const taskMarksStateSchema = {
         throw new Error('taskMarks pending anchorSeq must be a positive integer')
       }
     }
-    for (const seq of marks) {
-      if (!Number.isInteger(seq) || seq <= 0) {
-        throw new Error('taskMarks state .marks must contain positive integer seqs (got ' + String(seq) + ')')
+    for (const mark of marks) {
+      if (mark === null || typeof mark !== 'object' || !Number.isInteger(mark.seq) || mark.seq <= 0 || typeof mark.name !== 'string') {
+        throw new Error('taskMarks state .marks must contain { seq, name } objects (got ' + JSON.stringify(mark) + ')')
       }
     }
     if (value.lastEnded !== undefined) {
       const le = value.lastEnded
       if (le === null || typeof le !== 'object' || !Number.isInteger(le.beginSeq) || le.beginSeq <= 0
-        || !Number.isInteger(le.endSeq) || le.endSeq <= 0) {
-        throw new Error('taskMarks state .lastEnded must be { beginSeq, endSeq } positive integers')
+        || !Number.isInteger(le.endSeq) || le.endSeq <= 0 || typeof le.name !== 'string') {
+        throw new Error('taskMarks state .lastEnded must be { beginSeq, endSeq, name }')
       }
     }
     return value
@@ -104,19 +104,42 @@ function isTaskResultText(block) {
 }
 
 /**
- * Reducer for the `taskMarks` projection (v2, derived state):
+ * Normalize a task name: collapse whitespace, single line, trim. Names are
+ * model-chosen keys — matching is on this normalized form so copy/paste from
+ * the context listing never drifts.
+ */
+function normalizeName(raw) {
+  return typeof raw === 'string' ? raw.replace(/\s+/g, ' ').trim() : ''
+}
+
+/**
+ * Extract the task name from a canonical lifecycle result text:
+ *   'Task begun: NAME — …' / 'Task ended: NAME — …'
+ * The em dash separates the name from the status tail. Returns '' when the
+ * text does not start with `prefix` or carries no name.
+ */
+function taskNameFromText(text, prefix) {
+  if (typeof text !== 'string' || text.indexOf(prefix) !== 0) return ''
+  const rest = text.slice(prefix.length)
+  const cut = rest.indexOf(' —')
+  return normalizeName(cut === -1 ? rest : rest.slice(0, cut))
+}
+
+/**
+ * Reducer for the `taskMarks` projection (v5, named derived state):
  *  - `assistant/message`: every tool-call block named task_begin/task_end
  *    registers a pending intent { kind, anchorSeq: this message's seq }
  *    keyed by the block's callId.
  *  - `tool/result`: when a tool-result block's toolCallId matches a pending
- *    intent, its rendered text decides: success prefixes push (begin) or pop
- *    (end); anything else (failures, transient errors) changes nothing.
+ *    intent, its rendered text decides: 'Task begun: NAME' pushes a named
+ *    mark { seq, name }; 'Task ended: NAME' pops the MOST RECENT mark whose
+ *    normalized name matches (name-keyed, self-documenting, no implicit-stack
+ *    corruption — ending by name can't mis-close the wrong nesting level).
+ *    Anything else changes nothing.
  *  - legacy `task/mark` events (v1 whole-value snapshots) are AUTHORITATIVE
- *    RESET points: they replace the whole stack AND clear pending. This
- *    baselines away pre-v2 ghosts — e.g. the v0-era task_abort mutated only
- *    plugin memory and left no log trace, so pure derivation would carry a
- *    phantom mark forever. v1 wrote a full snapshot between every call and
- *    its result, so the reset also consumes the interleaved pending intent.
+ *    RESET points: replace the whole stack AND clear pending, coercing the
+ *    v1 numeric seqs to unnamed { seq, name: '' } marks. This baselines away
+ *    pre-v2 ghosts.
  *  - `turn/start` does NOT reset the stack — tasks span user turns.
  */
 export function applyTaskMarks(state, event) {
@@ -126,12 +149,13 @@ export function applyTaskMarks(state, event) {
       ? event.data.marks
       : null
     if (marks === null) return state
-    return normalizeTaskMarks({ pending: Object.create(null), marks: marks.slice() })
+    // v1 numeric seqs become unnamed marks; v5 objects pass through.
+    const coerced = marks.map((m) => (typeof m === 'object' && m !== null && Number.isInteger(m.seq))
+      ? { seq: m.seq, name: typeof m.name === 'string' ? normalizeName(m.name) : '' }
+      : (Number.isInteger(m) ? { seq: m, name: '' } : null)).filter((m) => m !== null)
+    return normalizeTaskMarks({ pending: Object.create(null), marks: coerced })
   }
   if (event.type === 'compaction/summary') {
-    // A fold whose shadowed range covers lastEnded.endSeq has folded the ended
-    // task (the end result sits inside the range): the pending fold request
-    // is satisfied — drop it. Other folds leave it alone.
     if (state === null || state.lastEnded === undefined) return state
     const data = event.data !== null && typeof event.data === 'object' ? event.data : {}
     const endSeq = state.lastEnded.endSeq
@@ -159,9 +183,6 @@ export function applyTaskMarks(state, event) {
     return next === null ? state : next
   }
   if (event.type === 'tool/result') {
-    // Real persisted shape (probed from a live log): data.message has NO
-    // callId field — linkage lives in tool-result blocks:
-    //   message.content[] = { type: 'tool-result', toolCallId, content: [{type:'text',text}], isError }
     const message = event.data !== null && typeof event.data === 'object' && event.data.message !== null
       && typeof event.data.message === 'object' ? event.data.message : null
     const blocks = message !== null && Array.isArray(message.content) ? message.content : []
@@ -178,16 +199,21 @@ export function applyTaskMarks(state, event) {
       const text = Array.isArray(block.content)
         ? block.content.filter(isTaskResultText).map((b) => b.text).join('\n')
         : ''
-      if (intent.kind === 'begin' && text.indexOf('Task mark set (depth ') === 0) {
-        next.marks.push(intent.anchorSeq)
-      } else if (intent.kind === 'end' && text.indexOf('Task ended') === 0 && next.marks.length > 0) {
-        const beginSeq = next.marks.pop()
-        // Record the ended task's span for the follow-up fold listener: the
-        // begin pair (anchor assistant message) through this very result
-        // event. The fold itself is NOT part of task_end's execute — the
-        // result must land in the log first so the summarizer can see the
-        // task's complete lifecycle (no temporal blind spot).
-        next.lastEnded = { beginSeq, endSeq: Number.isInteger(event.seq) ? event.seq : 0 }
+      if (intent.kind === 'begin' && text.indexOf('Task begun: ') === 0) {
+        const name = taskNameFromText(text, 'Task begun: ')
+        next.marks.push({ seq: intent.anchorSeq, name })
+      } else if (intent.kind === 'end' && text.indexOf('Task ended: ') === 0) {
+        const name = taskNameFromText(text, 'Task ended: ')
+        // Pop the most recent mark whose normalized name matches — name-keyed
+        // closing, LIFO only within the same name.
+        let idx = -1
+        for (let i = next.marks.length - 1; i >= 0; i -= 1) {
+          if (next.marks[i].name === name) { idx = i; break }
+        }
+        if (idx !== -1) {
+          const removed = next.marks.splice(idx, 1)[0]
+          next.lastEnded = { beginSeq: removed.seq, endSeq: Number.isInteger(event.seq) ? event.seq : 0, name }
+        }
       }
     }
     return next === null ? state : normalizeTaskMarks(next)
@@ -211,8 +237,11 @@ function cloneTaskMarks(state) {
   const pending = Object.create(null)
   const source = base.pending !== undefined ? base.pending : Object.create(null)
   for (const key of Object.keys(source)) pending[key] = source[key]
-  const next = { pending, marks: base.marks !== undefined ? base.marks.slice() : [] }
-  if (base.lastEnded !== undefined) next.lastEnded = { beginSeq: base.lastEnded.beginSeq, endSeq: base.lastEnded.endSeq }
+  const marks = (base.marks !== undefined ? base.marks : []).map((m) => ({ seq: m.seq, name: m.name }))
+  const next = { pending, marks }
+  if (base.lastEnded !== undefined) {
+    next.lastEnded = { beginSeq: base.lastEnded.beginSeq, endSeq: base.lastEnded.endSeq, name: base.lastEnded.name }
+  }
   return next
 }
 
@@ -234,16 +263,16 @@ export default {
     const TAIL_WINDOW = 50
 
     // Native-event derivation folds into this projection; the registration's
-    // disposer rides the plugin fiber, so it unloads with us. stateVersion 4
-    // discards persisted rows from earlier reducer generations (v1
-    // whole-value era; buggy v2 result matching; v3 pre-lastEnded shape) and
-    // folds fresh from the log.
+    // disposer rides the plugin fiber, so it unloads with us. stateVersion 5
+    // discards persisted rows from earlier reducer generations (v1 whole-value
+    // seqs; v2/v3 result matching; v4 pre-name shape) and folds fresh from the
+    // log.
     ctx.sessionProjections.register({
       key: TASK_MARKS_KEY,
       stateSchema: taskMarksStateSchema,
       init: () => null,
       apply: applyTaskMarks,
-      stateVersion: 4
+      stateVersion: 5
     })
 
     // ── ended-task state (consumed by the explicit task_commit tool) ──────
@@ -259,13 +288,15 @@ export default {
         const state = ctx.sessionProjections.stateOf(session, TASK_MARKS_KEY)
         if (state === undefined || state === null || state.lastEnded === undefined) return undefined
         const le = state.lastEnded
-        return Number.isInteger(le.beginSeq) && Number.isInteger(le.endSeq) ? { beginSeq: le.beginSeq, endSeq: le.endSeq } : undefined
+        return Number.isInteger(le.beginSeq) && Number.isInteger(le.endSeq) && typeof le.name === 'string'
+          ? { beginSeq: le.beginSeq, endSeq: le.endSeq, name: le.name }
+          : undefined
       } catch (err) {
         return undefined
       }
     }
 
-    // Current open-mark stack for one session, as an array (empty when none).
+    // Current open marks for one session: [{ seq, name }], empty when none.
     function marksOf(session) {
       try {
         const state = ctx.sessionProjections.stateOf(session, TASK_MARKS_KEY)
@@ -533,18 +564,26 @@ export default {
 
     const taskBegin = {
       name: 'task_begin',
-      description: 'Mark the start of a task on the current conversation surface. Call it alone in a step when a task begins. When the task is done — whether it produced a lot of work or almost none — call task_end: the innermost unfinished task is closed, and everything from just after this mark to just before task_end is summarized into one node automatically (positions are tracked for you; no numbers to remember). Tasks nest: each task_begin pushes a mark onto this session\u0027s stack, and task_end always ends the most recent unfinished task (innermost first).',
-      parameters: { type: 'object', properties: {} },
+      description: 'Start a NAMED task on the current conversation surface. Give it a short, unique-enough `name` (e.g. "fix auth null-pointer"); the name is the task\u0027s identity — task_end({name}) later closes exactly that task, and task_commit folds it. Call task_begin alone in a step. No state other than the name is tracked; the name is echoed in context-free tool output, so tasks are closed by name, not by an implicit stack position.',
+      parameters: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: 'Short task name (identity key; recommended ≤80 chars).' }
+        },
+        required: ['name']
+      },
       output: {
         schema: { type: 'object', additionalProperties: true },
         render(args, value) {
           if (value.ok !== true) return [{ type: 'text', text: 'task_begin failed: ' + String(value.error === undefined ? 'unknown error' : value.error) }]
-          return [{ type: 'text', text: 'Task mark set (depth ' + value.depth + '). Call task_end alone in a step when this task completes.' }]
+          return [{ type: 'text', text: 'Task begun: ' + value.name + ' — ' + value.depth + ' open: ' + value.openNames.join(', ') + '. Call task_end({ name: \u0027' + value.name + '\u0027 }) when this task completes, then task_commit.' }]
         }
       },
       async execute(args, exec) {
         const agent = exec.agent
         if (agent === undefined) return { ok: false, category: 'invalid', error: 'task_begin requires an agent context' }
+        const name = args !== null && typeof args === 'object' ? normalizeName(args.name) : ''
+        if (name.length === 0) return { ok: false, category: 'invalid', error: 'task_begin requires a non-empty `name` (the identity key task_end will close by)' }
         const session = agent.session
         let snapshot
         try {
@@ -556,29 +595,34 @@ export default {
         let markSeq = null
         // CONTRACT: the mark lands on the LAST assistant message on the
         // surface, which — because task_begin is called alone in a step — is
-        // the assistant message of this very step. task_end then compacts
-        // from the first balanced cut AFTER that seq, which sits just past
-        // this step's tool results: the task_begin step itself is never part
-        // of the range. If the executor ever appends another assistant
-        // message within the same step, this anchoring must be revisited.
+        // the assistant message of this very step. commit folds from that seq
+        // through the task_end result. If the executor ever appends another
+        // assistant message within the same step, this anchoring is revisited.
         for (let i = snapshot.positions.length - 1; i >= 0; i -= 1) {
           const kind = snapshot.positions[i].kind
           if (kind === 'assistant' || kind === 'tool_call') { markSeq = nodes[i]; break }
         }
         if (markSeq === null) return { ok: false, category: 'invalid', error: 'no assistant message found on the surface' }
-        // No event is appended here: the projection derives the push from
-        // this step's own assistant/message + the success text this tool is
-        // about to return. marksOf() does not include the push yet (the
-        // result event has not landed), so depth is stack + 1.
-        const depth = marksOf(session).length + 1
-        return { ok: true, depth }
+        // No event appended: the projection derives the named push from this
+        // step's assistant/message + the success text about to be returned.
+        const existing = marksOf(session).map((m) => m.name)
+        const openNames = existing.concat([name])
+        const depth = openNames.length
+        void markSeq
+        return { ok: true, name, depth, openNames }
       }
     }
 
     const taskEnd = {
       name: 'task_end',
-      description: 'End the current (innermost unfinished) task. The mark is ALWAYS popped: the task is over. This call only transitions state and returns immediately; it does NOT fold anything. To compress the ended task into one summary node, call task_commit right after (its range covers the begin pair, body, and this task_end pair, so the summary reflects the completed task). If you skip task_commit now, the span stays on the surface and can be committed later. Outer marks stay active.',
-      parameters: { type: 'object', properties: {} },
+      description: 'Close a NAMED task opened by task_begin. Pass the same `name`; the tool ends that task (it is ALWAYS terminal). This call only transitions state and returns immediately — the result text itself carries the full status (what ended, what remains open), so no context injection follows. To compress the ended task into one summary node, call task_commit right after (its range covers the begin pair, body, and this task_end pair, so the summary reflects the completed task). If you skip task_commit now, the span stays on the surface and can be committed later.',
+      parameters: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: 'Name of the open task to close (same string given to its task_begin).' }
+        },
+        required: ['name']
+      },
       output: {
         schema: { type: 'object', additionalProperties: true },
         render(args, value) {
@@ -586,38 +630,37 @@ export default {
             const category = value.category === undefined ? 'invalid' : String(value.category)
             const error = value.error === undefined ? 'unknown error' : String(value.error)
             const hint = value.hint === undefined ? '' : '\n' + String(value.hint)
-            const depth = value.depth === undefined ? '' : ' [open marks: ' + value.depth + ']'
-            return [{ type: 'text', text: 'task_end failed (' + category + '): ' + error + hint + depth }]
+            return [{ type: 'text', text: 'task_end failed (' + category + '): ' + error + hint }]
           }
-          // The 'Task ended' prefix is a MACHINE CONTRACT: the taskMarks
-          // reducer pops on it (and records lastEnded from the anchor + this
-          // result's seq).
-          return [{ type: 'text', text: 'Task ended' + depthPhrase(value.depth) + '. Recorded for folding — call task_commit (alone in a step) to compress the complete task into one summary node now, or later; until committed the span stays on the surface.' }]
+          return [{ type: 'text', text: 'Task ended: ' + value.name + ' — ' + (value.remainingNames.length > 0 ? value.remainingNames.length + ' open: ' + value.remainingNames.join(', ') : 'all marks closed') + '. Recorded for folding — call task_commit (alone in a step) to compress the complete task into one summary node.' }]
         }
       },
       async execute(args, exec) {
         const agent = exec.agent
         if (agent === undefined) return { ok: false, category: 'invalid', error: 'task_end requires an agent context' }
+        const name = args !== null && typeof args === 'object' ? normalizeName(args.name) : ''
+        if (name.length === 0) return { ok: false, category: 'invalid', error: 'task_end requires a non-empty `name`' }
         const session = agent.session
-        // Derived state does not yet reflect THIS call's pop — the result
-        // event lands after execute returns, and only success texts ('Task
-        // ended…') pop (and record lastEnded). marksOf() therefore still
-        // holds the closing task.
-        const stack = marksOf(session)
-        if (stack.length === 0) return { ok: false, category: 'invalid', error: 'no active task mark; call task_begin first' }
-        return { ok: true, depth: stack.length - 1 }
+        const marks = marksOf(session)
+        // Match by name (most recent first); the reducer pops the same mark
+        // when this success result lands (its text carries the name).
+        let idx = -1
+        for (let i = marks.length - 1; i >= 0; i -= 1) {
+          if (marks[i].name === name) { idx = i; break }
+        }
+        if (idx === -1) {
+          const open = marks.map((m) => m.name)
+          return { ok: false, category: 'invalid', error: 'no open task named "' + name + '". Open tasks: ' + (open.length > 0 ? open.join(', ') : '(none)') }
+        }
+        const remainingNames = marks.filter((m, i) => i !== idx).map((m) => m.name)
+        return { ok: true, name, remainingNames }
       }
     }
 
     const taskCommit = {
       name: 'task_commit',
-      description: 'Fold the most recently ended task into one summary node. Fold INLINE, from its own execution context, the span recorded by task_end (the innermost `lastEnded` record): the task_begin pair, the body, AND the task_end pair. Because the task_end result is inside the range, the summary reflects the COMPLETED task with no stale "call task_end" pending. Call it alone in a step, right after task_end (or later — the record persists across restarts until committed). If the span was too small to summarize, it is left as-is. Pass `title` (a short imperative name) to label the fold in compact_stats/compact_recall listings.',
-      parameters: {
-        type: 'object',
-        properties: {
-          title: { type: 'string', description: 'Optional short task name (recommended ≤80 chars); labels the resulting fold.' }
-        }
-      },
+      description: 'Fold the most recently ended task into one summary node. Fold INLINE, from its own execution context, the span recorded by task_end (the innermost `lastEnded` record): the task_begin pair, the body, AND the task_end pair. Because the task_end result is inside the range, the summary reflects the COMPLETED task with no stale "call task_end" pending. The fold is labelled by the task\u0027s NAME (the identity you gave task_begin/task_end) — no extra title argument. Call it alone in a step, right after task_end (or later — the record persists across restarts until committed). If the span was too small to summarize, it is left as-is.',
+      parameters: { type: 'object', properties: {} },
       output: {
         schema: { type: 'object', additionalProperties: true },
         render(args, value) {
@@ -627,8 +670,7 @@ export default {
             const hint = value.hint === undefined ? '' : '\n' + String(value.hint)
             return [{ type: 'text', text: 'task_commit failed (' + category + '): ' + error + hint }]
           }
-          const titleLine = value.title === undefined ? '' : '\nTitle: ' + String(value.title)
-          return [{ type: 'text', text: 'Task committed into one summary node (' + value.shadowedTokenCount + ' shadowed tokens estimated).' + titleLine + '\n\nSummary:\n' + String(value.summary) }]
+          return [{ type: 'text', text: 'Task committed into one summary node (' + value.shadowedTokenCount + ' shadowed tokens estimated): ' + String(value.title) + '.' }]
         }
       },
       async execute(args, exec) {
@@ -641,16 +683,11 @@ export default {
         if (record === undefined) return { ok: false, category: 'invalid', error: 'no ended task awaiting a fold; call task_end first' }
         try {
           const result = await engine.compactRegion(record.beginSeq, record.endSeq, agent, exec.signal)
-          const out = { ok: true, summary: summaryTextOf(result), shadowedTokenCount: result.shadowedTokenCount }
-          if (args !== null && typeof args === 'object' && typeof args.title === 'string' && args.title.trim().length > 0) {
-            const clean = args.title.replace(/\s+/g, ' ').trim().slice(0, 80)
-            if (clean.length > 0) out.title = clean
-          }
-          return out
+          return { ok: true, summary: summaryTextOf(result), shadowedTokenCount: result.shadowedTokenCount, title: record.name }
         } catch (err) {
           const classified = classifyCategory(err)
           if (classified.category === 'summary') {
-            return { ok: false, category: 'summary', error: 'the ended task was too small to summarize ("' + classified.message + '"); its history stays on the surface as-is' }
+            return { ok: false, category: 'summary', error: 'the ended task "' + record.name + '" was too small to summarize ("' + classified.message + '"); its history stays on the surface as-is' }
           }
           const hint = classified.category === 'changed'
             ? 'the surface changed during the fold; retry task_commit (the record is recomputed from the log)'
@@ -673,7 +710,7 @@ export default {
     ctx.systemPrompt.section({
       name: 'task-marker-compaction',
       order: 650,
-      text: '## Task lifecycle compaction\n\nWhen you start a discrete task, call task_begin (alone in a step). When that task completes, call task_end (alone in a step): the task is closed (state transition only) and its full span — begin pair, body, end pair — is recorded for folding. Then call task_commit (alone in a step) to compress that span into one summary node; the summary sees the completed task, so it carries no stale "call task_end" pending. If the span is too small, task_commit reports it and the history stays as-is. Tasks nest as a stack: task_end always ends the innermost task, task_commit commits the innermost ended task. Never track message positions yourself; use compact(start, end) only for ranges that do not align with task marks.\n\nThe runtime context carries a todo bridge: when a todo item is in progress without a matching task mark it asks for task_begin, when the in-progress list shrank while marks remain open it asks for task_end, and when an ended task awaits its fold it asks for task_commit. Follow those nudges so task spans stay compactable.'
+      text: '## Task lifecycle compaction\n\nTasks are NAMED. When you start a discrete task, call task_begin({ name: "…" }) (alone in a step) — the name is the task\u0027s identity. When it completes, call task_end({ name: "…" }) (alone in a step): the task is closed (state transition only; its output lists what ended and what remains open — nothing is injected into context). Then call task_commit (alone in a step) to compress the task\u0027s full span — begin pair, body, end pair — into one summary node; the summary sees the completed task, so it carries no stale "call task_end" pending, and the fold is labelled by the task name. If the span is too small, task_commit reports it and the history stays as-is. Close tasks by name, not by stack position — a name mismatch cannot corrupt other tasks. Never track message positions yourself; use compact(start, end) only for ranges that do not align with task marks.\n\nThe runtime context carries a todo bridge: when a todo item is in progress without a matching task it asks for task_begin, when the in-progress list shrank while tasks remain open it asks for task_end, and when an ended task awaits its fold it asks for task_commit. Follow those nudges so task spans stay compactable.'
     })
 
     ctx.systemPrompt.context({
@@ -692,7 +729,7 @@ export default {
         // An ended task awaiting its fold is cross-tool state the model
         // cannot read from any single message — surface it as a nudge.
         if (lastEndedOf(session) !== undefined) {
-          lines.push('Todo bridge: an ended task awaits its fold — call task_commit (alone in a step) to compress it into one summary node.')
+          lines.push('Todo bridge: the task "' + lastEndedOf(session).name + '" awaits its fold — call task_commit (alone in a step) to compress it into one summary node.')
         }
         // Deliberately NO standing "Open task marks: N" line: depth and the
         // closing reminder already ride in every task_begin/task_end result

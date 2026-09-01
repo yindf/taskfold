@@ -167,20 +167,23 @@ function resultTextOf(event) {
 }
 
 /**
- * Extract the fold label a task_end call attached to the fold it just
- * committed. Machine contract with compact-region's renderer: the success
- * text starts with 'Task ended and compacted' and may carry a 'Title: <name>'
- * line. Returns undefined for every other result.
+ * Extract the fold label a task_end result carries. v5 named-task contract:
+ * the success text starts 'Task ended: NAME — …'. Legacy folds fall back to
+ * the old 'Title: <name>' line. Returns undefined for every other result.
  */
 export function taskEndTitleOf(event) {
   if (event === null || typeof event !== 'object' || event.type !== 'tool/result') return undefined
   const text = resultTextOf(event)
-  // Same success prefix the taskMarks reducer keys on; covers both render
-  // generations ("Task ended and compacted…" legacy inline folds, and the
-  // two-phase "Task ended — …" whose result is folded by the follow-up).
   if (!text.startsWith('Task ended')) return undefined
-  const m = /^Title: (.+)$/m.exec(text)
-  return m === null ? undefined : m[1].trim()
+  // v5: name immediately after the 'Task ended: ' prefix, terminated by ' —'.
+  const named = /^Task ended: (.+?)(?: —|$)/.exec(text)
+  if (named !== null) {
+    const name = named[1].replace(/\s+/g, ' ').trim()
+    if (name.length > 0) return name
+  }
+  // legacy: explicit 'Title: <name>' line.
+  const titled = /^Title: (.+)$/m.exec(text)
+  return titled === null ? undefined : titled[1].replace(/\s+/g, ' ').trim()
 }
 
 /**
