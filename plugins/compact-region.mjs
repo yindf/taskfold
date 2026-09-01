@@ -735,16 +735,20 @@ export default {
 
     function recentWorkCallCount(session) {
       // Count non-task tool calls in the last 10 assistant messages.
+      // Event shape mirrors classify(): assistant/message events carry the
+      // payload at data.message.content, and call blocks are 'tool-call'
+      // (hyphen — NOT 'tool_call').
       const events = session !== undefined && session !== null && Array.isArray(session.events) ? session.events : []
       let assistantSeen = 0
       let workCalls = 0
       for (let i = events.length - 1; i >= 0 && assistantSeen < 10; i--) {
         const e = events[i]
-        if (e.type !== 'assistant/message') continue
+        if (e === null || typeof e !== 'object' || e.type !== 'assistant/message') continue
         assistantSeen++
-        const blocks = Array.isArray(e.content) ? e.content : []
+        const message = e.data !== null && typeof e.data === 'object' && e.data.message !== null && typeof e.data.message === 'object' ? e.data.message : null
+        const blocks = message !== null && Array.isArray(message.content) ? message.content : []
         for (const b of blocks) {
-          if (b.type === 'tool_call' && !TASK_TOOL_RE.test(String(b.name))) workCalls++
+          if (b !== null && typeof b === 'object' && b.type === 'tool-call' && !TASK_TOOL_RE.test(String(b.name))) workCalls++
         }
       }
       return workCalls
