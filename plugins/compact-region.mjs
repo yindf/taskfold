@@ -713,6 +713,44 @@ export default {
       text: '## Task lifecycle compaction\n\nTasks are NAMED. When you start a discrete task, call task_begin({ name: "…" }) (alone in a step) — the name is the task\u0027s identity. When it completes, call task_end({ name: "…" }) (alone in a step): the task is closed (state transition only; its output lists what ended and what remains open — nothing is injected into context). Then call task_commit (alone in a step) to compress the task\u0027s full span — begin pair, body, end pair — into one summary node; the summary sees the completed task, so it carries no stale "call task_end" pending, and the fold is labelled by the task name. If the span is too small, task_commit reports it and the history stays as-is. Close tasks by name, not by stack position — a name mismatch cannot corrupt other tasks. Never track message positions yourself; use compact(start, end) only for ranges that do not align with task marks.\n\nThe runtime context carries a todo bridge: when a todo item is in progress without a matching task it asks for task_begin, and when the in-progress list shrank while tasks remain open it asks for task_end. Follow those nudges so task spans stay compactable.'
     })
 
+    // Anti-spam memory: per-session, per-nudge-type last injection seq.
+    // Ephemeral UI state (not the projection) — restart just resets the
+    // cooldown, which is harmless.
+    const lastNudge = new Map() // sessionId → Map<kind, seq>
+
+    const TASK_TOOL_RE = /^(task_begin|task_end|task_commit|compact|compact_inspect|compact_stats|compact_recall|todo_write)$/
+
+    function recentWorkCallCount(session) {
+      // Count non-task tool calls in the last 10 assistant messages.
+      const events = session !== undefined && session !== null && Array.isArray(session.events) ? session.events : []
+      let assistantSeen = 0
+      let workCalls = 0
+      for (let i = events.length - 1; i >= 0 && assistantSeen < 10; i--) {
+        const e = events[i]
+        if (e.type !== 'assistant/message') continue
+        assistantSeen++
+        const blocks = Array.isArray(e.content) ? e.content : []
+        for (const b of blocks) {
+          if (b.type === 'tool_call' && !TASK_TOOL_RE.test(String(b.name))) workCalls++
+        }
+      }
+      return workCalls
+    }
+
+    function currentSeq(session) {
+      const events = session !== undefined && session !== null && Array.isArray(session.events) ? session.events : []
+      return events.length > 0 ? Number(events[events.length - 1].seq) || 0 : 0
+    }
+
+    function shouldNudge(sessionId, kind, seq) {
+      let byKind = lastNudge.get(sessionId)
+      if (byKind === undefined) { byKind = new Map(); lastNudge.set(sessionId, byKind) }
+      const last = byKind.get(kind)
+      if (last !== undefined && seq - last < 15) return false
+      byKind.set(kind, seq)
+      return true
+    }
+
     ctx.systemPrompt.context({
       name: 'todo-bridge',
       order: 130,
@@ -724,16 +762,42 @@ export default {
         let session
         try { session = agent.session } catch (err) { session = undefined }
         if (session === null || session === undefined) return ''
+        const sessionId = String(session.id !== undefined ? session.id : '')
+        const seq = currentSeq(session)
         const lines = []
-        const ownDepth = marksOf(session).length
+        const marks = marksOf(session)
+        const ownDepth = marks.length
         // Deliberately NO standing "Open task marks: N" line and NO
         // lastEnded nudge: depth and the closing reminder already ride in
         // every task_begin/task_end result text, and the task_end result
         // itself says "Recorded for folding — call task_commit", so echoing
         // either in a snapshot would re-inject after every lifecycle call
         // for no new information. This context exists ONLY for the todo
-        // bridge — cross-state pairing the model cannot read from any
-        // single message.
+        // bridge and the two lifecycle nudges below — cross-state pairing
+        // the model cannot read from any single message.
+
+        // ── Nudge 1: no task open but work is happening ─────────────────
+        // If the model is making non-task tool calls without any open task,
+        // it may be skipping the lifecycle. Detect after ≥3 work calls in
+        // the last 10 assistant messages.
+        if (ownDepth === 0 && recentWorkCallCount(session) >= 3) {
+          if (shouldNudge(sessionId, 'no-task', seq)) {
+            lines.push('Task lifecycle: no open task marks, but you are making tool calls. If this is a discrete task, call task_begin({ name: "…" }) (alone in a step) so the span can be folded when it finishes.')
+          }
+        }
+
+        // ── Nudge 2: task open for a long time ─────────────────────────
+        // If the newest open mark is ≥20 events old, the task may be done
+        // and forgotten. Nudge task_end for that specific task.
+        if (ownDepth > 0) {
+          const newest = marks[marks.length - 1]
+          const age = seq - newest.seq
+          if (age >= 20 && shouldNudge(sessionId, 'stale-task', seq)) {
+            lines.push('Task lifecycle: the task "' + newest.name + '" has been open for ~' + age + ' events. If it is done, call task_end({ name: "' + newest.name + '" }) (alone in a step), then task_commit to fold it.')
+          }
+        }
+
+        // ── Todo bridge (existing) ─────────────────────────────────────
         // Read the stock `todos` projection when the todo tool is mounted.
         // The bridge engages only once the model has written a list this
         // turn (the projection is null between turn/start and the first
@@ -745,7 +809,7 @@ export default {
           const inProgress = todos.filter((t) => t !== null && typeof t === 'object' && t.status === 'in_progress')
           if (inProgress.length > ownDepth) {
             const names = inProgress.slice(0, 3).map((t) => '"' + String(t.content).slice(0, 60) + '"').join(', ')
-            lines.push('Todo bridge: ' + (inProgress.length - ownDepth) + ' todo item(s) in progress (' + names + ') without a matching task mark. Call task_begin (alone in a step) so that task\u0027s span can be compacted when it finishes.')
+            lines.push('Todo bridge: ' + (inProgress.length - ownDepth) + ' todo item(s) in progress (' + names + ') without a matching task mark. Call task_begin (alone in a step) so that task\'s span can be compacted when it finishes.')
           } else if (inProgress.length < ownDepth) {
             lines.push('Todo bridge: fewer todo items are in progress than there are open task marks. Call task_end (alone in a step) for each finished task to close and compact it.')
           }
