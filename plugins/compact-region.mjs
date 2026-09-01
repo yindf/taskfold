@@ -286,7 +286,14 @@ export default {
   // registration makes it ctx.compaction for every later call. All other
   // dependencies (tools, systemPrompt, sessionProjections, and — via the
   // engine's own ctx use — tokenMeter/llm) are host-plane services.
-  inject: ['tools', 'systemPrompt', 'sessionProjections'],
+  // 'compaction' is deliberately NOT injected (see engineFor below): direct
+  // property access on an undeclared service THROWS in cordis ("cannot get
+  // property without inject"), which is exactly what the live cmpct-lite test
+  // exposed. The engine is resolved through ctx.get('compaction') instead
+  // (the optional-accessor channel the engine itself uses for
+  // toolResultPruner). tokenMeter/llm ARE injected because the self-hosted
+  // engine instance reaches them through OUR ctx.
+  inject: ['tools', 'systemPrompt', 'sessionProjections', 'tokenMeter', 'llm'],
   apply(ctx) {
     const PREVIEW_LIMIT = 60
     const TAIL_WINDOW = 50
@@ -482,7 +489,16 @@ export default {
     }
 
     async function engineFor() {
-      if (ctx.compaction !== undefined && typeof ctx.compaction.compactRegion === 'function') return ctx.compaction
+      // Prefer an engine registered by a composition row (preset realm).
+      // ctx.get() is the inject-free optional accessor; direct property
+      // access would throw ("cannot get property without inject") since
+      // 'compaction' is not in our inject list.
+      let realm
+      try {
+        const viaGet = typeof ctx.get === 'function' ? ctx.get('compaction') : undefined
+        realm = viaGet !== null && viaGet !== undefined && typeof viaGet.compactRegion === 'function' ? viaGet : undefined
+      } catch (err) { realm = undefined }
+      if (realm !== undefined) return realm
       if (selfEngine !== undefined) return selfEngine === null ? undefined : selfEngine
       try {
         const mod = await importEngineModule()
