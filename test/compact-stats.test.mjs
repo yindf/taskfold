@@ -82,18 +82,6 @@ test('fold preview skips headers, truncates with ellipsis', () => {
   assert.equal(onlyHeaders.preview, '')
 })
 
-test('fold preview skips stale task-lifecycle lines', () => {
-  // The summarizer cannot see the closing task_end call, so its summaries may
-  // carry now-stale lifecycle bullets; the preview must not show them as the
-  // fold's face.
-  const event = {
-    seq: 5,
-    type: 'compaction/summary',
-    data: { summary: [{ type: 'text', text: '## Pending Jobs\n- Call task_end (alone, one step) to close the finished task\n- Open task marks: 1 (this cleanup task)\n\n## Files and Code\n- LICENSE added under MIT\n' }] }
-  }
-  assert.equal(foldOf(event).preview, '- LICENSE added under MIT')
-})
-
 test('unknown event types are surfaced, never silent', () => {
   const events = fixture().concat([{ seq: 9, type: 'compaction/v2-commit', data: {} }, { seq: 10, type: 'brandnew/thing', data: {} }])
   const stats = collectStats(events, 12)
@@ -287,6 +275,23 @@ test('collectStats and recall index surface titles over previews', () => {
   const index = buildRecall(events, {})
   assert.equal(index.folds[0].title, 'named task')
   assert.equal(index.folds[0].preview, '- preview body')
+})
+
+test('two-phase folds carry their title INSIDE the shadowed range', () => {
+  // Follow-up-fold era: the titled task_end result is one of the archived
+  // seqs — primary extraction reads it from within the fold, not from a
+  // result that follows the summary event.
+  const events = [
+    { seq: 10, type: 'user/message', data: {} },
+    { seq: 11, type: 'tool/result', data: { message: { content: [
+      { type: 'tool-result', toolCallId: 'ce', content: [{ type: 'text', text: 'Task ended — all marks closed. The complete task span folds into one summary node automatically next.\nTitle: two-phase task name' }] }
+    ] } } },
+    { seq: 12, type: 'compaction/summary', data: { shadowedSeqs: [10, 11], shadowedRange: { start: 10, end: 11 }, shadowedTokenCount: 42, summary: [{ type: 'text', text: '## H\n- body' }] } }
+  ]
+  const stats = collectStats(events, 5)
+  assert.equal(stats.folds[0].title, 'two-phase task name', 'title extracted from inside the shadowed range')
+  const index = buildRecall(events, {})
+  assert.equal(index.folds[0].title, 'two-phase task name')
 })
 
 test('recall outputs are lossless JSON (no undefined-valued properties)', () => {

@@ -18,8 +18,8 @@ function assistantCall(seq, calls) {
 
 /** tool/result in the REAL persisted shape (probed from a live log):
  *  linkage lives in tool-result blocks, not on the message itself. */
-function toolResult(callId, text) {
-  return {
+function toolResult(callId, text, seq) {
+  const event = {
     type: 'tool/result',
     data: {
       message: {
@@ -27,11 +27,14 @@ function toolResult(callId, text) {
       }
     }
   }
+  if (seq !== undefined) event.seq = seq
+  return event
 }
 
 const BEGIN_OK = 'Task mark set (depth 1). Call task_end alone in a step when this task completes.'
 const END_COMPACTED = 'Task ended and compacted into one summary node (2845 shadowed tokens estimated, 0 mark(s) still open).\n\nSummary:\n…'
 const END_TOO_SMALL = 'Task ended without compaction (0 mark(s) still open): the span was too small…'
+const END_TWOPHASE = 'Task ended — all marks closed. The complete task span (its task_begin pair, body, and this pair) folds into one summary node automatically next; if the span is too small it stays as-is. Original entries stay archived in the event log — compact_recall reads them back by seq.\nTitle: two-phase fold'
 
 test('schema accepts null and well-formed { pending, marks } states', () => {
   assert.equal(taskMarksStateSchema.parse(null), null)
@@ -54,18 +57,22 @@ test('successful begin/end round trip: push on result text, pop on result text',
   state = applyTaskMarks(state, assistantCall(100, [{ id: 'c1', name: 'task_begin' }]))
   assert.ok(state !== null && state.pending.c1 !== undefined && state.marks.length === 0,
     'assistant message registers pending intent but does not push')
-  state = applyTaskMarks(state, toolResult('c1', BEGIN_OK))
+  state = applyTaskMarks(state, toolResult('c1', BEGIN_OK, 101))
   assert.deepEqual(state.marks, [100], 'success result pushes the anchor seq')
   state = applyTaskMarks(state, assistantCall(200, [{ id: 'c2', name: 'task_begin' }]))
-  state = applyTaskMarks(state, toolResult('c2', BEGIN_OK))
+  state = applyTaskMarks(state, toolResult('c2', BEGIN_OK, 201))
   assert.deepEqual(state.marks, [100, 200], 'nesting pushes LIFO')
   state = applyTaskMarks(state, assistantCall(300, [{ id: 'c3', name: 'task_end' }]))
   assert.deepEqual(state.marks, [100, 200], 'task_end call alone does not pop yet')
-  state = applyTaskMarks(state, toolResult('c3', END_COMPACTED))
+  state = applyTaskMarks(state, toolResult('c3', END_COMPACTED, 301))
   assert.deepEqual(state.marks, [100], 'success result pops innermost')
+  assert.deepEqual(state.lastEnded, { beginSeq: 200, endSeq: 301 }, 'end-pop records the ended task span')
   state = applyTaskMarks(state, assistantCall(400, [{ id: 'c4', name: 'task_end' }]))
-  state = applyTaskMarks(state, toolResult('c4', END_TOO_SMALL))
-  assert.equal(state, null, 'compacted:false still pops; empty stack normalizes to null')
+  state = applyTaskMarks(state, toolResult('c4', END_TOO_SMALL, 401))
+  assert.deepEqual(state.marks, [], 'compacted:false still pops')
+  assert.deepEqual(state.lastEnded, { beginSeq: 100, endSeq: 401 }, 'empty stack stays alive for the pending fold')
+  state = applyTaskMarks(state, { seq: 500, type: 'compaction/summary', data: { shadowedSeqs: [100, 101, 200, 201, 300, 301, 400, 401], shadowedRange: { start: 100, end: 401 } } })
+  assert.equal(state, null, 'covering fold satisfies the pending request; empty state normalizes to null')
 })
 
 test('failed results keep the mark exactly like the in-memory era', () => {
@@ -138,4 +145,27 @@ test('parallel task tools in one assistant message are all tracked', () => {
   assert.equal(state, afterCall, 'compact results are not task intents')
   state = applyTaskMarks(state, toolResult('c1', BEGIN_OK))
   assert.deepEqual(state.marks, [100])
+})
+
+test('lastEnded survives non-covering folds; coverage clears it (seqs or range)', () => {
+  let state = null
+  state = applyTaskMarks(state, assistantCall(100, [{ id: 'c1', name: 'task_begin' }]))
+  state = applyTaskMarks(state, toolResult('c1', BEGIN_OK, 101))
+  state = applyTaskMarks(state, assistantCall(200, [{ id: 'c2', name: 'task_end' }]))
+  state = applyTaskMarks(state, toolResult('c2', END_TWOPHASE, 201))
+  assert.deepEqual(state.lastEnded, { beginSeq: 100, endSeq: 201 }, 'two-phase end-pop records the span')
+  state = applyTaskMarks(state, { seq: 900, type: 'compaction/summary', data: { shadowedSeqs: [700, 701], shadowedRange: { start: 700, end: 701 } } })
+  assert.deepEqual(state.lastEnded, { beginSeq: 100, endSeq: 201 }, 'unrelated fold does not satisfy the request')
+  state = applyTaskMarks(state, { seq: 950, type: 'compaction/summary', data: { shadowedRange: { start: 100, end: 250 } } })
+  assert.equal(state, null, 'range-only coverage satisfies the request; the empty state normalizes to null')
+})
+
+test('schema validates optional lastEnded; legacy resets clear it', () => {
+  const ok = { pending: {}, marks: [], lastEnded: { beginSeq: 100, endSeq: 201 } }
+  assert.equal(taskMarksStateSchema.parse(ok), ok)
+  assert.throws(() => taskMarksStateSchema.parse({ pending: {}, marks: [], lastEnded: { beginSeq: 0, endSeq: 201 } }))
+  assert.throws(() => taskMarksStateSchema.parse({ pending: {}, marks: [], lastEnded: { beginSeq: 100 } }))
+  let state = { pending: {}, marks: [], lastEnded: { beginSeq: 100, endSeq: 201 } }
+  state = applyTaskMarks(state, { type: 'task/mark', data: { marks: [] } })
+  assert.equal(state, null, 'legacy whole-value reset also drops the pending fold request')
 })
