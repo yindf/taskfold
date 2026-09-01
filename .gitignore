@@ -1,0 +1,15 @@
+# Node
+node_modules/
+npm-debug.log*
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# Scratch (probe scripts historically lived at the workspace root; keep them out)
+.tmp-*

@@ -1,0 +1,2 @@
+name: Cordis + Compact Region
+description: cordis 预设全量能力 + 局部压缩工具族：compact/compact_inspect 手动区间压缩，task_begin/task_end 任务生命周期自动压缩（嵌套标记栈）。
