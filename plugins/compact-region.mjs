@@ -74,6 +74,13 @@ export const taskMarksStateSchema = {
         throw new Error('taskMarks state .marks must contain positive integer seqs (got ' + String(seq) + ')')
       }
     }
+    if (value.lastEnded !== undefined) {
+      const le = value.lastEnded
+      if (le === null || typeof le !== 'object' || !Number.isInteger(le.beginSeq) || le.beginSeq <= 0
+        || !Number.isInteger(le.endSeq) || le.endSeq <= 0) {
+        throw new Error('taskMarks state .lastEnded must be { beginSeq, endSeq } positive integers')
+      }
+    }
     return value
   }
 }
@@ -110,6 +117,22 @@ export function applyTaskMarks(state, event) {
       : null
     if (marks === null) return state
     return normalizeTaskMarks({ pending: Object.create(null), marks: marks.slice() })
+  }
+  if (event.type === 'compaction/summary') {
+    // A fold whose shadowed range covers lastEnded.endSeq has folded the ended
+    // task (the end result sits inside the range): the pending fold request
+    // is satisfied — drop it. Other folds leave it alone.
+    if (state === null || state.lastEnded === undefined) return state
+    const data = event.data !== null && typeof event.data === 'object' ? event.data : {}
+    const endSeq = state.lastEnded.endSeq
+    const inSeqs = Array.isArray(data.shadowedSeqs) && data.shadowedSeqs.indexOf(endSeq) !== -1
+    const range = data.shadowedRange !== null && typeof data.shadowedRange === 'object' ? data.shadowedRange : null
+    const inRange = range !== null && Number.isInteger(range.start) && Number.isInteger(range.end)
+      && range.start <= endSeq && endSeq <= range.end
+    if (!inSeqs && !inRange) return state
+    const next = cloneTaskMarks(state)
+    delete next.lastEnded
+    return normalizeTaskMarks(next)
   }
   if (event.type === 'assistant/message') {
     const message = event.data !== null && typeof event.data === 'object' && event.data.message !== null
@@ -148,7 +171,13 @@ export function applyTaskMarks(state, event) {
       if (intent.kind === 'begin' && text.indexOf('Task mark set (depth ') === 0) {
         next.marks.push(intent.anchorSeq)
       } else if (intent.kind === 'end' && text.indexOf('Task ended') === 0 && next.marks.length > 0) {
-        next.marks.pop()
+        const beginSeq = next.marks.pop()
+        // Record the ended task's span for the follow-up fold listener: the
+        // begin pair (anchor assistant message) through this very result
+        // event. The fold itself is NOT part of task_end's execute — the
+        // result must land in the log first so the summarizer can see the
+        // task's complete lifecycle (no temporal blind spot).
+        next.lastEnded = { beginSeq, endSeq: Number.isInteger(event.seq) ? event.seq : 0 }
       }
     }
     return next === null ? state : normalizeTaskMarks(next)
@@ -156,10 +185,14 @@ export function applyTaskMarks(state, event) {
   return state
 }
 
-/** Empty stacks normalize back to the null init state. */
+/**
+ * Empty stacks with no pending fold normalize back to the null init state.
+ * `lastEnded` (a task that ended and awaits its follow-up fold) keeps the
+ * state alive even with an empty stack.
+ */
 function normalizeTaskMarks(state) {
   const noPending = Object.keys(state.pending).length === 0
-  if (noPending && state.marks.length === 0) return null
+  if (noPending && state.marks.length === 0 && state.lastEnded === undefined) return null
   return state
 }
 
@@ -168,7 +201,9 @@ function cloneTaskMarks(state) {
   const pending = Object.create(null)
   const source = base.pending !== undefined ? base.pending : Object.create(null)
   for (const key of Object.keys(source)) pending[key] = source[key]
-  return { pending, marks: base.marks !== undefined ? base.marks.slice() : [] }
+  const next = { pending, marks: base.marks !== undefined ? base.marks.slice() : [] }
+  if (base.lastEnded !== undefined) next.lastEnded = { beginSeq: base.lastEnded.beginSeq, endSeq: base.lastEnded.endSeq }
+  return next
 }
 
 /**
@@ -189,16 +224,79 @@ export default {
     const TAIL_WINDOW = 50
 
     // Native-event derivation folds into this projection; the registration's
-    // disposer rides the plugin fiber, so it unloads with us. stateVersion 3
+    // disposer rides the plugin fiber, so it unloads with us. stateVersion 4
     // discards persisted rows from earlier reducer generations (v1
-    // whole-value era; a buggy v2 whose result matching never fired) and
+    // whole-value era; buggy v2 result matching; v3 pre-lastEnded shape) and
     // folds fresh from the log.
     ctx.sessionProjections.register({
       key: TASK_MARKS_KEY,
       stateSchema: taskMarksStateSchema,
       init: () => null,
       apply: applyTaskMarks,
-      stateVersion: 3
+      stateVersion: 4
+    })
+
+    // ── follow-up fold machinery (two-phase task_end) ─────────────────────
+    // task_end's execute only transitions state; its result event landing in
+    // the log completes the task's lifecycle record. The listener below then
+    // folds [begin anchor .. end result] in one range, so the summarizer sees
+    // the WHOLE task (begin pair + body + end pair) and the surface is left
+    // with a single summary node instead of four residual lifecycle nodes.
+    const foldAgents = new Map() // sessionId -> most recent exec.agent
+    const foldBusy = new Set() // endSeqs with a fold in flight
+    const foldDead = new Set() // endSeqs permanently given up
+    const foldAttempts = new Map() // endSeq -> retry count
+
+    function stashAgent(agent, session) {
+      try {
+        if (session !== null && typeof session === 'object' && typeof session.id === 'string') {
+          foldAgents.set(session.id, agent)
+        }
+      } catch (err) {}
+    }
+
+    async function tryFollowUpFold(session) {
+      let state
+      try {
+        state = ctx.sessionProjections.stateOf(session, TASK_MARKS_KEY)
+      } catch (err) { return }
+      if (state === undefined || state === null || state.lastEnded === undefined) return
+      const endSeq = state.lastEnded.endSeq
+      if (foldBusy.has(endSeq) || foldDead.has(endSeq)) return
+      const engine = ctx.compaction
+      if (engine === undefined || typeof engine.compactRegion !== 'function') {
+        foldDead.add(endSeq) // no engine in this composition: never retry
+        return
+      }
+      let agent
+      try { agent = foldAgents.get(session.id) } catch (err) { agent = undefined }
+      if (agent === undefined) return // retry on a later event
+      foldBusy.add(endSeq)
+      try {
+        await engine.compactRegion(state.lastEnded.beginSeq, endSeq, agent, undefined)
+        // Success: the reducer clears lastEnded when the fold's
+        // compaction/summary event covers endSeq. Nothing to do here.
+      } catch (err) {
+        const message = err !== null && typeof err === 'object' && err.message ? String(err.message) : String(err)
+        const attempts = (foldAttempts.get(endSeq) || 0) + 1
+        foldAttempts.set(endSeq, attempts)
+        // Too small to be worth a summary, or the span is gone (already
+        // folded by someone else): permanent, expected, quiet give-up — the
+        // history simply stays on the surface, same as the old "left as-is".
+        // Transient engine states (busy/changed/no open turn) retry on later
+        // events, bounded.
+        const permanent = /not smaller|not found in surface|balanced boundary/.test(message)
+        if (permanent || attempts >= 3) foldDead.add(endSeq)
+      } finally {
+        foldBusy.delete(endSeq)
+      }
+    }
+
+    ctx.on('session/event', (session, event) => {
+      if (session === null || typeof session !== 'object') return
+      // The task_end result landing is the primary trigger; subsequent events
+      // retry transient failures. Fire-and-forget: errors are handled above.
+      void tryFollowUpFold(session)
     })
 
     // Current open-mark stack for one session, as an array (empty when none).
@@ -482,6 +580,10 @@ export default {
         const agent = exec.agent
         if (agent === undefined) return { ok: false, category: 'invalid', error: 'task_begin requires an agent context' }
         const session = agent.session
+        // Keep a fresh agent handle per session for the follow-up fold
+        // listener (task_end stashes as well; this covers ends without a
+        // matching begin stash after remounts).
+        stashAgent(agent, session)
         let snapshot
         try {
           snapshot = readSurface(session)
@@ -513,7 +615,7 @@ export default {
 
     const taskEnd = {
       name: 'task_end',
-      description: 'End the current (innermost unfinished) task. The mark is ALWAYS popped: the task is over. Normally everything from the task_begin mark to this point is compressed into one summary node (range computed automatically: first balanced cut after the mark, last balanced cut before this call; this step is never part of it). If the range is empty or too small to be worth summarizing, the task still ends and the span is left as-is — no separate abort tool is needed. Only transient errors (compaction lock, surface changed mid-run) keep the mark for an immediate retry. Outer marks stay active. Pass `title` (a short imperative name for the task, e.g. "implement compact_recall archive") whenever the fold is large enough to compact: it becomes the fold\u0027s label in compact_stats/compact_recall listings.',
+      description: 'End the current (innermost unfinished) task. The mark is ALWAYS popped: the task is over. A follow-up fold then compresses the COMPLETE task — its task_begin pair, body, and this task_end pair — into one summary node automatically, moments after this call returns; no further call is needed. If the span is too small to be worth summarizing the history is simply left as-is — no separate abort tool exists. Outer marks stay active. Pass `title` (a short imperative name, e.g. "implement compact_recall archive") to label the fold in compact_stats/compact_recall listings.',
       parameters: {
         type: 'object',
         properties: {
@@ -530,100 +632,37 @@ export default {
             const depth = value.depth === undefined ? '' : ' [open marks: ' + value.depth + ']'
             return [{ type: 'text', text: 'task_end failed (' + category + '): ' + error + hint + depth }]
           }
-          if (value.compacted === false) {
-            return [{ type: 'text', text: 'Task ended without compaction' + depthPhrase(value.depth) + ': ' + String(value.note) }]
-          }
-          // The 'Title: <name>' line is a MACHINE CONTRACT: compact-stats
-          // extracts it from this native tool/result event to label the fold
-          // this call just committed. Keep the prefix 'Task ended' intact —
-          // the taskMarks reducer keys on it.
-          //
-          // The summary BODY is deliberately NOT echoed here: the fold's
-          // checkpoint node (the replacement message the engine wrote for the
-          // folded range) sits directly above this result and already carries
-          // it — echoing would duplicate the full text in the context. Manual
-          // compact() keeps its echo because its checkpoint lands mid-history,
-          // far from the tool result. The neutralizer sentence addresses the
-          // checkpoint's temporal blind spot: the span excludes this very
-          // call, so the summary may still list "call task_end" or open marks
-          // as pending — state that this call itself has just resolved.
+          // The 'Task ended' prefix and the 'Title: <name>' line are MACHINE
+          // CONTRACTS: the taskMarks reducer pops on the prefix, and
+          // compact-stats extracts the Title line from this native
+          // tool/result event (which the follow-up fold then archives inside
+          // the fold's own range).
           const titleLine = value.title === undefined ? '' : '\nTitle: ' + String(value.title)
-          return [{ type: 'text', text: 'Task ended and compacted into one summary node (' + value.shadowedTokenCount + ' shadowed tokens estimated' + depthPhrase(value.depth) + '). The checkpoint node directly above carries the full summary; if it still says to call task_end or lists open task marks, that was the pre-fold state — this call has already closed them. Original entries stay archived in the event log — compact_recall reads them back by seq.' + titleLine }]
+          return [{ type: 'text', text: 'Task ended' + depthPhrase(value.depth) + '. The complete task span (its task_begin pair, body, and this pair) folds into one summary node automatically next; if the span is too small it stays as-is. Original entries stay archived in the event log — compact_recall reads them back by seq.' + titleLine }]
         }
       },
       async execute(args, exec) {
         const agent = exec.agent
         if (agent === undefined) return { ok: false, category: 'invalid', error: 'task_end requires an agent context' }
-        const engine = engineFor()
-        if (engine === undefined) return { ok: false, category: 'invalid', error: 'compaction service is unavailable in this composition' }
         const session = agent.session
         // Derived state does not yet reflect THIS call's pop — the result
         // event lands after execute returns, and only success texts ('Task
-        // ended…') pop. Transient failures below therefore keep the mark
-        // without any compensation.
+        // ended…') pop. marksOf() therefore still holds the closing task.
         const stack = marksOf(session)
         if (stack.length === 0) return { ok: false, category: 'invalid', error: 'no active task mark; call task_begin first' }
-        const nodes = session.surface.nodes
-        const markSeq = stack[stack.length - 1]
-        const mIdx = nodes.indexOf(markSeq)
-        if (mIdx === -1) {
-          const rest = stack.slice(0, -1)
-          return { ok: true, compacted: false, note: 'the marked position was no longer on the surface (it was compacted away), so there was nothing to summarize', depth: rest.length }
+        // Two-phase design: execute ONLY transitions state. The fold is a
+        // follow-up triggered when this result lands in the log (see the
+        // session/event listener above), so the summarizer sees the task's
+        // complete lifecycle — begin pair, body, end pair — with no temporal
+        // blind spot, and the surface is left with a single summary node.
+        // Stashing the agent gives that listener a fresh handle to fold with.
+        stashAgent(agent, session)
+        const out = { ok: true, depth: stack.length - 1 }
+        if (typeof args === 'object' && args !== null && typeof args.title === 'string' && args.title.trim().length > 0) {
+          const clean = args.title.replace(/\s+/g, ' ').trim().slice(0, 80)
+          if (clean.length > 0) out.title = clean
         }
-        let snapshot
-        try {
-          snapshot = readSurface(session)
-        } catch (err) {
-          return { ok: false, category: 'invalid', error: 'failed to read the session surface: ' + errText(err), depth: stack.length }
-        }
-        const positions = snapshot.positions
-        let endIdx = -1
-        for (let i = nodes.length - 1; i > mIdx; i -= 1) {
-          if (positions[i] !== undefined && positions[i].canEndEdge === true) { endIdx = i; break }
-        }
-        if (endIdx === -1) return { ok: false, category: 'invalid', error: 'no balanced end cut after the mark; call task_end alone in a step', hint: 'retry task_end in its own step once this step settles', depth: stack.length }
-        let startIdx = -1
-        for (let j = mIdx + 1; j <= endIdx; j += 1) {
-          if (positions[j] !== undefined && positions[j].canStartEdge === true) { startIdx = j; break }
-        }
-        if (startIdx === -1) {
-          const rest = stack.slice(0, -1)
-          return { ok: true, compacted: false, note: 'the task span was empty (nothing between the mark and now)', depth: rest.length }
-        }
-        try {
-          const result = await engine.compactRegion(nodes[startIdx], nodes[endIdx], agent, exec.signal)
-          const rest = stack.slice(0, -1)
-          const out = { ok: true, summary: summaryTextOf(result), shadowedTokenCount: result.shadowedTokenCount, depth: rest.length }
-          // Sanitize an optional model-provided fold label: single line, no
-          // control characters, capped so the 'Title:' line stays parseable.
-          if (args !== null && typeof args === 'object' && typeof args.title === 'string' && args.title.trim().length > 0) {
-            const clean = args.title.replace(/\s+/g, ' ').trim().slice(0, 80)
-            if (clean.length > 0) out.title = clean
-          }
-          return out
-        } catch (err) {
-          const classified = classifyCategory(err)
-          if (classified.category === 'summary') {
-            // The summarizer cannot make the range smaller (typically: the task
-            // had little content). The task is still over — pop the mark and
-            // report honestly instead of forcing a retry or a separate abort.
-            const rest = stack.slice(0, -1)
-            return {
-              ok: true,
-              compacted: false,
-              note: 'the span was too small to be worth summarizing (summarizer: ' + classified.message + '); it is left as-is on the surface',
-              depth: rest.length
-            }
-          }
-          let hint
-          if (classified.category === 'changed') {
-            hint = 'the surface changed during compaction; retry task_end (positions are recomputed each call)'
-          } else if (classified.category === 'busy') {
-            hint = 'a compaction lock is already active; retry task_end once the lock clears'
-          }
-          const base = { ok: false, category: classified.category, error: classified.message, depth: stack.length }
-          return hint === undefined ? base : { ok: false, category: classified.category, error: classified.message, hint, depth: stack.length }
-        }
+        return out
       }
     }
 

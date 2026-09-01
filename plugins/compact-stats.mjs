@@ -175,19 +175,34 @@ function resultTextOf(event) {
 export function taskEndTitleOf(event) {
   if (event === null || typeof event !== 'object' || event.type !== 'tool/result') return undefined
   const text = resultTextOf(event)
-  if (!text.startsWith('Task ended and compacted')) return undefined
+  // Same success prefix the taskMarks reducer keys on; covers both render
+  // generations ("Task ended and compacted…" legacy inline folds, and the
+  // two-phase "Task ended — …" whose result is folded by the follow-up).
+  if (!text.startsWith('Task ended')) return undefined
   const m = /^Title: (.+)$/m.exec(text)
   return m === null ? undefined : m[1].trim()
 }
 
 /**
- * Attach task_end titles to their folds, in one pass: a titled task_end
- * result labels the most recent `compaction/summary` BEFORE it (the fold its
- * own compactRegion committed). Manual compact() folds simply stay untitled.
- * Mutates and returns `folds`.
+ * Attach task_end titles to their folds. Primary path (two-phase task_end):
+ * the titled end result sits INSIDE the fold's own shadowed range — scan the
+ * fold's archived events directly. Fallback (legacy inline folds): a titled
+ * task_end result labels the most recent `compaction/summary` BEFORE it.
+ * Manual compact() folds simply stay untitled. Mutates and returns `folds`.
  */
 export function attachFoldTitles(folds, events) {
   const list = Array.isArray(events) ? events : []
+  const bySeq = new Map()
+  for (const event of list) {
+    if (event !== null && typeof event === 'object' && Number.isInteger(event.seq)) bySeq.set(event.seq, event)
+  }
+  for (const fold of folds) {
+    if (fold.title !== undefined || fold.shadowedSeqs === undefined) continue
+    for (const seq of fold.shadowedSeqs) {
+      const title = taskEndTitleOf(bySeq.get(seq))
+      if (title !== undefined) { fold.title = title; break }
+    }
+  }
   let last = -1
   for (const event of list) {
     if (event === null || typeof event !== 'object' || typeof event.type !== 'string') continue

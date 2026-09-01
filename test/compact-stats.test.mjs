@@ -277,6 +277,23 @@ test('collectStats and recall index surface titles over previews', () => {
   assert.equal(index.folds[0].preview, '- preview body')
 })
 
+test('two-phase folds carry their title INSIDE the shadowed range', () => {
+  // Follow-up-fold era: the titled task_end result is one of the archived
+  // seqs — primary extraction reads it from within the fold, not from a
+  // result that follows the summary event.
+  const events = [
+    { seq: 10, type: 'user/message', data: {} },
+    { seq: 11, type: 'tool/result', data: { message: { content: [
+      { type: 'tool-result', toolCallId: 'ce', content: [{ type: 'text', text: 'Task ended — all marks closed. The complete task span folds into one summary node automatically next.\nTitle: two-phase task name' }] }
+    ] } } },
+    { seq: 12, type: 'compaction/summary', data: { shadowedSeqs: [10, 11], shadowedRange: { start: 10, end: 11 }, shadowedTokenCount: 42, summary: [{ type: 'text', text: '## H\n- body' }] } }
+  ]
+  const stats = collectStats(events, 5)
+  assert.equal(stats.folds[0].title, 'two-phase task name', 'title extracted from inside the shadowed range')
+  const index = buildRecall(events, {})
+  assert.equal(index.folds[0].title, 'two-phase task name')
+})
+
 test('recall outputs are lossless JSON (no undefined-valued properties)', () => {
   // Untitled folds + folds without shadowedSeqs + a LIVE seq (no archivedByFold)
   // must not emit explicit undefined values: the host validates tool results
