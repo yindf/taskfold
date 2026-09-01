@@ -22,6 +22,16 @@ An agent preset for [DeepSeek Harness](https://www.npmjs.com/package/@deepseek-a
 
 It also injects a task-lifecycle prompt section and a todo bridge through runtime context. There is deliberately NO standing "open task marks" line: depth and the closing reminder already ride in every `task_begin`/`task_end` result text (which the mark projection derives from), so a snapshot echo would fire after every lifecycle call with no new information. Runtime context is reserved for the todo bridge below.
 
+### Engine tiers (realm / self-host)
+
+The fold-capable tools (`compact`, `task_commit`) need a compaction engine. `compact-region.mjs` no longer requires one at load time — `inject` does not list `compaction` (direct property access on an undeclared cordis service THROWS, so the plugin never touches it that way). Instead `engineFor()` resolves lazily, in tiers:
+
+1. **Realm engine** — a composition row (e.g. `dsh-compaction-basic` inside the compaction group) that already registered `ctx.compaction`. Probed via `ctx.get('compaction')`, the inject-free optional accessor; when it answers, the plugin uses that instance and constructs nothing.
+2. **Self-host** — no engine registered anywhere visible. The plugin dynamically imports `@deepseek-ai/dsh-compaction-basic` and constructs `new BasicCompactionEngine(ctx, { auto: false })`: no automatic-compaction listeners, no trigger policy — just `compactRegion`. The cordis `Service` base registers the instance as it sees fit, and the plugin caches its own reference so construction happens at most once. Resolution: bare specifier first (works under a `node_modules` tree, e.g. a profile npm install), then a file-URL fallback that walks up from host anchors (`process.argv[1]`, cwd) to the `node_modules` dir containing the engine package — preset directories sit outside any `node_modules` tree, but the running host always does. If both fail, fold-capable tools return an honest "compaction service is unavailable" while `task_begin`/`task_end` and the observability tools keep working.
+
+Because tier 2 needs only host-plane services (`tokenMeter`, `llm` — both injected), the plugin folds in compositions with **no compaction group at all** (validated live on a `minimal`-derived preset: full begin → end → commit cycle through the self-hosted engine). This is also what makes a future profile-level install (`dsh plugin add`) viable in standard mode.
+
+
 ### Archive recall
 
 Folding removes entries from the **surface projection** only — the append-only event log keeps every original event forever, and each `compaction/summary` records the archived seqs (`shadowedSeqs`). `compact_recall` turns that into random access for the model: no args lists every fold; `{ fold: N }` renders the fold's manifest (seq → kind/toolNames/preview for each archived entry); `{ seq }` returns one entry (noting which fold archived it, or that it is still live); `{ from, to }` filters archived seqs; `full: true` raises the per-entry cap from 60 to 4000 chars. Surface positions shift after every fold, so seqs — not positions — are the addressing scheme. Folds predating `shadowedSeqs` report an explicit error instead of pretending to be empty.
