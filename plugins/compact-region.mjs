@@ -695,7 +695,7 @@ export default {
 
     const taskBegin = {
       name: 'task_begin',
-      description: 'Begin a NAMED task. The name is the identity: task_end({ name }) closes exactly that task, task_commit folds its full span. Call alone in a step.',
+      description: 'Begin a NAMED task. The name is the identity: call task_end({ name }) to close exactly that task, call task_commit to fold its full span. Call alone in a step.',
       parameters: {
         type: 'object',
         properties: {
@@ -747,7 +747,7 @@ export default {
 
     const taskEnd = {
       name: 'task_end',
-      description: 'End a NAMED task by name (always terminal; state transition only — the output carries the full state). The ended span then awaits task_commit, whose fold range includes this end pair so the summary sees the completed task. Call alone in a step.',
+      description: 'End a NAMED task by name (always terminal; state transition only — the output carries the full state). Then call task_commit to fold the ended span; its fold range includes this end pair, so the summary sees the completed task. Call alone in a step.',
       parameters: {
         type: 'object',
         properties: {
@@ -792,8 +792,7 @@ export default {
     const taskCommit = {
       name: 'task_commit',
       description: 'Fold the most recently ended task\u0027s full span (begin pair, body, end pair) into one summary node titled by the task name — the summary sees the completed task. Call alone in a step, right after task_end (the record persists until committed). Too-small spans are reported and left as-is.',
-      parameters: { type: 'object', properties: {} },
-      output: {
+      parameters: { type: 'object', properties: {} },      output: {
         schema: { type: 'object', additionalProperties: true },
         render(args, value) {
           if (value.ok !== true) {
@@ -842,7 +841,7 @@ export default {
     ctx.systemPrompt.section({
       name: 'task-marker-compaction',
       order: 650,
-      text: '## Task lifecycle compaction\n\nTasks are NAMED. task_begin({ name: "…" }) opens one (alone in a step); task_end({ name }) closes it by name — a mismatch cannot corrupt other tasks; task_commit folds the full span (begin pair, body, end pair) into one summary node titled by the name, so the summary sees the completed task. Too-small spans are reported and left as-is. Use compact(start, end) only for ranges that do not align with task marks; never track message positions yourself.\n\nRuntime context may carry a todo bridge and lifecycle nudges (task_begin when working with no task open, task_end for a task 20+ rounds old, task_commit for an ended-but-unfolded task). Follow them so task spans stay compactable.'
+      text: '## Task lifecycle compaction\n\nTasks are NAMED. Call task_begin({ name: "…" }) to open one (alone in a step); call task_end({ name }) to close it by name — a mismatch cannot corrupt other tasks; call task_commit to fold the full span (begin pair, body, end pair) into one summary node titled by the name, so the summary sees the completed task. Too-small spans are reported and left as-is. Use compact(start, end) only for ranges that do not align with task marks; never track message positions yourself.\n\nRuntime context may carry a todo bridge and lifecycle nudges: call task_begin when working with no task open, call task_end for a task 20+ rounds old, call task_commit for an ended-but-unfolded task. Follow them so task spans stay compactable.'
     })
 
     const TASK_TOOL_RE = /^(task_begin|task_end|task_commit|compact|compact_inspect|compact_stats|compact_recall|todo_write)$/
@@ -966,7 +965,7 @@ export default {
           const newest = marks[marks.length - 1]
           const age = countAssistantSince(session, newest.seq, 21)
           if (age >= 20) {
-            lines.push('Task lifecycle: task "' + newest.name + '" is 20+ rounds old — if done, task_end({ name: "' + newest.name + '" }), then task_commit.')
+            lines.push('Task lifecycle: task "' + newest.name + '" is 20+ rounds old — if done, call task_end({ name: "' + newest.name + '" }), then call task_commit.')
           }
         }
 
@@ -997,7 +996,7 @@ export default {
             const names = inProgress.slice(0, 3).map((t) => '"' + String(t.content).slice(0, 60) + '"').join(', ')
             lines.push('Todo bridge: in-progress todos (' + names + ') lack task marks — call task_begin for them.')
           } else if (inProgress.length < ownDepth) {
-            lines.push('Todo bridge: open tasks exceed in-progress todos — task_end the finished ones.')
+            lines.push('Todo bridge: open tasks exceed in-progress todos — call task_end for the finished ones.')
           }
         }
         return lines.join('\n')
