@@ -36,7 +36,7 @@ Tier independence needs only host-plane services (`tokenMeter`, `llm`), so the p
 
 ### State model
 
-- Open tasks are **named derived state**: the `taskMarks` session projection folds harness-native events only — tool-call blocks register pending intents, tool-result text (`Task begun: NAME` / `Task folded: NAME`; legacy `Task ended: NAME` parses identically) pushes/pops by name. Closing by name cannot corrupt other tasks; a failed `task_fold` changes nothing (atomic end-and-fold).
+- Open tasks are **named derived state**: the `taskMarks` session projection folds harness-native events only — tool-call blocks register pending intents, tool-result text (`Task begun: NAME` / `Task folded: NAME`) pushes/pops by name. Closing by name cannot corrupt other tasks; a failed `task_fold` changes nothing (atomic end-and-fold).
 - Marks survive host restarts, session resume, and compaction (append-only log). Nameless legacy marks self-heal away at projection load.
 
 ### Lifecycle nudges (hold semantics)

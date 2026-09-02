@@ -86,15 +86,6 @@ test('closing an unknown name changes nothing', () => {
   assert.deepEqual(state.marks, [{ seq: 100, name: 'alpha' }], 'mismatched name does not pop anything')
 })
 
-test('legacy pre-rename task_end results still pop by name', () => {
-  let state = null
-  state = applyTaskMarks(state, assistantCall(100, [{ id: 'c1', name: 'task_begin' }]))
-  state = applyTaskMarks(state, toolResult('c1', BEGIN_OK('alpha'), 101))
-  state = applyTaskMarks(state, assistantCall(200, [{ id: 'c2', name: 'task_end' }]))
-  state = applyTaskMarks(state, toolResult('c2', 'Task ended: alpha — all closed. Folded #7 (99 tokens).', 201))
-  assert.equal(state, null, "legacy 'task_end' + 'Task ended: ' pops identically")
-})
-
 test('failed results keep the mark exactly like the in-memory era', () => {
   let state = null
   state = applyTaskMarks(state, assistantCall(100, [{ id: 'c1', name: 'task_begin' }]))
@@ -184,7 +175,7 @@ test('name normalization: whitespace and multi-name closing', () => {
   state = applyTaskMarks(state, toolResult('c1', 'Task begun: fix  bug — 1 open: fix  bug. …', 101))
   assert.deepEqual(state.marks, [{ seq: 100, name: 'fix bug' }], 'whitespace collapses to a single space')
   state = applyTaskMarks(state, assistantCall(200, [{ id: 'c2', name: 'task_fold' }]))
-  state = applyTaskMarks(state, toolResult('c2', 'Task ended: fix bug — all marks closed. …', 201))
+  state = applyTaskMarks(state, toolResult('c2', 'Task folded: fix bug — all closed. …', 201))
   assert.equal(state, null, 'normalized name matches despite original multiple spaces; empty state is null')
 })
 

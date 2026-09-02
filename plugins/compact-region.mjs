@@ -25,8 +25,7 @@
  *
  * Derivation contract with our own renderers (double-owned, stable):
  *   task_begin success text starts with 'Task begun: '
- *   task_fold  success text starts with 'Task folded: ' (pops the mark);
- *              legacy 'Task ended: ' (pre-rename) pops identically
+ *   task_fold  success text starts with 'Task folded: ' (pops the mark)
  *   failures start with 'task_begin failed' / 'task_fold failed'
  * A failed task_fold KEEPS the mark (atomic end-and-fold: nothing happened,
  * retry).
@@ -165,9 +164,7 @@ export function applyTaskMarks(state, event) {
     let next = null
     for (const block of content) {
       if (block === null || typeof block !== 'object' || block.type !== 'tool-call') continue
-      // task_end is the pre-rename spelling: legacy logs still carry its
-      // calls, and re-folded history must keep popping marks through them.
-      if (block.name !== 'task_begin' && block.name !== 'task_fold' && block.name !== 'task_end') continue
+      if (block.name !== 'task_begin' && block.name !== 'task_fold') continue
       if (next === null) next = cloneTaskMarks(state)
       next.pending[String(block.id)] = {
         kind: block.name === 'task_begin' ? 'begin' : 'end',
@@ -196,20 +193,13 @@ export function applyTaskMarks(state, event) {
       if (intent.kind === 'begin' && text.indexOf('Task begun: ') === 0) {
         const name = taskNameFromText(text, 'Task begun: ')
         next.marks.push({ seq: intent.anchorSeq, name })
-      } else if (intent.kind === 'end') {
-        // 'Task folded: ' is current; 'Task ended: ' is the pre-rename
-        // spelling that legacy logs carry — both pop by name.
-        const endPrefix = text.indexOf('Task folded: ') === 0 ? 'Task folded: '
-          : text.indexOf('Task ended: ') === 0 ? 'Task ended: '
-          : null
-        if (endPrefix !== null) {
-          const name = taskNameFromText(text, endPrefix)
-          // Pop the most recent mark whose normalized name matches — name-keyed
-          // closing, LIFO only within the same name. The end-and-fold is ONE
-          // call now; there is no pending-fold record to keep.
-          for (let i = next.marks.length - 1; i >= 0; i -= 1) {
-            if (next.marks[i].name === name) { next.marks.splice(i, 1); break }
-          }
+      } else if (intent.kind === 'end' && text.indexOf('Task folded: ') === 0) {
+        const name = taskNameFromText(text, 'Task folded: ')
+        // Pop the most recent mark whose normalized name matches — name-keyed
+        // closing, LIFO only within the same name. The end-and-fold is ONE
+        // call now; there is no pending-fold record to keep.
+        for (let i = next.marks.length - 1; i >= 0; i -= 1) {
+          if (next.marks[i].name === name) { next.marks.splice(i, 1); break }
         }
       }
     }
@@ -790,7 +780,7 @@ export default {
       text: '## Task lifecycle compaction\n\nTasks are NAMED. Call task_begin({ name: "…" }) to open one (alone in a step). When the work is done, call task_fold({ name }) (alone in a step): it closes the task by name AND folds the full span into one summary node titled by the name — one call does both; a fold that loses a race reports the reason and keeps the task open (retry). Too-small spans end the task but stay unfolded. Never track message positions yourself.\n\ntask_fold\u0027s output carries the fold number and the path of a temp file holding the span\u0027s EXACT original request context (the same messages the model was sent). Read or grep it with any file tool when the summary lacks the detail you need; if the temp file has been cleaned, call compact_recall({ fold: N }) to regenerate it (list_folds gives fold numbers).\n\nRuntime context may carry a todo bridge and lifecycle nudges: call task_begin when working with no task open, call task_fold for a task 20+ rounds old. Follow them so task spans stay compactable.'
     })
 
-    const TASK_TOOL_RE = /^(task_begin|task_fold|task_end|list_folds|compact_recall|todo_write)$/
+    const TASK_TOOL_RE = /^(task_begin|task_fold|list_folds|compact_recall|todo_write)$/
 
     function recentWorkCallCount(session) {
       // Count non-task tool calls in the last 10 assistant messages.
@@ -830,7 +820,7 @@ export default {
           const text = Array.isArray(b.content)
             ? b.content.filter(isTaskResultText).map((x) => x.text).join('\n')
             : ''
-          if (text.indexOf('Task folded: ') === 0 || text.indexOf('Task ended: ') === 0) {
+          if (text.indexOf('Task folded: ') === 0) {
             return countAssistantSince(session, e.seq, 4)
           }
         }

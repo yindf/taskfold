@@ -108,18 +108,18 @@ function resultEvent(seq, text) {
   ] } } }
 }
 
-test('taskEndTitleOf extracts the name only from task_end successes', () => {
-  const titled = resultEvent(30, 'Task ended and compacted into one summary node (99 tokens, 0 mark(s) still open). Original entries stay archived.\nTitle: implement fold titles\n\nSummary:\nbody')
+test('taskEndTitleOf extracts the name only from task_fold successes', () => {
+  const titled = resultEvent(30, 'Task folded: implement fold titles — all closed.\nTitle: implement fold titles\n\nSummary:\nbody')
   assert.equal(taskEndTitleOf(titled), 'implement fold titles')
   assert.equal(taskEndTitleOf(resultEvent(31, 'Task ended and compacted into one summary node (5 tokens).')), undefined)
-  assert.equal(taskEndTitleOf(resultEvent(33, 'Title: not a task_end result')), undefined)
+  assert.equal(taskEndTitleOf(resultEvent(33, 'Title: not a task_fold result')), undefined)
   assert.equal(taskEndTitleOf({ seq: 34, type: 'user/message', data: {} }), undefined)
 })
 
 test('two-phase folds carry their title INSIDE the shadowed range', () => {
   const events = [
     { seq: 10, type: 'user/message', data: {} },
-    resultEvent(11, 'Task ended: two-phase task name — all closed. Awaiting fold: call task_commit.'),
+    resultEvent(11, 'Task folded: two-phase task name — all closed. Awaiting fold: call task_commit.'),
     { seq: 12, type: 'compaction/summary', data: { shadowedSeqs: [10, 11], shadowedRange: { start: 10, end: 11 }, shadowedTokenCount: 42, summary: [{ type: 'text', text: '## H\n- body' }] } }
   ]
   const folds = collectFolds(events)

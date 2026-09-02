@@ -150,17 +150,16 @@ function resultTextOf(event) {
 }
 
 /**
- * Extract the fold label a task-fold result carries. Current contract:
- * 'Task folded: NAME — …'; the pre-rename 'Task ended: NAME — …' from legacy
- * logs parses identically. Older folds fall back to a 'Title: <name>' line.
- * Returns undefined for every other result.
+ * Extract the fold label a task_fold result carries: 'Task folded: NAME — …'.
+ * Older folds fall back to a 'Title: <name>' line. Returns undefined for
+ * every other result.
  */
 export function taskEndTitleOf(event) {
   if (event === null || typeof event !== 'object' || event.type !== 'tool/result') return undefined
   const text = resultTextOf(event)
-  if (!text.startsWith('Task folded') && !text.startsWith('Task ended')) return undefined
+  if (!text.startsWith('Task folded')) return undefined
   // name immediately after the prefix, terminated by ' —'.
-  const named = /^Task (?:folded|ended): (.+?)(?: —|$)/.exec(text)
+  const named = /^Task folded: (.+?)(?: —|$)/.exec(text)
   if (named !== null) {
     const name = named[1].replace(/\s+/g, ' ').trim()
     if (name.length > 0) return name
@@ -171,11 +170,9 @@ export function taskEndTitleOf(event) {
 }
 
 /**
- * Attach task_end titles to their folds. Primary path (two-phase task_end):
- * the titled end result sits INSIDE the fold's own shadowed range — scan the
- * fold's archived events directly. Fallback (legacy inline folds): a titled
- * task_end result labels the most recent `compaction/summary` BEFORE it.
- * Manual compact() folds simply stay untitled. Mutates and returns `folds`.
+ * Attach task_fold titles to their folds: the titled fold result labels the
+ * most recent `compaction/summary` before it. Folds without a titled result
+ * stay untitled. Mutates and returns `folds`.
  */
 export function attachFoldTitles(folds, events) {
   const list = Array.isArray(events) ? events : []
