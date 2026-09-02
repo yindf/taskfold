@@ -911,14 +911,15 @@ export default {
         }
 
         // ── Nudge 3: ended but never committed ──────────────────────────
-        // task_end's output carries the immediate reminder; this is the
-        // backstop. Holds until task_commit clears the record — byte-stable
-        // wording, so it waits silently instead of re-firing.
+        // task_end's output carries the immediate reminder; if the model's
+        // very next step is NOT task_commit, this backstop appears at once
+        // (age >= 1 round) and HOLDS until the fold clears the record.
+        // Byte-stable wording so the held line emits no further snapshots.
         const ended = lastEndedOf(session)
         if (ended !== undefined && ended.name !== '') {
-          const sinceEnd = countAssistantSince(session, ended.endSeq, 11)
-          if (sinceEnd >= 10) {
-            lines.push('Task lifecycle: the task "' + ended.name + '" ended 10+ model rounds ago and has not been folded. Call task_commit (alone in a step) to compress it into one summary node.')
+          const sinceEnd = countAssistantSince(session, ended.endSeq, 2)
+          if (sinceEnd >= 1) {
+            lines.push('Task lifecycle: the task "' + ended.name + '" ended and still awaits its fold. Call task_commit (alone in a step) to compress it into one summary node.')
           }
         }
 
