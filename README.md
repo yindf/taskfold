@@ -17,22 +17,25 @@ Seven model tools:
 | --- | --- |
 | `task_begin({ name })` | Begin a **named** task. The name is the identity; state rides in the tool output, no context injection. |
 | `task_end({ name })` | Close the task **by name** (terminal, state transition only). Records the ended span (`task_begin` pair + body + `task_end` pair) for folding. |
-| `task_commit` | Fold the ended task's full span into one summary node titled by the task name. The `task_end` result is inside the range, so the summary sees the COMPLETED task — no stale "call task_end" pending. Too-small spans are reported and durably abandoned. |
+| `task_commit` | Fold the ended task's full span into one summary node titled by the task name — the summary sees the COMPLETED task, no stale pending. Output also carries the **span artifact** path (below). Too-small spans are reported and durably abandoned. |
 | `compact_inspect` | Read-only surface listing: 1-based positions, roles, previews, valid compaction edges. |
-| `compact(start, end)` | Ad-hoc compression of an explicit surface range into one summary node. |
-| `compact_stats` | Observability: surface length, every committed fold (tokens, preview, title), cumulative totals, drift warnings. |
-| `compact_recall` | Read the ORIGINAL content of folded entries back from the append-only event log — fold manifests, single entries, seq ranges, `full` text mode. |
+| `compact(start, end)` | Ad-hoc compression of an explicit surface range into one summary node (artifact included). |
+| `compact_stats` | Observability: surface length, every committed fold (tokens, preview, title), cumulative totals. |
+| `compact_recall({ fold })` | Regenerate a fold's span artifact file when the temp copy has been cleaned. One parameter. |
 
 `plugins/compact-region.mjs` provides the five lifecycle/region tools; `plugins/compact-stats.mjs` provides stats + recall (no service dependency).
 
-### Engine tiers (realm / self-host)
+### Span artifacts (exact original context)
 
-The fold-capable tools (`compact`, `task_commit`) resolve a compaction engine lazily:
+Every successful fold writes the span's **exact original request context** — the same messages the model was sent, derived by the harness's own `session.deriveEventMessage(session.eventAt(seq))` pair (the same API the engine's summarizer replays) — as a JSON file to the OS temp dir (`cmpct-artifacts/`), including reasoning blocks, tool-call arguments, and tool results verbatim. The fold output carries the path; the model reads/greps it with any file tool. Temp files are conveniences, not the source of truth: the append-only log is, so `compact_recall({ fold: N })` regenerates any artifact on demand.
 
-1. **Realm engine** — a composition row (`dsh-compaction-basic`) that already registered `ctx.compaction`. Probed via `ctx.get('compaction')`; when it answers, nothing is constructed.
-2. **Self-host** — `new BasicCompactionEngine(ctx, { auto: false })`: no automatic-compaction listeners, no trigger policy, just `compactRegion`. Resolved by bare specifier first (profile installs), then a file-URL fallback walking up from host anchors to the engine package's `node_modules`.
+### Engine (scoped, self-hosted)
 
-Tier 2 needs only host-plane services (`tokenMeter`, `llm`), so the plugin folds in compositions with **no compaction group at all** — validated live on a `minimal`-derived preset and via profile-level install. Compatible with dsh 0.1.2-alpha.4's on-demand session APIs (`snapshotEvents()`; older versions' `session.events` still honored).
+Explicit folds (`task_commit`, `compact`) always run through the plugin's own `ScopedEngine extends BasicCompactionEngine`: only `summarize()` is overridden — replacing the stock continuity-checkpoint instruction with a **span-scoped** one (summarize only what the span contains, for the continuing model; never restate project background) — while locking, validation, stability checks, and the commit path stay stock. The LLM call replays the same prefix (provider cache reuse preserved); only the appended instruction differs.
+
+A composition row's engine (`dsh-compaction-basic`) is deliberately left to serve **auto** compaction (pressure/overflow), where checkpoint semantics are exactly right. The two instances stay mutually exclusive through the durable event-log lock. Constructed on a shim ctx (no service-registration collisions) with `auto: false`, resolved by bare specifier first (profile installs), then a file-URL fallback walking up from host anchors to the engine package's `node_modules`.
+
+Tier independence needs only host-plane services (`tokenMeter`, `llm`), so the plugin folds in compositions with **no compaction group at all** — validated live on a `minimal`-derived preset and via profile-level install. Compatible with dsh 0.1.2-alpha.4's on-demand session APIs (`snapshotEvents()`; older versions' `session.events` still honored).
 
 ### State model
 

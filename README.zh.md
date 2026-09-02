@@ -17,22 +17,25 @@
 | --- | --- |
 | `task_begin({ name })` | 开启**命名**任务。名字即身份；状态由工具输出承载，零上下文注入。 |
 | `task_end({ name })` | **按名**关闭任务（终局、纯状态转移）。记录结束跨度（begin 对 + 正文 + end 对）待折叠。 |
-| `task_commit` | 将结束任务的完整跨度折叠为单个摘要节点，标题自动取任务名。`task_end` 结果在折叠范围内，摘要看到的是**已完成**的任务——没有过期的"call task_end"。太小的跨度如实上报并持久放弃。 |
+| `task_commit` | 将结束任务的完整跨度折叠为单个摘要节点，标题自动取任务名。摘要看到的是**已完成**的任务——没有过期 pending。输出同时携带**区间工件**路径（见下）。太小的跨度如实上报并持久放弃。 |
 | `compact_inspect` | 只读列出会话表面：位置、角色、预览、合法压缩边界。 |
-| `compact(start, end)` | 把显式表面区间压缩为单个摘要节点。 |
-| `compact_stats` | 可观测性：表面长度、每次折叠（tokens、预览、标题）、累计总量、漂移告警。 |
-| `compact_recall` | 从只追加的事件日志读回被折叠条目的**原始内容**——折叠清单、单条、seq 区间、`full` 全文模式。 |
+| `compact(start, end)` | 把显式表面区间压缩为单个摘要节点（同样落盘工件）。 |
+| `compact_stats` | 可观测性：表面长度、每次折叠（tokens、预览、标题）、累计总量。 |
+| `compact_recall({ fold })` | 临时工件被系统清理后，按折叠号**再生成**工件文件。仅此一个参数。 |
 
-`plugins/compact-region.mjs` 提供五个生命周期/区间工具；`plugins/compact-stats.mjs` 提供统计 + 回看（无服务依赖）。
+`plugins/compact-region.mjs` 提供五个生命周期/区间工具；`plugins/compact-stats.mjs` 提供统计 + 再生成（无服务依赖）。
 
-### 引擎分层（realm / 自托管）
+### 区间工件（精确原始上下文）
 
-可折叠工具（`compact`、`task_commit`）惰性解析压缩引擎：
+每次折叠成功，把该跨度的**精确原始请求上下文**——模型当时收到的同一批消息，由宿主自己的 `session.deriveEventMessage(session.eventAt(seq))` 派生（引擎摘要器重放用的同一对 API）——以 JSON 写入系统临时目录（`cmpct-artifacts/`）：reasoning 块、工具调用参数、工具结果原样在内。折叠输出携带路径，模型用任意文件工具 read/grep。临时文件只是便利品，不是事实源——事实源是只追加日志，`compact_recall({ fold: N })` 随时可再生成任何工件。
 
-1. **Realm 引擎**——组合里已有的 `dsh-compaction-basic` 行注册的 `ctx.compaction`。经 `ctx.get('compaction')` 探测；命中即直接使用，不构造任何东西。
-2. **自托管**——`new BasicCompactionEngine(ctx, { auto: false })`：不注册自动压缩监听、不带触发策略，只有 `compactRegion`。先裸导入（profile 安装场景），失败则从宿主锚点向上找到引擎包的 `node_modules` 按文件 URL 导入。
+### 引擎（scoped，自托管）
 
-第二层只依赖 host 平面服务（`tokenMeter`、`llm`），因此在**完全没有 compaction 组**的组合里也能折叠——已在 `minimal` 派生预设和 profile 安装下实测。兼容 dsh 0.1.2-alpha.4 的按需会话 API（`snapshotEvents()`；旧版的 `session.events` 亦受支持）。
+显式折叠（`task_commit`、`compact`）始终走插件自己的 `ScopedEngine extends BasicCompactionEngine`：只覆写 `summarize()`——把原版连续性检查点指令换成**区间摘要**指令（只总结区间内发生的事，受众是续写会话的模型，绝不复述项目背景）——锁、校验、稳定性检查、提交路径全部原装。LLM 调用重放同一前缀（供应商前缀缓存复用保留），只换末尾指令。
+
+组合行的引擎（`dsh-compaction-basic`）刻意留给**自动**压缩（压力/溢出）——那里检查点语义恰好正确。两个实例通过事件日志的持久锁天然互斥。ScopedEngine 在 shim ctx 上构造（不与服务注册冲突）、`auto: false`；先裸导入（profile 安装场景），失败则从宿主锚点向上找到引擎包的 `node_modules` 按文件 URL 导入。
+
+只依赖 host 平面服务（`tokenMeter`、`llm`），因此在**完全没有 compaction 组**的组合里也能折叠——已在 `minimal` 派生预设和 profile 安装下实测。兼容 dsh 0.1.2-alpha.4 的按需会话 API（`snapshotEvents()`；旧版的 `session.events` 亦受支持）。
 
 ### 状态模型
 

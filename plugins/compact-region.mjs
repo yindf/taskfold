@@ -754,7 +754,7 @@ export default {
 
     const compactTool = {
       name: 'compact',
-      description: 'Ad-hoc compaction escape hatch: compress an explicit range [start, end] of the conversation surface (1-based positions over the message list; system prompt and tool descriptions are NOT part of it) into one summary node. Prefer the task lifecycle (task_begin/task_end) for routine compaction; use compact only for ranges that do not align with task marks (unmarked history, a precise mid-task partial range, merging old summary nodes). Call compact_inspect first to read positions and valid boundaries; both edges must be tool-pairing balanced.',
+      description: 'Ad-hoc compaction escape hatch: compress an explicit range [start, end] of the conversation surface (1-based positions over the message list; system prompt and tool descriptions are NOT part of it) into one summary node. The output carries the path of a temp JSON file with the range\u0027s EXACT original request context (read/grep freely; compact_recall({ fold: N }) regenerates it). Prefer the task lifecycle (task_begin/task_end) for routine compaction; use compact only for ranges that do not align with task marks (unmarked history, a precise mid-task partial range, merging old summary nodes). Call compact_inspect first to read positions and valid boundaries; both edges must be tool-pairing balanced.',
       parameters: {
         type: 'object',
         properties: {
@@ -927,7 +927,7 @@ export default {
 
     const taskCommit = {
       name: 'task_commit',
-      description: 'Fold the most recently ended task\u0027s full span (begin pair, body, end pair) into one summary node titled by the task name — the summary sees the completed task. Call alone in a step, right after task_end (the record persists until committed). Too-small spans are reported and left as-is.',
+      description: 'Fold the most recently ended task\u0027s full span (begin pair, body, end pair) into one summary node titled by the task name — the summary sees the completed task. The output also carries the path of a temp JSON file holding the span\u0027s EXACT original request context (messages as sent, including reasoning blocks) — read or grep it with any file tool when the summary lacks detail; if it is gone, compact_recall({ fold: N }) regenerates it. Call alone in a step, right after task_end (the record persists until committed). Too-small spans are reported and left as-is.',
       parameters: { type: 'object', properties: {} },      output: {
         schema: { type: 'object', additionalProperties: true },
         render(args, value) {
