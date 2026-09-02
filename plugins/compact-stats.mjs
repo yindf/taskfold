@@ -1,5 +1,5 @@
 /**
- * compact_stats / compact_recall — session compaction observability tools
+ * list_folds / compact_recall — fold index and artifact regeneration tools
  * (preset plugin).
  *
  * Read-only companion to compact-region: reports what compaction did for THIS
@@ -206,14 +206,14 @@ export default {
   inject: ['tools'],
   apply(ctx) {
     ctx.tools.register({
-      name: 'compact_stats',
-      description: 'Read-only compaction observability for THIS session: current surface length, every committed fold (position, estimated shadowed tokens, summary preview), and cumulative totals. Call it after a fold to see what compaction saved, or anytime to audit the fold history.',
+      name: 'list_folds',
+      description: 'List every committed fold in THIS session: fold number, estimated shadowed tokens, summary preview or task title, plus surface/event totals. Fold numbers are what compact_recall({ fold: N }) consumes; call this when you need to regenerate an artifact or audit what compaction saved.',
       parameters: { type: 'object', properties: {} },
       output: {
         schema: { type: 'object', additionalProperties: true },
         render(args, value) {
           if (value.ok !== true) {
-            return [{ type: 'text', text: 'compact_stats failed: ' + String(value.error === undefined ? 'unknown error' : value.error) }]
+            return [{ type: 'text', text: 'list_folds failed: ' + String(value.error === undefined ? 'unknown error' : value.error) }]
           }
           const lines = []
           lines.push('Surface: ' + value.surfaceLength + ' live nodes over ' + value.eventCount + ' events; folds: ' + value.totals.folds + ', shadowed tokens estimated: ' + value.totals.shadowedTokens + '.')
@@ -227,7 +227,7 @@ export default {
       },
       async execute(args, exec) {
         const agent = exec.agent
-        if (agent === undefined) return { ok: false, error: 'compact_stats requires an agent context' }
+        if (agent === undefined) return { ok: false, error: 'list_folds requires an agent context' }
         let session
         try {
           session = agent.session
@@ -246,11 +246,11 @@ export default {
 
     ctx.tools.register({
       name: 'compact_recall',
-      description: 'Regenerate the artifact FILE for one fold: the span\u0027s EXACT original request context (the same messages the model was sent), written as JSON to the OS temp dir. Fold outputs carry the artifact path when the fold commits — this tool exists for when that temp file has been cleaned: pass the fold number, get a fresh file path, then read/grep it with any file tool. Use compact_stats for the fold index. Read-only against the session; one file write to tmp.',
+      description: 'Regenerate the artifact FILE for one fold: the span\u0027s EXACT original request context (the same messages the model was sent), written as JSON to the OS temp dir. Fold outputs carry the artifact path when the fold commits — this tool exists for when that temp file has been cleaned: pass the fold number, get a fresh file path, then read/grep it with any file tool. Use list_folds for the fold index. Read-only against the session; one file write to tmp.',
       parameters: {
         type: 'object',
         properties: {
-          fold: { type: 'integer', description: 'Fold number (1-based, chronological) from compact_stats.' }
+          fold: { type: 'integer', description: 'Fold number (1-based, chronological) from list_folds.' }
         },
         required: ['fold']
       },
@@ -274,7 +274,7 @@ export default {
           return { ok: false, error: 'failed to read the session: ' + (err !== null && typeof err === 'object' && err.message ? String(err.message) : String(err)) }
         }
         const foldNo = args !== null && typeof args === 'object' ? args.fold : undefined
-        if (!Number.isInteger(foldNo)) return { ok: false, error: 'pass fold: N (1-based; see compact_stats for the index)' }
+        if (!Number.isInteger(foldNo)) return { ok: false, error: 'pass fold: N (1-based; see list_folds for the index)' }
         try {
           const folds = collectFolds(sessionEvents(session))
           if (foldNo < 1 || foldNo > folds.length) return { ok: false, error: 'invalid fold ' + foldNo + ' (valid: 1..' + folds.length + ')' }

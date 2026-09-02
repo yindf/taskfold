@@ -5,9 +5,8 @@
  * (`./plugins/compact-region.mjs`) inside the `compaction` isolate group,
  * so `ctx.compaction` resolves to this realm's engine directly.
  *
- * Registers five model tools plus task-lifecycle prompt guidance:
- *   compact / compact_inspect            — manual, position-based compaction
- *   task_begin / task_end / task_commit  — task-lifecycle compaction (LIFO stack)
+ * Registers the task-lifecycle tools plus prompt guidance:
+ *   task_begin / task_end / task_commit — named tasks, span folds, artifacts
  *
  * Zero module dependencies: every capability arrives through `inject`.
  *
@@ -683,151 +682,6 @@ export default {
       }
     }
 
-    const inspectTool = {
-      name: 'compact_inspect',
-      description: 'List the current conversation surface: 1-based positions, role, kind, preview, and whether each position can be a compaction start/end edge. Read-only. Call this before compact(start, end). By default shows the tail window when the surface is long; use from/to to inspect an older window.',
-      parameters: {
-        type: 'object',
-        properties: {
-          from: { type: 'integer', description: 'Optional first position of the window to show, inclusive (1-based).' },
-          to: { type: 'integer', description: 'Optional last position of the window to show, inclusive (1-based).' }
-        }
-      },
-      output: {
-        schema: { type: 'object', additionalProperties: true },
-        render(args, value) {
-          if (value.ok !== true) {
-            return [{ type: 'text', text: 'compact_inspect failed: ' + String(value.error === undefined ? 'unknown error' : value.error) }]
-          }
-          const lines = []
-          const first = value.omittedBefore + 1
-          const last = value.omittedBefore + value.positions.length
-          lines.push('Surface length: ' + value.length + ' (showing positions ' + first + '..' + last + ')')
-          if (value.corrupt === true) lines.push('WARNING: part of the surface fold is corrupt (tool result without a preceding call, or missing event); edge flags are unreliable from the break until the next user-message boundary.')
-          for (const p of value.positions) {
-            const flags = (p.canStartEdge ? 'S' : '-') + (p.canEndEdge ? 'E' : '-')
-            const tools = p.toolNames !== undefined && p.toolNames.length > 0 ? ' calls:' + p.toolNames.join(',') : ''
-            lines.push('#' + p.pos + ' [' + flags + '] ' + p.role + '/' + p.kind + tools + ' ' + p.preview)
-          }
-          lines.push(String(value.hint === undefined ? '' : value.hint))
-          return [{ type: 'text', text: lines.join('\n') }]
-        }
-      },
-      async execute(args, exec) {
-        const agent = exec.agent
-        if (agent === undefined) return { ok: false, category: 'invalid', error: 'compact_inspect requires an agent context' }
-        let snapshot
-        try {
-          snapshot = readSurface(agent.session)
-        } catch (err) {
-          return { ok: false, category: 'invalid', error: 'failed to read the session surface: ' + errText(err) }
-        }
-        const length = snapshot.length
-        let from = 1
-        let to = length
-        const hasFrom = args !== null && typeof args === 'object' && Number.isInteger(args.from)
-        const hasTo = args !== null && typeof args === 'object' && Number.isInteger(args.to)
-        if (hasFrom || hasTo) {
-          if (!hasFrom || !hasTo || args.from < 1 || args.to < args.from) {
-            return { ok: false, category: 'invalid', error: 'invalid window: from=' + args.from + ', to=' + args.to + ' (need integers with 1 <= from <= to <= length ' + length + ')' }
-          }
-          if (args.from > length) {
-            return { ok: false, category: 'invalid', error: 'window from=' + args.from + ' is beyond surface length ' + length }
-          }
-          from = args.from
-          to = Math.min(args.to, length)
-        } else if (length > TAIL_WINDOW) {
-          from = length - TAIL_WINDOW + 1
-        }
-        const positions = snapshot.positions.slice(from - 1, to)
-        return {
-          ok: true,
-          length,
-          omittedBefore: from - 1,
-          omittedAfter: length - to,
-          corrupt: snapshot.corrupt,
-          positions,
-          hint: 'Valid compact(start,end) requires start<=end, canStartEdge[start]=true, canEndEdge[end]=true; positions shift after any successful compact, so run compact_inspect again before each compact.'
-        }
-      }
-    }
-
-    const compactTool = {
-      name: 'compact',
-      description: 'Ad-hoc compaction escape hatch: compress an explicit range [start, end] of the conversation surface (1-based positions over the message list; system prompt and tool descriptions are NOT part of it) into one summary node. The output carries the path of a temp JSON file with the range\u0027s EXACT original request context (read/grep freely; compact_recall({ fold: N }) regenerates it). Prefer the task lifecycle (task_begin/task_end) for routine compaction; use compact only for ranges that do not align with task marks (unmarked history, a precise mid-task partial range, merging old summary nodes). Call compact_inspect first to read positions and valid boundaries; both edges must be tool-pairing balanced.',
-      parameters: {
-        type: 'object',
-        properties: {
-          start: { type: 'integer', description: 'First surface position to compact, inclusive (1-based).' },
-          end: { type: 'integer', description: 'Last surface position to compact, inclusive (1-based).' }
-        },
-        required: ['start', 'end']
-      },
-      output: {
-        schema: { type: 'object', additionalProperties: true },
-        render(args, value) {
-          if (value.ok !== true) {
-            const category = value.category === undefined ? 'invalid' : String(value.category)
-            const error = value.error === undefined ? 'unknown error' : String(value.error)
-            const hint = value.hint === undefined ? '' : '\n' + String(value.hint)
-            return [{ type: 'text', text: 'compact failed (' + category + '): ' + error + hint }]
-          }
-          const range = value.file === undefined ? '' : ' Original context saved: ' + value.file
-          return [{ type: 'text', text: 'Compacted surface positions ' + value.compacted.start + '..' + value.compacted.end + ' into one summary node (' + value.shadowedTokenCount + ' shadowed tokens estimated).' + range + '\n\nSummary:\n' + String(value.summary) }]
-        }
-      },
-      async execute(args, exec) {
-        const agent = exec.agent
-        if (agent === undefined) return { ok: false, category: 'invalid', error: 'compact requires an agent context' }
-        const engine = await engineFor()
-        if (engine === undefined) return { ok: false, category: 'invalid', error: 'compaction service is unavailable in this composition' }
-        const start = args.start
-        const end = args.end
-        if (!Number.isInteger(start) || !Number.isInteger(end) || start < 1 || end < start) {
-          return { ok: false, category: 'invalid', error: 'invalid range: start and end must be integers with 1 <= start <= end (got start=' + start + ', end=' + end + ')' }
-        }
-        const session = agent.session
-        const nodes = session.surface.nodes
-        if (end > nodes.length) {
-          return { ok: false, category: 'invalid', error: 'position ' + end + ' is beyond the surface (current length ' + nodes.length + '); run compact_inspect first' }
-        }
-        let snapshot
-        try {
-          snapshot = readSurface(session)
-        } catch (err) {
-          return { ok: false, category: 'invalid', error: 'failed to read the session surface: ' + errText(err) }
-        }
-        const startView = snapshot.positions[start - 1]
-        const endView = snapshot.positions[end - 1]
-        if (startView === undefined || endView === undefined) {
-          return { ok: false, category: 'invalid', error: 'positions not available; run compact_inspect first' }
-        }
-        if (!startView.canStartEdge) {
-          return { ok: false, category: 'invalid', error: 'start position ' + start + ' is not a balanced boundary (it would split a tool call/result pair); run compact_inspect and pick a position with canStartEdge=true' }
-        }
-        if (!endView.canEndEdge) {
-          return { ok: false, category: 'invalid', error: 'end position ' + end + ' is not a balanced boundary (it would split a step, or the step is still open — the current step\u0027s own assistant message cannot be compacted); run compact_inspect and pick a position with canEndEdge=true' }
-        }
-        try {
-          const result = await engine.compactRegion(nodes[start - 1], nodes[end - 1], agent, exec.signal)
-          const file = writeArtifactFile(session, result.shadowedSeqs, 'compact-' + start + '-' + end)
-          return { ok: true, compacted: { start, end }, summary: summaryTextOf(result), shadowedTokenCount: result.shadowedTokenCount, file }
-        } catch (err) {
-          const classified = classifyCategory(err)
-          const hints = {
-            busy: 'a compaction lock is already active in this session; retrying is ineffective until the session starts a new lifecycle',
-            changed: 'the surface changed during compaction; run compact_inspect and retry',
-            summary: 'the summarizer could not produce a smaller summary; try a smaller range',
-            cancelled: 'the compaction was cancelled',
-            commit: 'the compaction did not commit cleanly',
-            persistence: 'the durability checkpoint failed'
-          }
-          const hint = hints[classified.category]
-          const base = { ok: false, category: classified.category, error: classified.message }
-          return hint === undefined ? base : { ok: false, category: classified.category, error: classified.message, hint }
-        }
-      }
-    }
 
     const taskBegin = {
       name: 'task_begin',
@@ -970,8 +824,6 @@ export default {
       }
     }
 
-    ctx.tools.register(inspectTool)
-    ctx.tools.register(compactTool)
     ctx.tools.register(taskBegin)
     ctx.tools.register(taskEnd)
     ctx.tools.register(taskCommit)
@@ -979,10 +831,10 @@ export default {
     ctx.systemPrompt.section({
       name: 'task-marker-compaction',
       order: 650,
-      text: '## Task lifecycle compaction\n\nTasks are NAMED. Call task_begin({ name: "…" }) to open one (alone in a step); call task_end({ name }) to close it by name — a mismatch cannot corrupt other tasks; call task_commit to fold the full span (begin pair, body, end pair) into one summary node titled by the name, so the summary sees the completed task. Too-small spans are reported and left as-is. Use compact(start, end) only for ranges that do not align with task marks; never track message positions yourself.\n\nFold outputs carry the path of a temp file holding the span\u0027s EXACT original request context (the same messages the model was sent). Read or grep it with any file tool when a summary lacks the detail you need; if the temp file has been cleaned, call compact_recall({ fold: N }) to regenerate it.\n\nRuntime context may carry a todo bridge and lifecycle nudges: call task_begin when working with no task open, call task_end for a task 20+ rounds old, call task_commit for an ended-but-unfolded task. Follow them so task spans stay compactable.'
+      text: '## Task lifecycle compaction\n\nTasks are NAMED. Call task_begin({ name: "…" }) to open one (alone in a step); call task_end({ name }) to close it by name — a mismatch cannot corrupt other tasks; call task_commit to fold the full span (begin pair, body, end pair) into one summary node titled by the name, so the summary sees the completed task. Too-small spans are reported and left as-is. Never track message positions yourself.\n\nFold outputs carry the path of a temp file holding the span\u0027s EXACT original request context (the same messages the model was sent). Read or grep it with any file tool when a summary lacks the detail you need; if the temp file has been cleaned, call compact_recall({ fold: N }) to regenerate it (list_folds gives fold numbers).\n\nRuntime context may carry a todo bridge and lifecycle nudges: call task_begin when working with no task open, call task_end for a task 20+ rounds old, call task_commit for an ended-but-unfolded task. Follow them so task spans stay compactable.'
     })
 
-    const TASK_TOOL_RE = /^(task_begin|task_end|task_commit|compact|compact_inspect|compact_stats|compact_recall|todo_write)$/
+    const TASK_TOOL_RE = /^(task_begin|task_end|task_commit|list_folds|compact_recall|todo_write)$/
 
     function recentWorkCallCount(session) {
       // Count non-task tool calls in the last 10 assistant messages.

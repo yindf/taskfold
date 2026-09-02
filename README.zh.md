@@ -18,12 +18,10 @@
 | `task_begin({ name })` | 开启**命名**任务。名字即身份；状态由工具输出承载，零上下文注入。 |
 | `task_end({ name })` | **按名**关闭任务（终局、纯状态转移）。记录结束跨度（begin 对 + 正文 + end 对）待折叠。 |
 | `task_commit` | 将结束任务的完整跨度折叠为单个摘要节点，标题自动取任务名。摘要看到的是**已完成**的任务——没有过期 pending。输出同时携带**区间工件**路径（见下）。太小的跨度如实上报并持久放弃。 |
-| `compact_inspect` | 只读列出会话表面：位置、角色、预览、合法压缩边界。 |
-| `compact(start, end)` | 把显式表面区间压缩为单个摘要节点（同样落盘工件）。 |
-| `compact_stats` | 可观测性：表面长度、每次折叠（tokens、预览、标题）、累计总量。 |
+| `list_folds` | 折叠索引：每次折叠（编号、tokens、标题/预览）+ 会话总量——`compact_recall` 消费的编号来源。 |
 | `compact_recall({ fold })` | 临时工件被系统清理后，按折叠号**再生成**工件文件。仅此一个参数。 |
 
-`plugins/compact-region.mjs` 提供五个生命周期/区间工具；`plugins/compact-stats.mjs` 提供统计 + 再生成（无服务依赖）。
+`plugins/compact-region.mjs` 提供三个生命周期工具；`plugins/compact-stats.mjs` 提供折叠索引 + 再生成（无服务依赖）。
 
 ### 区间工件（精确原始上下文）
 

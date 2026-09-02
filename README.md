@@ -18,12 +18,10 @@ Seven model tools:
 | `task_begin({ name })` | Begin a **named** task. The name is the identity; state rides in the tool output, no context injection. |
 | `task_end({ name })` | Close the task **by name** (terminal, state transition only). Records the ended span (`task_begin` pair + body + `task_end` pair) for folding. |
 | `task_commit` | Fold the ended task's full span into one summary node titled by the task name — the summary sees the COMPLETED task, no stale pending. Output also carries the **span artifact** path (below). Too-small spans are reported and durably abandoned. |
-| `compact_inspect` | Read-only surface listing: 1-based positions, roles, previews, valid compaction edges. |
-| `compact(start, end)` | Ad-hoc compression of an explicit surface range into one summary node (artifact included). |
-| `compact_stats` | Observability: surface length, every committed fold (tokens, preview, title), cumulative totals. |
+| `list_folds` | Fold index: every committed fold (number, tokens, title/preview) plus session totals — the fold numbers `compact_recall` consumes. |
 | `compact_recall({ fold })` | Regenerate a fold's span artifact file when the temp copy has been cleaned. One parameter. |
 
-`plugins/compact-region.mjs` provides the five lifecycle/region tools; `plugins/compact-stats.mjs` provides stats + recall (no service dependency).
+`plugins/compact-region.mjs` provides the three lifecycle tools; `plugins/compact-stats.mjs` provides the fold index + recall (no service dependency).
 
 ### Span artifacts (exact original context)
 
