@@ -48,13 +48,15 @@ The plugin reads the stock `todos` projection (registered by the `dsh-tool-todo`
 
 ### Lifecycle nudges
 
-Beyond the todo bridge, the context watches for three ways the lifecycle gets skipped, and speaks up only then — a clean begin→work→end→commit flow stays completely silent. All ages and cooldowns are measured in **model rounds** (assistant messages), never raw event seqs: one tool call can append thousands of events, so seq distance is meaningless as time. Each nudge type re-fires at most once per **10 rounds** until its signal clears.
+Beyond the todo bridge, the context watches for three ways the lifecycle gets skipped, and speaks up only then — a clean begin→work→end→commit flow stays completely silent. Ages are measured in **model rounds** (assistant messages), never raw event seqs: one tool call can append thousands of events, so seq distance is meaningless as time.
 
-| Signal | Fires when | Asks for |
-| --- | --- | --- |
-| Work without a task | no open task and ≥3 non-task tool calls in the last 10 rounds | `task_begin({ name })` |
-| A task left open | the newest open mark is ≥20 rounds old | `task_end({ name })` (names the task) |
-| An end never committed | a `lastEnded` record is ≥10 rounds old — the immediate reminder rode the `task_end` output; this is the backstop when the model kept working instead | `task_commit` (names the task) |
+Nudges use **hold semantics**: a nudge line renders for as long as its condition holds and retracts the moment it clears (task opened, task closed, fold committed). The snapshot engine is diff-driven, so a held line costs nothing while it waits — an unchanged render produces no new snapshot, and clearing produces exactly one retraction. For that to work, nudge wording past its threshold is deliberately **number-free** ("20+ rounds", never "~23 rounds"): a line whose text changed every round would emit a snapshot every round.
+
+| Signal | Holds while | Retracts when | Asks for |
+| --- | --- | --- | --- |
+| Work without a task | no open task and ≥3 non-task tool calls in the last 10 rounds | a task begins, or the work stops | `task_begin({ name })` |
+| A task left open | the newest open mark is 20+ rounds old | the named task is closed | `task_end({ name })` (names the task) |
+| An end never committed | a `lastEnded` record is 10+ rounds old — the immediate reminder rode the `task_end` output; this is the backstop | `task_commit` folds it | `task_commit` (names the task) |
 
 ### Tool-name collisions
 

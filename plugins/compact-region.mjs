@@ -818,11 +818,6 @@ export default {
       text: '## Task lifecycle compaction\n\nTasks are NAMED. When you start a discrete task, call task_begin({ name: "…" }) (alone in a step) — the name is the task\u0027s identity. When it completes, call task_end({ name: "…" }) (alone in a step): the task is closed (state transition only; its output lists what ended and what remains open — nothing is injected into context). Then call task_commit (alone in a step) to compress the task\u0027s full span — begin pair, body, end pair — into one summary node; the summary sees the completed task, so it carries no stale "call task_end" pending, and the fold is labelled by the task name. If the span is too small, task_commit reports it and the history stays as-is. Close tasks by name, not by stack position — a name mismatch cannot corrupt other tasks. Never track message positions yourself; use compact(start, end) only for ranges that do not align with task marks.\n\nThe runtime context carries a todo bridge: when a todo item is in progress without a matching task it asks for task_begin, and when the in-progress list shrank while tasks remain open it asks for task_end. It also carries lifecycle nudges that fire only when the flow is skipped: working many rounds with no open task (call task_begin), a task left open for ~20 rounds (call task_end), or an ended task left uncommitted for ~10 rounds (call task_commit). Follow those nudges so task spans stay compactable.'
     })
 
-    // Anti-spam memory: per-session, per-nudge-type last injection seq.
-    // Ephemeral UI state (not the projection) — restart just resets the
-    // cooldown, which is harmless.
-    const lastNudge = new Map() // sessionId → Map<kind, seq>
-
     const TASK_TOOL_RE = /^(task_begin|task_end|task_commit|compact|compact_inspect|compact_stats|compact_recall|todo_write)$/
 
     function recentWorkCallCount(session) {
@@ -846,16 +841,10 @@ export default {
       return workCalls
     }
 
-    function currentSeq(session) {
-      const events = session !== undefined && session !== null && Array.isArray(session.events) ? session.events : []
-      return events.length > 0 ? Number(events[events.length - 1].seq) || 0 : 0
-    }
-
-    // Age and cooldown are measured in MODEL ROUNDS (assistant messages),
-    // not raw seq distance: one tool call can append anywhere from a handful
-    // to thousands of events, so seq deltas are meaningless as "time". The
-    // scan is bounded (stops at `seq` or after `cap` hits), so cost per
-    // request is negligible.
+    // Ages are measured in MODEL ROUNDS (assistant messages), not raw seq
+    // distance: one tool call can append anywhere from a handful to thousands
+    // of events, so seq deltas are meaningless as "time". The scan is bounded
+    // (stops at `seq` or after `cap` hits), so cost per request is negligible.
     function countAssistantSince(session, seq, cap) {
       const events = session !== undefined && session !== null && Array.isArray(session.events) ? session.events : []
       let count = 0
@@ -868,16 +857,13 @@ export default {
       return count
     }
 
-    const NUDGE_COOLDOWN_ROUNDS = 10
-
-    function shouldNudge(sessionId, kind, session) {
-      let byKind = lastNudge.get(sessionId)
-      if (byKind === undefined) { byKind = new Map(); lastNudge.set(sessionId, byKind) }
-      const last = byKind.get(kind)
-      if (last !== undefined && countAssistantSince(session, last, NUDGE_COOLDOWN_ROUNDS) < NUDGE_COOLDOWN_ROUNDS) return false
-      byKind.set(kind, currentSeq(session))
-      return true
-    }
+    // HOLD semantics for lifecycle nudges: each nudge line renders for as
+    // long as its condition holds — no fire/cooldown cycle, so a nudge never
+    // "fires then stops nagging". The snapshot engine is diff-driven: an
+    // unchanged context render produces NO new snapshot, and a condition
+    // clearing produces exactly one retraction snapshot. This only works
+    // while the line text is BYTE-STABLE, so nudge wording past its
+    // threshold is deliberately number-free ("20+ rounds", never "~23").
 
     ctx.systemPrompt.context({
       name: 'todo-bridge',
@@ -890,7 +876,6 @@ export default {
         let session
         try { session = agent.session } catch (err) { session = undefined }
         if (session === null || session === undefined) return ''
-        const sessionId = String(session.id !== undefined ? session.id : '')
         const lines = []
         // Only NAMED marks count: nameless entries are unclosable legacy
         // phantoms (self-healed at projection load, but guard here too).
@@ -906,38 +891,34 @@ export default {
         // cross-state signals the model cannot read from any single message.
 
         // ── Nudge 1: no task open but work is happening ─────────────────
-        // If the model is making non-task tool calls without any open task,
-        // it may be skipping the lifecycle. Detect after ≥3 work calls in
-        // the last 10 assistant messages.
+        // Renders for as long as the model keeps making non-task tool calls
+        // with no open task; retracts the moment a task begins (or the work
+        // stops). ≥3 work calls in the last 10 assistant messages.
         if (ownDepth === 0 && recentWorkCallCount(session) >= 3) {
-          if (shouldNudge(sessionId, 'no-task', session)) {
-            lines.push('Task lifecycle: no open task marks, but you are making tool calls. If this is a discrete task, call task_begin({ name: "…" }) (alone in a step) so the span can be folded when it finishes.')
-          }
+          lines.push('Task lifecycle: no open task marks, but you are making tool calls. If this is a discrete task, call task_begin({ name: "…" }) (alone in a step) so the span can be folded when it finishes.')
         }
 
         // ── Nudge 2: task open for a long time ─────────────────────────
-        // If the newest open mark spans ≥20 model rounds (assistant
-        // messages — event seqs are useless as "time": one tool call can
-        // append thousands), the task may be done and forgotten. Nudge
-        // task_end for that specific task.
+        // Holds until the named task is closed — the wording is static
+        // ("20+ rounds") so the held line is byte-stable and produces no
+        // further snapshots while it waits.
         if (ownDepth > 0) {
           const newest = marks[marks.length - 1]
           const age = countAssistantSince(session, newest.seq, 21)
-          if (age >= 20 && shouldNudge(sessionId, 'stale-task', session)) {
-            lines.push('Task lifecycle: the task "' + newest.name + '" has been open for ~' + age + ' model rounds. If it is done, call task_end({ name: "' + newest.name + '" }) (alone in a step), then task_commit to fold it.')
+          if (age >= 20) {
+            lines.push('Task lifecycle: the task "' + newest.name + '" has been open for 20+ model rounds. If it is done, call task_end({ name: "' + newest.name + '" }) (alone in a step), then task_commit to fold it.')
           }
         }
 
         // ── Nudge 3: ended but never committed ──────────────────────────
-        // task_end's output tells the model to call task_commit right away,
-        // so a fresh record stays silent. But if the model kept working for
-        // ≥10 rounds without committing, the ended task risks never being
-        // folded — remind, and keep reminding every cooldown until it lands.
+        // task_end's output carries the immediate reminder; this is the
+        // backstop. Holds until task_commit clears the record — byte-stable
+        // wording, so it waits silently instead of re-firing.
         const ended = lastEndedOf(session)
         if (ended !== undefined && ended.name !== '') {
           const sinceEnd = countAssistantSince(session, ended.endSeq, 11)
-          if (sinceEnd >= 10 && shouldNudge(sessionId, 'uncommitted', session)) {
-            lines.push('Task lifecycle: the task "' + ended.name + '" ended ~' + sinceEnd + ' model rounds ago and has not been folded. Call task_commit (alone in a step) to compress it into one summary node.')
+          if (sinceEnd >= 10) {
+            lines.push('Task lifecycle: the task "' + ended.name + '" ended 10+ model rounds ago and has not been folded. Call task_commit (alone in a step) to compress it into one summary node.')
           }
         }
 
