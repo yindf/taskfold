@@ -54,7 +54,7 @@ Nudges use **hold semantics**: a nudge line renders for as long as its condition
 
 | Signal | Holds while | Retracts when | Asks for |
 | --- | --- | --- | --- |
-| Work without a task | no open task and ≥3 non-task tool calls in the last 10 rounds | a task begins, or the work stops | `task_begin({ name })` |
+| Work without a task | no open task, ≥3 non-task tool calls in the last 10 rounds, **no fold question open** (no `lastEnded` awaiting commit, and no end/commit outcome within the last 3 rounds — right after a task closes, the pending obligation is `task_commit`, not `task_begin`) | a task begins, the work stops, or the grace expires | `task_begin({ name })` |
 | A task left open | the newest open mark is 20+ rounds old | the named task is closed | `task_end({ name })` (names the task) |
 | An end never committed | a `lastEnded` record exists and the model's next step after `task_end` was not `task_commit` | `task_commit` folds it | `task_commit` (names the task) |
 

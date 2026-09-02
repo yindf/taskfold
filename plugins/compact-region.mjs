@@ -866,6 +866,33 @@ export default {
       return workCalls
     }
 
+    // Model rounds since the most recent fold OUTCOME (a 'Task ended: '
+    // result, a 'Task committed' result, or any 'task_commit failed'
+    // verdict). Used to grace-suppress the begin-nudge right after a task
+    // closes: the pending obligation there is task_commit, not task_begin.
+    // Bounded backward scan; returns a large number when no outcome exists.
+    function roundsSinceFoldOutcome(session) {
+      const events = sessionEvents(session)
+      const floor = Math.max(0, events.length - 300)
+      for (let i = events.length - 1; i >= floor; i--) {
+        const e = events[i]
+        if (e === null || typeof e !== 'object' || e.type !== 'tool/result') continue
+        if (!Number.isInteger(e.seq)) continue
+        const message = e.data !== null && typeof e.data === 'object' && e.data.message !== null && typeof e.data.message === 'object' ? e.data.message : null
+        const blocks = message !== null && Array.isArray(message.content) ? message.content : []
+        for (const b of blocks) {
+          if (b === null || typeof b !== 'object' || b.type !== 'tool-result') continue
+          const text = Array.isArray(b.content)
+            ? b.content.filter(isTaskResultText).map((x) => x.text).join('\n')
+            : ''
+          if (text.indexOf('Task ended: ') === 0 || text.indexOf('Task committed') === 0 || text.indexOf('task_commit failed') === 0) {
+            return countAssistantSince(session, e.seq, 4)
+          }
+        }
+      }
+      return Number.MAX_SAFE_INTEGER
+    }
+
     // Ages are measured in MODEL ROUNDS (assistant messages), not raw seq
     // distance: one tool call can append anywhere from a handful to thousands
     // of events, so seq deltas are meaningless as "time". The scan is bounded
@@ -882,8 +909,7 @@ export default {
       return count
     }
 
-    // HOLD semantics for lifecycle nudges: each nudge line renders for as
-    // long as its condition holds — no fire/cooldown cycle, so a nudge never
+    // HOLD semantics for lifecycle nudges: each nudge line renders for as    // long as its condition holds — no fire/cooldown cycle, so a nudge never
     // "fires then stops nagging". The snapshot engine is diff-driven: an
     // unchanged context render produces NO new snapshot, and a condition
     // clearing produces exactly one retraction snapshot. This only works
@@ -919,7 +945,14 @@ export default {
         // Renders for as long as the model keeps making non-task tool calls
         // with no open task; retracts the moment a task begins (or the work
         // stops). ≥3 work calls in the last 10 assistant messages.
-        if (ownDepth === 0 && recentWorkCallCount(session) >= 3) {
+        // SUPPRESSED while a fold question is open: right after task_end
+        // (or a commit verdict) the pending obligation is task_commit —
+        // suggesting task_begin there is noise. Two guards: a lastEnded
+        // record still awaiting its fold, and a 3-round grace after any
+        // end/commit outcome (covers abandonment, where a too-small verdict
+        // just cleared the record).
+        if (ownDepth === 0 && lastEndedOf(session) === undefined
+          && recentWorkCallCount(session) >= 3 && roundsSinceFoldOutcome(session) >= 3) {
           lines.push('Task lifecycle: no open task marks, but you are making tool calls. If this is a discrete task, call task_begin({ name: "…" }) (alone in a step) so the span can be folded when it finishes.')
         }
 
