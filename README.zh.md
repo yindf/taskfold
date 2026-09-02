@@ -4,14 +4,13 @@
 
 让长会话保持精炼：把工作包进命名任务，做完即把整段折叠成一条带标题的短摘要。会话始终可读、上下文成本始终可控，而任何被折叠的原始内容都随时可以取回。面向 [DeepSeek Harness](https://www.npmjs.com/package/@deepseek-ai/dsh)（DSH）。
 
-两种安装方式：
+以插件包方式安装：
 
-- **插件包**（推荐）：`dsh plugin add` 装入 profile——工具族落在 host 平面，任何预设的每个会话都可用；会话组合未提供压缩引擎时自动自托管。
-- **Agent 预设**：克隆到 `.agent-presets/`——完整 `cordis` 编码代理组合 + compaction realm 内的 taskfold 工具。
+- `dsh plugin add` 装入 profile——工具族落在 host 平面，任何预设的每个会话都可用；会话组合未提供压缩引擎时自动自托管。
 
 ## 提供什么
 
-七个模型工具：
+四个模型工具：
 
 | 工具 | 用途 |
 | --- | --- |
@@ -58,23 +57,13 @@
 dsh plugin --profile web add github:yindf/taskfold
 ```
 
-**Agent 预设**（完整 `cordis` 组合 + taskfold）：
-
-```sh
-git clone https://github.com/yindf/taskfold "$(dsb="${DSH_HOME:-$HOME/.dsh}"; echo "$dsb/.agent-presets/taskfold")"
-```
-
-两种方式装完都要重启 dsh。不要在同一进程同时挂两种——工具名在共享注册表，重复注册会失败。
-
-> **信任提示：**预设形态携带自指的 Cordis 工具集——其上的会话可以读写自己运行所在的 harness，视同 shell 权限。插件包形态只含工具。
+装完重启 dsh。
 
 ## 目录
 
 ```
 package.json      npm 清单 + dsh.bundle.patch 声明
 cordis.patch.yml  host 平面 bundle 补丁（插件安装路径）
-preset.yml        预设元数据
-agent.cordis.yml  完整组合（预设路径）
 plugins/          compact-region.mjs、compact-stats.mjs
 test/             离线测试套件（node test/*.test.mjs）——32 项
 CHANGELOG.md      发布历史

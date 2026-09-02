@@ -4,14 +4,13 @@
 
 Keeps long coding-agent sessions lean: wrap work in named tasks and, when one is done, fold its whole span into a short titled summary. The conversation stays readable, context costs stay low, and every fold's original content can be read back on demand. For [DeepSeek Harness](https://www.npmjs.com/package/@deepseek-ai/dsh) (DSH).
 
-Installable two ways:
+Install as a plugin bundle:
 
-- **As a plugin bundle** (recommended): `dsh plugin add` into a profile — the tool family lands on the host plane and every session, on every preset, gets it. The compaction engine is self-hosted when the session's composition provides none.
-- **As an agent preset**: clone into `.agent-presets/` — the full `cordis` coding-agent composition plus the taskfold tools inside the compaction realm.
+- `dsh plugin add` into a profile — the tool family lands on the host plane and every session, on every preset, gets it. The compaction engine is self-hosted when the session's composition provides none.
 
 ## What it adds
 
-Seven model tools:
+Four model tools:
 
 | Tool | Purpose |
 | --- | --- |
@@ -58,25 +57,15 @@ A todo bridge additionally pairs in-progress todo items with task marks (the sto
 dsh plugin --profile web add github:yindf/taskfold
 ```
 
-**Agent preset** (full `cordis` composition + taskfold):
-
-```sh
-git clone https://github.com/yindf/taskfold "$(dsb="${DSH_HOME:-$HOME/.dsh}"; echo "$dsb/.agent-presets/taskfold")"
-```
-
-Restart dsh after either. Do not mount both in the same process — tool names live in a shared registry and duplicate registration fails.
-
-> **Trust:** the preset form ships the self-referential Cordis toolset — a session on it can read and modify the harness it runs on. Treat it as shell access. The plugin-bundle form carries tools only.
+Restart dsh after the install.
 
 ## Layout
 
 ```
 package.json      npm manifest + dsh.bundle.patch declaration
 cordis.patch.yml  host-plane bundle patch (plugin install path)
-preset.yml        preset metadata
-agent.cordis.yml  full composition (preset path)
 plugins/          compact-region.mjs, compact-stats.mjs
-test/             offline suites (node test/*.test.mjs) — 32 tests
+test/             offline suites (node test/*.test.mjs)
 CHANGELOG.md      release history
 ```
 
