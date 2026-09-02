@@ -16,20 +16,19 @@
 | 工具 | 用途 |
 | --- | --- |
 | `task_begin({ name })` | 开启**命名**任务。名字即身份；状态由工具输出承载，零上下文注入。 |
-| `task_end({ name })` | **按名**关闭任务（终局、纯状态转移）。记录结束跨度（begin 对 + 正文 + end 对）待折叠。 |
-| `task_commit` | 将结束任务的完整跨度折叠为单个摘要节点，标题自动取任务名。摘要看到的是**已完成**的任务——没有过期 pending。输出同时携带**区间工件**路径（见下）。太小的跨度如实上报并持久放弃。 |
+| `task_end({ name })` | **按名关闭任务并同步折叠**（begin 对 + 正文）为单个摘要节点，标题自动取任务名——一次调用完成两件事。失败是原子的：标记保留、可重试。输出携带剩余任务、折叠号和**区间工件**路径。太小的跨度照常结束但不折叠。 |
 | `list_folds` | 折叠索引：每次折叠（编号、tokens、标题/预览）+ 会话总量——`compact_recall` 消费的编号来源。 |
 | `compact_recall({ fold })` | 临时工件被系统清理后，按折叠号**再生成**工件文件。仅此一个参数。 |
 
-`plugins/compact-region.mjs` 提供三个生命周期工具；`plugins/compact-stats.mjs` 提供折叠索引 + 再生成（无服务依赖）。
+`plugins/compact-region.mjs` 提供生命周期工具；`plugins/compact-stats.mjs` 提供折叠索引 + 再生成（无服务依赖）。
 
 ### 区间工件（精确原始上下文）
 
-每次折叠成功，把该跨度的**精确原始请求上下文**——模型当时收到的同一批消息，由宿主自己的 `session.deriveEventMessage(session.eventAt(seq))` 派生（引擎摘要器重放用的同一对 API）——以 JSON 写入系统临时目录（`cmpct-artifacts/`）：reasoning 块、工具调用参数、工具结果原样在内。折叠输出携带路径，模型用任意文件工具 read/grep。临时文件只是便利品，不是事实源——事实源是只追加日志，`compact_recall({ fold: N })` 随时可再生成任何工件。
+每次折叠成功，把该跨度的**精确原始请求上下文**——模型当时收到的同一批消息，由宿主自己的 `session.deriveEventMessage(session.eventAt(seq))` 派生（引擎摘要器重放用的同一对 API）——以 JSON 写入系统临时目录（`cmpct-artifacts/`）：reasoning 块、工具调用参数、工具结果原样在内。`task_end` 输出携带路径，模型用任意文件工具 read/grep。临时文件只是便利品，不是事实源——事实源是只追加日志，`compact_recall({ fold: N })` 随时可再生成任何工件。
 
 ### 引擎（scoped，自托管）
 
-显式折叠（`task_commit`、`compact`）始终走插件自己的 `ScopedEngine extends BasicCompactionEngine`：只覆写 `summarize()`——把原版连续性检查点指令换成**区间摘要**指令（只总结区间内发生的事，受众是续写会话的模型，绝不复述项目背景）——锁、校验、稳定性检查、提交路径全部原装。LLM 调用重放同一前缀（供应商前缀缓存复用保留），只换末尾指令。
+显式折叠（`task_end`）始终走插件自己的 `ScopedEngine extends BasicCompactionEngine`：只覆写 `summarize()`——把原版连续性检查点指令换成**区间摘要**指令（只总结区间内发生的事，受众是续写会话的模型，绝不复述项目背景），并**声明任务已关闭**（区间无法包含自己的结尾，由指令代偿）——锁、校验、稳定性检查、提交路径全部原装。LLM 调用重放同一前缀（供应商前缀缓存复用保留），只换末尾指令。
 
 组合行的引擎（`dsh-compaction-basic`）刻意留给**自动**压缩（压力/溢出）——那里检查点语义恰好正确。两个实例通过事件日志的持久锁天然互斥。ScopedEngine 在 shim ctx 上构造（不与服务注册冲突）、`auto: false`；先裸导入（profile 安装场景），失败则从宿主锚点向上找到引擎包的 `node_modules` 按文件 URL 导入。
 
@@ -37,19 +36,17 @@
 
 ### 状态模型
 
-- 开启的任务是**命名派生态**：`taskMarks` 会话投影只折叠宿主原生事件——工具调用块注册待定意图，工具结果文本（`Task begun: NAME` / `Task ended: NAME`）按名压栈/弹栈。按名关闭不可能破坏其他任务；失败不改变任何状态。
-- 成功的 end 记录 `lastEnded { beginSeq, endSeq, name }`（持久化、重启安全）；`task_commit` 折叠该跨度；覆盖它的 `compaction/summary`——或终局的 too-small 裁决——清除记录。
+- 开启的任务是**命名派生态**：`taskMarks` 会话投影只折叠宿主原生事件——工具调用块注册待定意图，工具结果文本（`Task begun: NAME` / `Task ended: NAME`）按名压栈/弹栈。按名关闭不可能破坏其他任务；失败的 `task_end` 不改变任何状态（原子结束即折叠）。
 - 标记穿越宿主重启、会话恢复和压缩（只追加日志）。无名的 legacy 标记在投影加载时自愈清除。
 
 ### 生命周期催办（hold 语义）
 
-干净的 begin→work→end→commit 流程全程静默。流程被跳过时催办行出现并**驻留**（每轮渲染、字节稳定）直到条件消失——diff 驱动的快照引擎让驻留行等待期间零开销，条件消失只产生一条撤回。年龄以**模型轮次**计量，绝不用原始事件 seq。
+干净的 begin→work→end 流程全程静默。流程被跳过时催办行出现并**驻留**（每轮渲染、字节稳定）直到条件消失——diff 驱动的快照引擎让驻留行等待期间零开销，条件消失只产生一条撤回。年龄以**模型轮次**计量，绝不用原始事件 seq。
 
 | 信号 | 驻留条件 | 提示 |
 | --- | --- | --- |
-| 无任务干活 | 无开启任务、最近 10 轮 ≥3 次非任务工具调用、且无未决折叠问题（任何 end/commit 结局后 3 轮宽限） | `task_begin({ name })` |
+| 无任务干活 | 无开启任务、最近 10 轮 ≥3 次非任务工具调用（task_end 后 3 轮宽限） | `task_begin({ name })` |
 | 任务开太久 | 最新开启标记满 20 轮 | `task_end({ name })` |
-| end 后未 commit | `task_end` 后下一步不是 `task_commit` | `task_commit` |
 
 另有一个 todo 桥接，把进行中的 todo 与任务标记配对（不包装原生 `todo_write` 工具）。
 

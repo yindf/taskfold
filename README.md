@@ -16,20 +16,19 @@ Seven model tools:
 | Tool | Purpose |
 | --- | --- |
 | `task_begin({ name })` | Begin a **named** task. The name is the identity; state rides in the tool output, no context injection. |
-| `task_end({ name })` | Close the task **by name** (terminal, state transition only). Records the ended span (`task_begin` pair + body + `task_end` pair) for folding. |
-| `task_commit` | Fold the ended task's full span into one summary node titled by the task name — the summary sees the COMPLETED task, no stale pending. Output also carries the **span artifact** path (below). Too-small spans are reported and durably abandoned. |
+| `task_end({ name })` | Close the task **by name AND fold its span** (begin pair + body) into one summary node titled by the name — one call does both. Failure is atomic: the mark stays, retry. Output carries remaining tasks, the fold number, and the **span artifact** path. Too-small spans end the task but stay unfolded. |
 | `list_folds` | Fold index: every committed fold (number, tokens, title/preview) plus session totals — the fold numbers `compact_recall` consumes. |
 | `compact_recall({ fold })` | Regenerate a fold's span artifact file when the temp copy has been cleaned. One parameter. |
 
-`plugins/compact-region.mjs` provides the three lifecycle tools; `plugins/compact-stats.mjs` provides the fold index + recall (no service dependency).
+`plugins/compact-region.mjs` provides the lifecycle tools; `plugins/compact-stats.mjs` provides the fold index + recall (no service dependency).
 
 ### Span artifacts (exact original context)
 
-Every successful fold writes the span's **exact original request context** — the same messages the model was sent, derived by the harness's own `session.deriveEventMessage(session.eventAt(seq))` pair (the same API the engine's summarizer replays) — as a JSON file to the OS temp dir (`cmpct-artifacts/`), including reasoning blocks, tool-call arguments, and tool results verbatim. The fold output carries the path; the model reads/greps it with any file tool. Temp files are conveniences, not the source of truth: the append-only log is, so `compact_recall({ fold: N })` regenerates any artifact on demand.
+Every successful fold writes the span's **exact original request context** — the same messages the model was sent, derived by the harness's own `session.deriveEventMessage(session.eventAt(seq))` pair (the same API the engine's summarizer replays) — as a JSON file to the OS temp dir (`cmpct-artifacts/`), including reasoning blocks, tool-call arguments, and tool results verbatim. The `task_end` output carries the path; the model reads/greps it with any file tool. Temp files are conveniences, not the source of truth: the append-only log is, so `compact_recall({ fold: N })` regenerates any artifact on demand.
 
 ### Engine (scoped, self-hosted)
 
-Explicit folds (`task_commit`, `compact`) always run through the plugin's own `ScopedEngine extends BasicCompactionEngine`: only `summarize()` is overridden — replacing the stock continuity-checkpoint instruction with a **span-scoped** one (summarize only what the span contains, for the continuing model; never restate project background) — while locking, validation, stability checks, and the commit path stay stock. The LLM call replays the same prefix (provider cache reuse preserved); only the appended instruction differs.
+Explicit folds (`task_end`) always run through the plugin's own `ScopedEngine extends BasicCompactionEngine`: only `summarize()` is overridden — replacing the stock continuity-checkpoint instruction with a **span-scoped** one (summarize only what the span contains, for the continuing model; never restate project background) that also DECLARES the task closed (the span cannot contain its own ending, so the instruction compensates) — while locking, validation, stability checks, and the commit path stay stock. The LLM call replays the same prefix (provider cache reuse preserved); only the appended instruction differs.
 
 A composition row's engine (`dsh-compaction-basic`) is deliberately left to serve **auto** compaction (pressure/overflow), where checkpoint semantics are exactly right. The two instances stay mutually exclusive through the durable event-log lock. Constructed on a shim ctx (no service-registration collisions) with `auto: false`, resolved by bare specifier first (profile installs), then a file-URL fallback walking up from host anchors to the engine package's `node_modules`.
 
@@ -37,19 +36,17 @@ Tier independence needs only host-plane services (`tokenMeter`, `llm`), so the p
 
 ### State model
 
-- Open tasks are **named derived state**: the `taskMarks` session projection folds harness-native events only — tool-call blocks register pending intents, tool-result text (`Task begun: NAME` / `Task ended: NAME`) pushes/pops by name. Closing by name cannot corrupt other tasks; failures change nothing.
-- A successful end records `lastEnded { beginSeq, endSeq, name }` (persisted, restart-safe); `task_commit` folds that span; a covering `compaction/summary` — or a terminal too-small verdict — clears the record.
+- Open tasks are **named derived state**: the `taskMarks` session projection folds harness-native events only — tool-call blocks register pending intents, tool-result text (`Task begun: NAME` / `Task ended: NAME`) pushes/pops by name. Closing by name cannot corrupt other tasks; a failed `task_end` changes nothing (atomic end-and-fold).
 - Marks survive host restarts, session resume, and compaction (append-only log). Nameless legacy marks self-heal away at projection load.
 
 ### Lifecycle nudges (hold semantics)
 
-A clean begin→work→end→commit flow stays completely silent. When the flow is skipped, a nudge line appears and **holds** (renders every round, byte-stable) until its condition clears — the diff-driven snapshot engine means a held line costs nothing while it waits, and clearing produces exactly one retraction. Ages are measured in **model rounds**, never raw event seqs.
+A clean begin→work→end flow stays completely silent. When the flow is skipped, a nudge line appears and **holds** (renders every round, byte-stable) until its condition clears — the diff-driven snapshot engine means a held line costs nothing while it waits, and clearing produces exactly one retraction. Ages are measured in **model rounds**, never raw event seqs.
 
 | Signal | Holds while | Asks for |
 | --- | --- | --- |
-| Work without a task | no open task, ≥3 non-task tool calls in the last 10 rounds, and no fold question open (3-round grace after any end/commit outcome) | `task_begin({ name })` |
+| Work without a task | no open task, ≥3 non-task tool calls in the last 10 rounds (3-round grace after a task_end) | `task_begin({ name })` |
 | A task left open | the newest open mark is 20+ rounds old | `task_end({ name })` |
-| An end never committed | the step after `task_end` was not `task_commit` | `task_commit` |
 
 A todo bridge additionally pairs in-progress todo items with task marks (the stock `todo_write` tool is never wrapped).
 

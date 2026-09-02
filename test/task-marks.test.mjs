@@ -32,7 +32,7 @@ function toolResult(callId, text, seq) {
 }
 
 const BEGIN_OK = (n) => 'Task begun: ' + n + ' — 1 open.'
-const END_OK = (n) => 'Task ended: ' + n + ' — all closed. Awaiting fold: call task_commit.'
+const END_OK = (n) => 'Task ended: ' + n + ' — all closed. Folded #9 (1200 tokens). Original context saved: C:\\tmp\\x.json'
 // legacy v3/v4 success texts (still present in existing logs) — kept so the
 // reducer's backward path is exercised. They carry no name, so named pop
 // cannot match them unless a name equals ''.
@@ -71,14 +71,10 @@ test('begin/end round trip: named push and pop-by-name', () => {
   state = applyTaskMarks(state, assistantCall(300, [{ id: 'c3', name: 'task_end' }]))
   state = applyTaskMarks(state, toolResult('c3', END_OK('alpha'), 301))
   assert.deepEqual(state.marks, [{ seq: 200, name: 'beta' }], 'closing by name removes the matching mark')
-  assert.deepEqual(state.lastEnded, { beginSeq: 100, endSeq: 301, name: 'alpha' }, 'records ended task span + name')
   // closing 'beta' next
   state = applyTaskMarks(state, assistantCall(400, [{ id: 'c4', name: 'task_end' }]))
   state = applyTaskMarks(state, toolResult('c4', END_OK('beta'), 401))
-  assert.deepEqual(state.marks, [], 'all closed')
-  assert.deepEqual(state.lastEnded, { beginSeq: 200, endSeq: 401, name: 'beta' }, 'empty stack stays alive for pending fold')
-  state = applyTaskMarks(state, { seq: 500, type: 'compaction/summary', data: { shadowedSeqs: [401], shadowedRange: { start: 100, end: 401 } } })
-  assert.equal(state, null, 'covering fold satisfies the pending request; empty state normalizes to null')
+  assert.equal(state, null, 'all closed; empty stack with no pending intents normalizes to null')
 })
 
 test('closing an unknown name changes nothing', () => {
@@ -88,7 +84,6 @@ test('closing an unknown name changes nothing', () => {
   state = applyTaskMarks(state, assistantCall(200, [{ id: 'c2', name: 'task_end' }]))
   state = applyTaskMarks(state, toolResult('c2', END_OK('nope'), 201))
   assert.deepEqual(state.marks, [{ seq: 100, name: 'alpha' }], 'mismatched name does not pop anything')
-  assert.equal(state.lastEnded, undefined, 'no ended task recorded on name mismatch')
 })
 
 test('failed results keep the mark exactly like the in-memory era', () => {
@@ -164,39 +159,12 @@ test('parallel task tools in one assistant message are all tracked', () => {
   assert.deepEqual(state.marks, [{ seq: 100, name: 'alpha' }])
 })
 
-test('lastEnded survives non-covering folds; coverage clears it (seqs or range)', () => {
-  let state = null
-  state = applyTaskMarks(state, assistantCall(100, [{ id: 'c1', name: 'task_begin' }]))
-  state = applyTaskMarks(state, toolResult('c1', BEGIN_OK('alpha'), 101))
-  state = applyTaskMarks(state, assistantCall(200, [{ id: 'c2', name: 'task_end' }]))
-  state = applyTaskMarks(state, toolResult('c2', END_OK('alpha'), 201))
-  assert.deepEqual(state.lastEnded, { beginSeq: 100, endSeq: 201, name: 'alpha' }, 'end-pop records the span + name')
-  state = applyTaskMarks(state, { seq: 900, type: 'compaction/summary', data: { shadowedSeqs: [700, 701], shadowedRange: { start: 700, end: 701 } } })
-  assert.deepEqual(state.lastEnded, { beginSeq: 100, endSeq: 201, name: 'alpha' }, 'unrelated fold does not satisfy the request')
-  state = applyTaskMarks(state, { seq: 950, type: 'compaction/summary', data: { shadowedRange: { start: 100, end: 250 } } })
-  assert.equal(state, null, 'range-only coverage satisfies the request; the empty state normalizes to null')
-})
-
-test('schema validates optional lastEnded; legacy resets clear it', () => {
-
-  const ok = { pending: {}, marks: [], lastEnded: { beginSeq: 100, endSeq: 201, name: 'alpha' } }
-  assert.equal(taskMarksStateSchema.parse(ok), ok)
-  assert.throws(() => taskMarksStateSchema.parse({ pending: {}, marks: [], lastEnded: { beginSeq: 0, endSeq: 201, name: 'x' } }))
-  assert.throws(() => taskMarksStateSchema.parse({ pending: {}, marks: [], lastEnded: { beginSeq: 100 } }))
-  assert.throws(() => taskMarksStateSchema.parse({ pending: {}, marks: [], lastEnded: { beginSeq: 100, endSeq: 201 } }), 'lastEnded needs a name')
-  let state = { pending: {}, marks: [], lastEnded: { beginSeq: 100, endSeq: 201, name: 'alpha' } }
-  state = applyTaskMarks(state, { type: 'task/mark', data: { marks: [] } })
-  assert.equal(state, null, 'legacy whole-value reset also drops the pending fold request')
-})
-
 test('schema self-heals persisted rows carrying nameless phantom marks', () => {
   const phantom = { pending: {}, marks: [{ seq: 211961, name: '' }, { seq: 100, name: 'alpha' }] }
   const healed = taskMarksStateSchema.parse(phantom)
   assert.deepEqual(healed.marks, [{ seq: 100, name: 'alpha' }], 'nameless marks dropped on load, named kept')
   const onlyPhantoms = taskMarksStateSchema.parse({ pending: {}, marks: [{ seq: 1, name: '' }] })
   assert.deepEqual(onlyPhantoms.marks, [], 'all-nameless row heals to an empty stack')
-  const phantomEnded = taskMarksStateSchema.parse({ pending: {}, marks: [], lastEnded: { beginSeq: 1, endSeq: 2, name: '' } })
-  assert.equal(phantomEnded.lastEnded, undefined, 'nameless lastEnded dropped too')
   const ok = { pending: {}, marks: [{ seq: 5, name: 'x' }] }
   assert.equal(taskMarksStateSchema.parse(ok), ok, 'clean rows returned untouched (same reference)')
 })
@@ -208,22 +176,6 @@ test('name normalization: whitespace and multi-name closing', () => {
   assert.deepEqual(state.marks, [{ seq: 100, name: 'fix bug' }], 'whitespace collapses to a single space')
   state = applyTaskMarks(state, assistantCall(200, [{ id: 'c2', name: 'task_end' }]))
   state = applyTaskMarks(state, toolResult('c2', 'Task ended: fix bug — all marks closed. …', 201))
-  assert.deepEqual(state.marks, [], 'normalized name matches despite original multiple spaces')
+  assert.equal(state, null, 'normalized name matches despite original multiple spaces; empty state is null')
 })
 
-test('a too-small task_commit verdict durably abandons the ended record', () => {
-  let state = null
-  state = applyTaskMarks(state, assistantCall(100, [{ id: 'c1', name: 'task_begin' }]))
-  state = applyTaskMarks(state, toolResult('c1', BEGIN_OK('alpha4 回归'), 101))
-  state = applyTaskMarks(state, assistantCall(200, [{ id: 'c2', name: 'task_end' }]))
-  state = applyTaskMarks(state, toolResult('c2', 'Task ended: alpha4 回归 — all marks closed. …', 201))
-  assert.ok(state.lastEnded !== undefined, 'ended record awaits its fold')
-  // Non-terminal failures keep the record for a retry.
-  state = applyTaskMarks(state, assistantCall(250, [{ id: 'cb', name: 'task_commit' }]))
-  state = applyTaskMarks(state, toolResult('cb', 'task_commit failed (busy): a compaction lock is active; retry…', 251))
-  assert.ok(state.lastEnded !== undefined, 'busy verdict keeps the record for retry')
-  // The engine's too-small verdict is terminal — the reducer must abandon.
-  state = applyTaskMarks(state, assistantCall(300, [{ id: 'c3', name: 'task_commit' }]))
-  state = applyTaskMarks(state, toolResult('c3', 'task_commit failed (summary): the ended task "alpha4 回归" was too small to summarize ("summary is not smaller than the shadowed content (1042 estimated framed tokens >= 838)"); its history stays on the surface as-is', 301))
-  assert.ok(state === null || state.lastEnded === undefined, 'summary-failure clears lastEnded (no eternal nudge)')
-})
