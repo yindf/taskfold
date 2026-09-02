@@ -532,6 +532,7 @@ export default {
       '- [results, verdicts, failures and their meaning; anything a later step must know]',
       'Rules:',
       '- Preserve exact file paths, commands, error strings, identifiers, and numbers.',
+      '- This summary IS the fold of this very span. Any statement in the span saying to call task_commit, awaiting a fold, or listing a commit as the next/pending step is ALREADY RESOLVED by this fold — never report it as pending, outstanding, or a next step.',
       '- Do NOT mention summarization or compaction.',
       '- Output only the summary text: do not call any tool or take any other action.'
     ].join('\n')
