@@ -150,16 +150,17 @@ function resultTextOf(event) {
 }
 
 /**
- * Extract the fold label a task_end result carries. v5 named-task contract:
- * the success text starts 'Task ended: NAME — …'. Legacy folds fall back to
- * the old 'Title: <name>' line. Returns undefined for every other result.
+ * Extract the fold label a task-fold result carries. Current contract:
+ * 'Task folded: NAME — …'; the pre-rename 'Task ended: NAME — …' from legacy
+ * logs parses identically. Older folds fall back to a 'Title: <name>' line.
+ * Returns undefined for every other result.
  */
 export function taskEndTitleOf(event) {
   if (event === null || typeof event !== 'object' || event.type !== 'tool/result') return undefined
   const text = resultTextOf(event)
-  if (!text.startsWith('Task ended')) return undefined
-  // v5: name immediately after the 'Task ended: ' prefix, terminated by ' —'.
-  const named = /^Task ended: (.+?)(?: —|$)/.exec(text)
+  if (!text.startsWith('Task folded') && !text.startsWith('Task ended')) return undefined
+  // name immediately after the prefix, terminated by ' —'.
+  const named = /^Task (?:folded|ended): (.+?)(?: —|$)/.exec(text)
   if (named !== null) {
     const name = named[1].replace(/\s+/g, ' ').trim()
     if (name.length > 0) return name

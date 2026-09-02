@@ -32,7 +32,7 @@ function toolResult(callId, text, seq) {
 }
 
 const BEGIN_OK = (n) => 'Task begun: ' + n + ' — 1 open.'
-const END_OK = (n) => 'Task ended: ' + n + ' — all closed. Folded #9 (1200 tokens). Original context saved: C:\\tmp\\x.json'
+const END_OK = (n) => 'Task folded: ' + n + ' — all closed. Folded #9 (1200 tokens). Original context saved: C:\\tmp\\x.json'
 // legacy v3/v4 success texts (still present in existing logs) — kept so the
 // reducer's backward path is exercised. They carry no name, so named pop
 // cannot match them unless a name equals ''.
@@ -68,11 +68,11 @@ test('begin/end round trip: named push and pop-by-name', () => {
   assert.deepEqual(state.marks, [{ seq: 100, name: 'alpha' }, { seq: 200, name: 'beta' }], 'two names, two marks')
   // Closing by name, OUT OF order: ends 'alpha' first even though 'beta' is
   // the most recent — name-keying, no implicit stack corruption.
-  state = applyTaskMarks(state, assistantCall(300, [{ id: 'c3', name: 'task_end' }]))
+  state = applyTaskMarks(state, assistantCall(300, [{ id: 'c3', name: 'task_fold' }]))
   state = applyTaskMarks(state, toolResult('c3', END_OK('alpha'), 301))
   assert.deepEqual(state.marks, [{ seq: 200, name: 'beta' }], 'closing by name removes the matching mark')
   // closing 'beta' next
-  state = applyTaskMarks(state, assistantCall(400, [{ id: 'c4', name: 'task_end' }]))
+  state = applyTaskMarks(state, assistantCall(400, [{ id: 'c4', name: 'task_fold' }]))
   state = applyTaskMarks(state, toolResult('c4', END_OK('beta'), 401))
   assert.equal(state, null, 'all closed; empty stack with no pending intents normalizes to null')
 })
@@ -81,16 +81,25 @@ test('closing an unknown name changes nothing', () => {
   let state = null
   state = applyTaskMarks(state, assistantCall(100, [{ id: 'c1', name: 'task_begin' }]))
   state = applyTaskMarks(state, toolResult('c1', BEGIN_OK('alpha'), 101))
-  state = applyTaskMarks(state, assistantCall(200, [{ id: 'c2', name: 'task_end' }]))
+  state = applyTaskMarks(state, assistantCall(200, [{ id: 'c2', name: 'task_fold' }]))
   state = applyTaskMarks(state, toolResult('c2', END_OK('nope'), 201))
   assert.deepEqual(state.marks, [{ seq: 100, name: 'alpha' }], 'mismatched name does not pop anything')
+})
+
+test('legacy pre-rename task_end results still pop by name', () => {
+  let state = null
+  state = applyTaskMarks(state, assistantCall(100, [{ id: 'c1', name: 'task_begin' }]))
+  state = applyTaskMarks(state, toolResult('c1', BEGIN_OK('alpha'), 101))
+  state = applyTaskMarks(state, assistantCall(200, [{ id: 'c2', name: 'task_end' }]))
+  state = applyTaskMarks(state, toolResult('c2', 'Task ended: alpha — all closed. Folded #7 (99 tokens).', 201))
+  assert.equal(state, null, "legacy 'task_end' + 'Task ended: ' pops identically")
 })
 
 test('failed results keep the mark exactly like the in-memory era', () => {
   let state = null
   state = applyTaskMarks(state, assistantCall(100, [{ id: 'c1', name: 'task_begin' }]))
   state = applyTaskMarks(state, toolResult('c1', BEGIN_OK('alpha')))
-  state = applyTaskMarks(state, assistantCall(200, [{ id: 'c2', name: 'task_end' }]))
+  state = applyTaskMarks(state, assistantCall(200, [{ id: 'c2', name: 'task_fold' }]))
   state = applyTaskMarks(state, toolResult('c2', 'task_end failed (busy): lock active'))
   assert.deepEqual(state.marks, [{ seq: 100, name: 'alpha' }], 'transient failure text does not pop')
   state = applyTaskMarks(state, assistantCall(300, [{ id: 'c3', name: 'task_begin' }]))
@@ -129,7 +138,7 @@ test('legacy task/mark snapshots are authoritative resets that clear pending', (
   let state = null
   state = applyTaskMarks(state, assistantCall(100, [{ id: 'c1', name: 'task_begin' }]))
   state = applyTaskMarks(state, toolResult('c1', BEGIN_OK('alpha')))
-  state = applyTaskMarks(state, assistantCall(200, [{ id: 'c2', name: 'task_end' }]))
+  state = applyTaskMarks(state, assistantCall(200, [{ id: 'c2', name: 'task_fold' }]))
   state = applyTaskMarks(state, toolResult('c2', 'task_end failed (summary): summary is not smaller…'))
   assert.deepEqual(state.marks, [{ seq: 100, name: 'alpha' }], 'unlogged abort leaves a phantom mark')
   // …until a v1 whole-value snapshot baselines the stack. v1 numeric seqs are
@@ -174,7 +183,7 @@ test('name normalization: whitespace and multi-name closing', () => {
   state = applyTaskMarks(state, assistantCall(100, [{ id: 'c1', name: 'task_begin' }]))
   state = applyTaskMarks(state, toolResult('c1', 'Task begun: fix  bug — 1 open: fix  bug. …', 101))
   assert.deepEqual(state.marks, [{ seq: 100, name: 'fix bug' }], 'whitespace collapses to a single space')
-  state = applyTaskMarks(state, assistantCall(200, [{ id: 'c2', name: 'task_end' }]))
+  state = applyTaskMarks(state, assistantCall(200, [{ id: 'c2', name: 'task_fold' }]))
   state = applyTaskMarks(state, toolResult('c2', 'Task ended: fix bug — all marks closed. …', 201))
   assert.equal(state, null, 'normalized name matches despite original multiple spaces; empty state is null')
 })

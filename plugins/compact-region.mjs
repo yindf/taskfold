@@ -6,13 +6,13 @@
  * so `ctx.compaction` resolves to this realm's engine directly.
  *
  * Registers the task-lifecycle tools plus prompt guidance:
- *   task_begin / task_end — named tasks; end closes AND folds in one call
+ *   task_begin / task_fold — named tasks; end closes AND folds in one call
  *
  * Zero module dependencies: every capability arrives through `inject`.
  *
  * Mark-stack persistence: the `taskMarks` session projection DERIVES the
  * open-mark stack from harness-native events only — `assistant/message`
- * (tool-call blocks named task_begin/task_end register a pending intent
+ * (tool-call blocks named task_begin/task_fold register a pending intent
  * keyed by callId) and `tool/result` (the rendered text decides success;
  * success pushes/pops). No custom event types are ever appended: the
  * harness read side refuses unknown event types that are not marked
@@ -25,12 +25,13 @@
  *
  * Derivation contract with our own renderers (double-owned, stable):
  *   task_begin success text starts with 'Task begun: '
- *   task_end   success text starts with 'Task ended: ' (pops the mark)
- *   failures start with 'task_begin failed' / 'task_end failed'
- * A failed task_end KEEPS the mark (atomic end-and-fold: nothing happened,
+ *   task_fold  success text starts with 'Task folded: ' (pops the mark);
+ *              legacy 'Task ended: ' (pre-rename) pops identically
+ *   failures start with 'task_begin failed' / 'task_fold failed'
+ * A failed task_fold KEEPS the mark (atomic end-and-fold: nothing happened,
  * retry).
  *
- * task_end folds [begin assistant message .. last surface node before its
+ * task_fold folds [begin assistant message .. last surface node before its
  * own step] INLINE from its execute context — the session loop is naturally
  * paused there. The span cannot contain its own ending, so the scoped
  * summarizer instruction DECLARES completion ("this fold CLOSES the task
@@ -39,7 +40,7 @@
  *
  * Todo bridge: reads the stock `todos` projection (registered by the
  * `dsh-tool-todo` row) and nudges the model through runtime context — call
- * task_begin when a todo item is in progress without a mark, call task_end
+ * task_begin when a todo item is in progress without a mark, call task_fold
  * when marks outlive the in-progress list. The todo tool itself is never
  * wrapped or replaced.
  */
@@ -113,7 +114,7 @@ function normalizeName(raw) {
 
 /**
  * Extract the task name from a canonical lifecycle result text:
- *   'Task begun: NAME — …' / 'Task ended: NAME — …'
+ *   'Task begun: NAME — …' / 'Task folded: NAME — …'
  * The em dash separates the name from the status tail. Returns '' when the
  * text does not start with `prefix` or carries no name.
  */
@@ -126,12 +127,12 @@ function taskNameFromText(text, prefix) {
 
 /**
  * Reducer for the `taskMarks` projection (v5, named derived state):
- *  - `assistant/message`: every tool-call block named task_begin/task_end
+ *  - `assistant/message`: every tool-call block named task_begin/task_fold
  *    registers a pending intent { kind, anchorSeq: this message's seq }
  *    keyed by the block's callId.
  *  - `tool/result`: when a tool-result block's toolCallId matches a pending
  *    intent, its rendered text decides: 'Task begun: NAME' pushes a named
- *    mark { seq, name }; 'Task ended: NAME' pops the MOST RECENT mark whose
+ *    mark { seq, name }; 'Task folded: NAME' pops the MOST RECENT mark whose
  *    normalized name matches (name-keyed, self-documenting, no implicit-stack
  *    corruption — ending by name can't mis-close the wrong nesting level).
  *    Anything else changes nothing.
@@ -164,7 +165,9 @@ export function applyTaskMarks(state, event) {
     let next = null
     for (const block of content) {
       if (block === null || typeof block !== 'object' || block.type !== 'tool-call') continue
-      if (block.name !== 'task_begin' && block.name !== 'task_end') continue
+      // task_end is the pre-rename spelling: legacy logs still carry its
+      // calls, and re-folded history must keep popping marks through them.
+      if (block.name !== 'task_begin' && block.name !== 'task_fold' && block.name !== 'task_end') continue
       if (next === null) next = cloneTaskMarks(state)
       next.pending[String(block.id)] = {
         kind: block.name === 'task_begin' ? 'begin' : 'end',
@@ -193,13 +196,20 @@ export function applyTaskMarks(state, event) {
       if (intent.kind === 'begin' && text.indexOf('Task begun: ') === 0) {
         const name = taskNameFromText(text, 'Task begun: ')
         next.marks.push({ seq: intent.anchorSeq, name })
-      } else if (intent.kind === 'end' && text.indexOf('Task ended: ') === 0) {
-        const name = taskNameFromText(text, 'Task ended: ')
-        // Pop the most recent mark whose normalized name matches — name-keyed
-        // closing, LIFO only within the same name. The end-and-fold is ONE
-        // call now; there is no pending-fold record to keep.
-        for (let i = next.marks.length - 1; i >= 0; i -= 1) {
-          if (next.marks[i].name === name) { next.marks.splice(i, 1); break }
+      } else if (intent.kind === 'end') {
+        // 'Task folded: ' is current; 'Task ended: ' is the pre-rename
+        // spelling that legacy logs carry — both pop by name.
+        const endPrefix = text.indexOf('Task folded: ') === 0 ? 'Task folded: '
+          : text.indexOf('Task ended: ') === 0 ? 'Task ended: '
+          : null
+        if (endPrefix !== null) {
+          const name = taskNameFromText(text, endPrefix)
+          // Pop the most recent mark whose normalized name matches — name-keyed
+          // closing, LIFO only within the same name. The end-and-fold is ONE
+          // call now; there is no pending-fold record to keep.
+          for (let i = next.marks.length - 1; i >= 0; i -= 1) {
+            if (next.marks[i].name === name) { next.marks.splice(i, 1); break }
+          }
         }
       }
     }
@@ -227,7 +237,7 @@ function cloneTaskMarks(state) {
 }
 
 /**
- * Human-facing depth tail for task_end success texts. Depth 0 must read as
+ * Human-facing depth tail for task_fold success texts. Depth 0 must read as
  * unambiguous closure ("all marks closed"), never "0 mark(s) still open" —
  * that phrasing made readers think the mark survived the call.
  */
@@ -408,7 +418,7 @@ export default {
     // walk up from host anchors (process.argv[1], cwd) to a node_modules dir
     // containing the engine package, and import its lib entry by file URL.
     // If even that fails, fold-capable tools degrade to an honest error;
-    // task_begin/task_end and the observability tools keep working.
+    // task_begin/task_fold and the observability tools keep working.
     let selfEngine = undefined
 
     function engineCandidatePaths() {
@@ -497,17 +507,17 @@ export default {
             : undefined
           const target = configured ?? latest ?? agentTarget
           if (target === undefined) throw new Error('no provider/model available for scoped summarization')
-          // The fold caller (task_end) stashes the task name it is closing:
+          // The fold caller (task_fold) stashes the task name it is closing:
           // the span's own tail cannot contain its ending (the executor's
           // result event does not exist yet), so the instruction DECLARES the
           // completion instead. It also sets the TITLE (the task name) and
           // excludes lifecycle bookkeeping from the summary: task_begin /
-          // task_end calls and results are the span's frame, not its content.
+          // task_fold calls and results are the span's frame, not its content.
           const closing = typeof this.__closingTask === 'string' && this.__closingTask.length > 0
             ? '\nThe task this span belongs to is named "' + this.__closingTask + '". Rules for this fold:\n'
               + '- Begin the summary with the heading line "# ' + this.__closingTask + '" — nothing before it.\n'
               + '- This fold CLOSES the task: the work in this span is COMPLETE. Do not report anything as unfinished or pending because of how the span ends — this very fold is the task\u0027s ending.\n'
-              + '- Do NOT summarize task_begin / task_end calls, their results, or any narration that merely announces starting or finishing the task — that is lifecycle bookkeeping, not content. Summarize the WORK itself.'
+              + '- Do NOT summarize task_begin / task_fold calls, their results, or any narration that merely announces starting or finishing the task — that is lifecycle bookkeeping, not content. Summarize the WORK itself.'
             : ''
           const messages = [...input.messages, {
             role: 'user',
@@ -564,7 +574,7 @@ export default {
       // is deliberately NOT used by our folds: it runs the stock
       // continuity-checkpoint instruction. The realm instance keeps serving
       // AUTO compaction (pressure/overflow), where checkpoint semantics are
-      // exactly right; task_end's explicit folds get span summaries. The
+      // exactly right; task_fold's explicit folds get span summaries. The
       // durable lock is shared through the event log, so the two instances
       // stay mutually exclusive.
       if (selfEngine !== undefined) return selfEngine === null ? undefined : selfEngine
@@ -627,7 +637,7 @@ export default {
 
     const taskBegin = {
       name: 'task_begin',
-      description: 'Begin a NAMED task. The name is the identity; when the work is done, one task_end({ name }) call closes it AND folds its full span into a summary node titled by the name. Call alone in a step.',
+      description: 'Begin a NAMED task. The name is the identity; when the work is done, one task_fold({ name }) call closes it AND folds its full span into a summary node titled by the name. Call alone in a step.',
       parameters: {
         type: 'object',
         properties: {
@@ -647,7 +657,7 @@ export default {
         const agent = exec.agent
         if (agent === undefined) return { ok: false, category: 'invalid', error: 'task_begin requires an agent context' }
         const name = args !== null && typeof args === 'object' ? normalizeName(args.name) : ''
-        if (name.length === 0) return { ok: false, category: 'invalid', error: 'task_begin requires a non-empty `name` (the identity key task_end will close by)' }
+        if (name.length === 0) return { ok: false, category: 'invalid', error: 'task_begin requires a non-empty `name` (the identity key task_fold will close by)' }
         const session = agent.session
         let snapshot
         try {
@@ -660,7 +670,7 @@ export default {
         // CONTRACT: the mark lands on the LAST assistant message on the
         // surface, which — because task_begin is called alone in a step — is
         // the assistant message of this very step. commit folds from that seq
-        // through the task_end result. If the executor ever appends another
+        // through the task_fold result. If the executor ever appends another
         // assistant message within the same step, this anchoring is revisited.
         for (let i = snapshot.positions.length - 1; i >= 0; i -= 1) {
           const kind = snapshot.positions[i].kind
@@ -678,7 +688,7 @@ export default {
     }
 
     const taskEnd = {
-      name: 'task_end',
+      name: 'task_fold',
       description: 'End a NAMED task by name AND fold its full span (begin pair + body) into one summary node titled by the name — one call does both. A name mismatch fails and changes nothing (retry); a fold that loses a race reports the reason and keeps the mark (retry). The output carries what remains open, the fold number, and the path of a temp JSON file holding the span\u0027s EXACT original request context — read/grep it with any file tool; compact_recall({ fold: N }) regenerates it. Too-small spans end the task but stay unfolded. Call alone in a step.',
       parameters: {
         type: 'object',
@@ -694,22 +704,22 @@ export default {
             const category = value.category === undefined ? 'invalid' : String(value.category)
             const error = value.error === undefined ? 'unknown error' : String(value.error)
             const hint = value.hint === undefined ? '' : '\n' + String(value.hint)
-            return [{ type: 'text', text: 'task_end failed (' + category + '): ' + error + hint }]
+            return [{ type: 'text', text: 'task_fold failed (' + category + '): ' + error + hint }]
           }
           const open = value.remainingNames.length > 0 ? value.remainingNames.length + ' open: ' + value.remainingNames.join(', ') : 'all closed'
           if (value.tooSmall === true) {
-            return [{ type: 'text', text: 'Task ended: ' + value.name + ' — ' + open + '. Span too small to fold; left as-is.' }]
+            return [{ type: 'text', text: 'Task folded: ' + value.name + ' — ' + open + '. Span too small to fold; left as-is.' }]
           }
           const foldPart = value.fold === undefined ? '' : ' Folded #' + value.fold + ' (' + value.tokens + ' tokens).'
           const filePart = value.file === undefined ? '' : ' Original context saved: ' + value.file
-          return [{ type: 'text', text: 'Task ended: ' + value.name + ' — ' + open + '.' + foldPart + filePart }]
+          return [{ type: 'text', text: 'Task folded: ' + value.name + ' — ' + open + '.' + foldPart + filePart }]
         }
       },
       async execute(args, exec) {
         const agent = exec.agent
-        if (agent === undefined) return { ok: false, category: 'invalid', error: 'task_end requires an agent context' }
+        if (agent === undefined) return { ok: false, category: 'invalid', error: 'task_fold requires an agent context' }
         const name = args !== null && typeof args === 'object' ? normalizeName(args.name) : ''
-        if (name.length === 0) return { ok: false, category: 'invalid', error: 'task_end requires a non-empty `name`' }
+        if (name.length === 0) return { ok: false, category: 'invalid', error: 'task_fold requires a non-empty `name`' }
         const session = agent.session
         const marks = marksOf(session)
         // Match by name (most recent first); the reducer pops the same mark
@@ -726,7 +736,7 @@ export default {
         const remainingNames = marks.filter((m, i) => i !== idx).map((m) => m.name)
         // Fold [begin assistant message .. last surface node BEFORE this very
         // step's assistant message] — the executor's own message is always the
-        // last node (task_end is called alone in a step), so length-2 is the
+        // last node (task_fold is called alone in a step), so length-2 is the
         // final balanced edge of the task body.
         const nodes = session.surface.nodes
         const endIdx = nodes.length - 2
@@ -756,13 +766,13 @@ export default {
             return { ok: true, name, remainingNames, tooSmall: true }
           }
           // Non-terminal: nothing happened — the mark stays (the failure text
-          // pops nothing), so the model retries task_end.
+          // pops nothing), so the model retries task_fold.
           const short = classified.category === 'busy'
-            ? 'compaction lock active — retry task_end'
+            ? 'compaction lock active — retry task_fold'
             : classified.category === 'changed'
-              ? 'surface changed during fold — retry task_end'
+              ? 'surface changed during fold — retry task_fold'
               : classified.category === 'commit'
-                ? 'fold failed to commit — retry task_end'
+                ? 'fold failed to commit — retry task_fold'
                 : classified.message
           return { ok: false, category: classified.category, error: short }
         } finally {
@@ -777,10 +787,10 @@ export default {
     ctx.systemPrompt.section({
       name: 'task-marker-compaction',
       order: 650,
-      text: '## Task lifecycle compaction\n\nTasks are NAMED. Call task_begin({ name: "…" }) to open one (alone in a step). When the work is done, call task_end({ name }) (alone in a step): it closes the task by name AND folds the full span into one summary node titled by the name — one call does both; a fold that loses a race reports the reason and keeps the task open (retry). Too-small spans end the task but stay unfolded. Never track message positions yourself.\n\ntask_end\u0027s output carries the fold number and the path of a temp file holding the span\u0027s EXACT original request context (the same messages the model was sent). Read or grep it with any file tool when the summary lacks the detail you need; if the temp file has been cleaned, call compact_recall({ fold: N }) to regenerate it (list_folds gives fold numbers).\n\nRuntime context may carry a todo bridge and lifecycle nudges: call task_begin when working with no task open, call task_end for a task 20+ rounds old. Follow them so task spans stay compactable.'
+      text: '## Task lifecycle compaction\n\nTasks are NAMED. Call task_begin({ name: "…" }) to open one (alone in a step). When the work is done, call task_fold({ name }) (alone in a step): it closes the task by name AND folds the full span into one summary node titled by the name — one call does both; a fold that loses a race reports the reason and keeps the task open (retry). Too-small spans end the task but stay unfolded. Never track message positions yourself.\n\ntask_fold\u0027s output carries the fold number and the path of a temp file holding the span\u0027s EXACT original request context (the same messages the model was sent). Read or grep it with any file tool when the summary lacks the detail you need; if the temp file has been cleaned, call compact_recall({ fold: N }) to regenerate it (list_folds gives fold numbers).\n\nRuntime context may carry a todo bridge and lifecycle nudges: call task_begin when working with no task open, call task_fold for a task 20+ rounds old. Follow them so task spans stay compactable.'
     })
 
-    const TASK_TOOL_RE = /^(task_begin|task_end|list_folds|compact_recall|todo_write)$/
+    const TASK_TOOL_RE = /^(task_begin|task_fold|task_end|list_folds|compact_recall|todo_write)$/
 
     function recentWorkCallCount(session) {
       // Count non-task tool calls in the last 10 assistant messages.
@@ -803,7 +813,7 @@ export default {
       return workCalls
     }
 
-    // Model rounds since the most recent 'Task ended: ' result. Used to
+    // Model rounds since the most recent 'Task folded: ' result. Used to
     // grace-suppress the begin-nudge right after a task closes. Bounded
     // backward scan; returns a large number when no outcome exists.
     function roundsSinceFoldOutcome(session) {
@@ -820,7 +830,7 @@ export default {
           const text = Array.isArray(b.content)
             ? b.content.filter(isTaskResultText).map((x) => x.text).join('\n')
             : ''
-          if (text.indexOf('Task ended: ') === 0) {
+          if (text.indexOf('Task folded: ') === 0 || text.indexOf('Task ended: ') === 0) {
             return countAssistantSince(session, e.seq, 4)
           }
         }
@@ -868,7 +878,7 @@ export default {
         const marks = marksOf(session).filter((m) => m.name !== '')
         const ownDepth = marks.length
         // Deliberately NO standing "Open task marks: N" line: depth rides in
-        // every task_begin/task_end result text, so echoing it in a snapshot
+        // every task_begin/task_fold result text, so echoing it in a snapshot
         // would re-inject after every lifecycle call for no new information.
         // This context exists ONLY for cross-state signals the model cannot
         // read from any single message.
@@ -877,7 +887,7 @@ export default {
         // Renders for as long as the model keeps making non-task tool calls
         // with no open task; retracts the moment a task begins (or the work
         // stops). ≥3 work calls in the last 10 assistant messages, with a
-        // 3-round grace after a task_end so a fresh close is not immediately
+        // 3-round grace after a task_fold so a fresh close is not immediately
         // answered with "begin another".
         if (ownDepth === 0 && recentWorkCallCount(session) >= 3 && roundsSinceFoldOutcome(session) >= 3) {
           lines.push('Task lifecycle: no open task during tool work — call task_begin({ name: "…" }) if this is a discrete task.')
@@ -891,7 +901,7 @@ export default {
           const newest = marks[marks.length - 1]
           const age = countAssistantSince(session, newest.seq, 21)
           if (age >= 20) {
-            lines.push('Task lifecycle: task "' + newest.name + '" is 20+ rounds old — if done, call task_end({ name: "' + newest.name + '" }).')
+            lines.push('Task lifecycle: task "' + newest.name + '" is 20+ rounds old — if done, call task_fold({ name: "' + newest.name + '" }).')
           }
         }
 
@@ -909,7 +919,7 @@ export default {
             const names = inProgress.slice(0, 3).map((t) => '"' + String(t.content).slice(0, 60) + '"').join(', ')
             lines.push('Todo bridge: in-progress todos (' + names + ') lack task marks — call task_begin for them.')
           } else if (inProgress.length < ownDepth) {
-            lines.push('Todo bridge: open tasks exceed in-progress todos — call task_end for the finished ones.')
+            lines.push('Todo bridge: open tasks exceed in-progress todos — call task_fold for the finished ones.')
           }
         }
         return lines.join('\n')
