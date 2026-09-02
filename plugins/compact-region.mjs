@@ -1,14 +1,20 @@
 /**
- * Compact Region tools — preset plugin (stage-2 solidified form).
- *
- * Ships inside the preset directory and is referenced by a relative row
- * (`./plugins/compact-region.mjs`) inside the `compaction` isolate group,
- * so `ctx.compaction` resolves to this realm's engine directly.
+ * Compact Region tools — plugin-bundle form (installed via `dsh plugin add`
+ * at the profile level; cordis.patch.yml mounts this file at the host plane,
+ * so the tools land in the global registry for every session of every
+ * preset). No realm/isolate-group assumptions are made.
  *
  * Registers the task-lifecycle tools plus prompt guidance:
  *   task_begin / task_fold — named tasks; end closes AND folds in one call
  *
- * Zero module dependencies: every capability arrives through `inject`.
+ * Zero module dependencies: every capability arrives through `inject`; the
+ * compaction engine is self-hosted (see engineFor below).
+ *
+ * Close semantics (v3): LIFO — only the INNERMOST open task can be closed;
+ * closing a blocked or unknown name fails atomically. Degraded closes: a
+ * shadowed anchor or an unavailable engine still CLOSES the task, unfolded.
+ * The foldDecision() export carries this whole decision as a pure function;
+ * execute is an I/O shell.
  *
  * Mark-stack persistence: the `taskMarks` session projection DERIVES the
  * open-mark stack from harness-native events only — `assistant/message`
@@ -28,23 +34,27 @@
  *   task_fold  success text starts with 'Task folded: ' (pops the mark)
  *   failures start with 'task_begin failed' / 'task_fold failed'
  * A failed task_fold KEEPS the mark (atomic end-and-fold: nothing happened,
- * retry).
+ * retry). Task names never contain ' —' (validTaskName): the delimiter that
+ * taskNameFromText splits on, keeping the name render→parse round trip
+ * lossless.
  *
  * task_fold folds [begin assistant message .. last surface node before its
  * own step] INLINE from its execute context — the session loop is naturally
  * paused there. The span cannot contain its own ending, so the scoped
  * summarizer instruction DECLARES completion ("this fold CLOSES the task
  * <name>") instead of showing it — owning the instruction removed the
- * constraint that once forced the two-phase end→commit split.
+ * constraint that once forced the two-phase end→commit split. The closing
+ * name travels through a per-session Map (closingTasks), never through the
+ * shared engine instance, so concurrent folds in different sessions of one
+ * process cannot cross-contaminate.
  *
- * Todo bridge: reads the stock `todos` projection (registered by the
- * `dsh-tool-todo` row) and nudges the model through runtime context — call
- * task_begin when a todo item is in progress without a mark, call task_fold
- * when marks outlive the in-progress list. The todo tool itself is never
- * wrapped or replaced.
+ * Todo bridge: detects todo_write calls in the event log (stateless) and
+ * renders ONE transient runtime-context line on the round right after the
+ * model updated its todo list — it reports the change plus the open task
+ * roster and asks the model to keep task marks in sync (task_begin for new
+ * work, task_fold for finished work). No conditional nagging: the decision
+ * stays with the model. The todo tool itself is never wrapped or replaced.
  */
-
-// TEMP DIAGNOSTIC removed during two-tool refactor.
 
 // Node builtins for the self-hosted engine's module resolution fallback.
 import nodePath from 'node:path'
@@ -66,7 +76,7 @@ export const TASK_MARKS_KEY = 'taskMarks'
 export const taskMarksStateSchema = {
   parse(value) {
     if (value === null) return null
-    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    if (typeof value !== 'object' || Array.isArray(value)) {
       throw new Error('taskMarks state must be null or { pending, marks }')
     }
     const pending = value.pending
@@ -112,6 +122,106 @@ function normalizeName(raw) {
 }
 
 /**
+ * Task-name validity: non-empty, and free of ' —' — the delimiter that
+ * separates the name from the status tail in every lifecycle result text
+ * ('Task begun: NAME — …'). A name containing it would be truncated by
+ * taskNameFromText and could never be closed by its full form.
+ */
+export function validTaskName(name) {
+  return typeof name === 'string' && name.length > 0 && name.indexOf(' —') === -1
+}
+
+/**
+ * LIFO close resolution over the open-mark stack (marks are in stack order:
+ * oldest first, newest last). Matches the MOST RECENT occurrence of `name`
+ * (legacy snapshots may repeat names; the tool layer rejects duplicates, so
+ * this rule only serves old logs). Returns:
+ *   { status:'ok', mark }                    name is the stack top
+ *   { status:'unknown', open:[names] }       no open mark carries this name
+ *   { status:'lifo', mark, blocking:[names] } name exists but is not the top;
+ *                                             blocking = names of the newer
+ *                                             marks inside it, in order,
+ *                                             deduplicated
+ *   { status:'empty' }                       no open marks at all
+ */
+export function closeTarget(marks, name) {
+  const list = Array.isArray(marks) ? marks : []
+  if (list.length === 0) return { status: 'empty' }
+  const top = list[list.length - 1]
+  if (top.name === name) return { status: 'ok', mark: top }
+  let idx = -1
+  for (let i = list.length - 1; i >= 0; i -= 1) {
+    if (list[i].name === name) { idx = i; break }
+  }
+  if (idx === -1) return { status: 'unknown', open: list.map((m) => m.name) }
+  const blocking = []
+  for (let i = idx + 1; i < list.length; i += 1) {
+    if (blocking.indexOf(list[i].name) === -1) blocking.push(list[i].name)
+  }
+  return { status: 'lifo', mark: list[idx], blocking }
+}
+
+/**
+ * Full close/fold decision as a pure function (offline-testable; execute is
+ * only an I/O shell around it). Order matters: tooSmall precedes the engine
+ * check (a too-small span needs no engine), the anchor check precedes both
+ * (a shadowed anchor cannot fold regardless). Returns one of:
+ *   { action:'invalid', error }                      bad name / empty stack
+ *   { action:'unknown', open:[names] }               no such open task
+ *   { action:'lifo', blocking:[names] }              blocked by newer tasks
+ *   { action:'unfolded', reason:'anchor'|'engine', mark }  close without folding
+ *   { action:'tooSmall', mark }                      close, span left as-is
+ *   { action:'fold', mark, startSeq, endSeq }        compactRegion inputs
+ */
+export function foldDecision(marks, name, surfaceNodes, engineAvailable) {
+  const list = Array.isArray(marks) ? marks : []
+  const nodes = Array.isArray(surfaceNodes) ? surfaceNodes : []
+  if (!validTaskName(name)) {
+    // Legacy escape hatch: a mark whose stored name is EXACTLY this invalid
+    // string (only possible from a legacy task/mark snapshot) may still be
+    // closed — closing it removes it, self-healing the stack.
+    const exact = list.some((m) => m !== null && typeof m === 'object' && m.name === name)
+    if (!exact) {
+      return { action: 'invalid', error: 'task names must be non-empty and must not contain " —" (the result-text delimiter)' }
+    }
+  }
+  const target = closeTarget(list, name)
+  if (target.status === 'empty') {
+    return { action: 'invalid', error: 'no open tasks; call task_begin first' }
+  }
+  if (target.status === 'unknown') {
+    return { action: 'unknown', open: target.open }
+  }
+  if (target.status === 'lifo') {
+    return { action: 'lifo', blocking: target.blocking }
+  }
+  const mark = target.mark
+  if (nodes.indexOf(mark.seq) === -1) {
+    return { action: 'unfolded', reason: 'anchor', mark }
+  }
+  const endIdx = nodes.length - 2
+  if (endIdx < 0 || nodes[endIdx] < mark.seq) {
+    return { action: 'tooSmall', mark }
+  }
+  if (engineAvailable !== true) {
+    return { action: 'unfolded', reason: 'engine', mark }
+  }
+  return { action: 'fold', mark, startSeq: mark.seq, endSeq: nodes[endIdx] }
+}
+
+/**
+ * The transient todo-bridge line, rendered ONLY on the round right after
+ * the model called todo_write (stateless call detection in the context
+ * callback). Reports the change plus the open task roster; whether to
+ * task_begin or task_fold stays the model's call — no conditional nagging.
+ */
+export function todoBridgeLine(openNames) {
+  const names = Array.isArray(openNames) ? openNames.filter((n) => typeof n === 'string' && n !== '') : []
+  const roster = names.length > 0 ? names.map((n) => '"' + n.replace(/"/g, "'") + '"').join(', ') : 'none'
+  return 'Todo bridge: todos changed; open tasks: ' + roster + ' — keep task marks in sync: task_begin for new work, task_fold for finished work.'
+}
+
+/**
  * Extract the task name from a canonical lifecycle result text:
  *   'Task begun: NAME — …' / 'Task folded: NAME — …'
  * The em dash separates the name from the status tail. Returns '' when the
@@ -125,15 +235,17 @@ function taskNameFromText(text, prefix) {
 }
 
 /**
- * Reducer for the `taskMarks` projection (v5, named derived state):
+ * Reducer for the `taskMarks` projection (v6, named derived state):
  *  - `assistant/message`: every tool-call block named task_begin/task_fold
  *    registers a pending intent { kind, anchorSeq: this message's seq }
  *    keyed by the block's callId.
  *  - `tool/result`: when a tool-result block's toolCallId matches a pending
  *    intent, its rendered text decides: 'Task begun: NAME' pushes a named
  *    mark { seq, name }; 'Task folded: NAME' pops the MOST RECENT mark whose
- *    normalized name matches (name-keyed, self-documenting, no implicit-stack
- *    corruption — ending by name can't mis-close the wrong nesting level).
+ *    normalized name matches. The reducer stays name-keyed so logs recorded
+ *    before the LIFO rule (or by future variants) replay unchanged; the
+ *    TOOL layer (foldDecision) enforces LIFO on new calls — closing anything
+ *    other than the innermost open task fails before any event is written.
  *    Anything else changes nothing.
  *  - legacy `task/mark` events (v1 whole-value snapshots) are AUTHORITATIVE
  *    RESET points: replace the whole stack AND clear pending. v1 numeric seqs
@@ -195,9 +307,10 @@ export function applyTaskMarks(state, event) {
         next.marks.push({ seq: intent.anchorSeq, name })
       } else if (intent.kind === 'end' && text.indexOf('Task folded: ') === 0) {
         const name = taskNameFromText(text, 'Task folded: ')
-        // Pop the most recent mark whose normalized name matches — name-keyed
-        // closing, LIFO only within the same name. The end-and-fold is ONE
-        // call now; there is no pending-fold record to keep.
+        // Pop the most recent mark whose normalized name matches. Name-keyed
+        // on purpose (old-log replay); the tool layer enforces LIFO before
+        // any of these events can be written. The end-and-fold is ONE call;
+        // there is no pending-fold record to keep.
         for (let i = next.marks.length - 1; i >= 0; i -= 1) {
           if (next.marks[i].name === name) { next.marks.splice(i, 1); break }
         }
@@ -227,11 +340,6 @@ function cloneTaskMarks(state) {
 }
 
 /**
- * Human-facing depth tail for task_fold success texts. Depth 0 must read as
- * unambiguous closure ("all marks closed"), never "0 mark(s) still open" —
- * that phrasing made readers think the mark survived the call.
- */
-/**
  * Cross-version event-log accessor: dsh ≤0.1.2-alpha.3 exposed the whole log
  * as session.events (array); alpha.4 replaced it with on-demand APIs —
  * session.snapshotEvents() returns a full array snapshot. Support both.
@@ -245,36 +353,18 @@ export function sessionEvents(session) {
   return []
 }
 
-function depthPhrase(depth) {
-  const d = Number.isInteger(depth) ? depth : 0
-  return d <= 0 ? ' — all marks closed' : ' — ' + d + ' outer mark(s) still open'
-}
-
 export default {
   name: 'compact-region',
-  // NOTE: 'compaction' is deliberately NOT injected. The engine used to be a
-  // hard requirement, which pinned this plugin to compositions carrying a
-  // `dsh-compaction-basic` row in a realm this plugin shares (every agent
-  // preset does, but the host/profile plane does not). engineFor() below now
-  // resolves the engine lazily: it prefers an already-registered
-  // ctx.compaction (preset realm), and when none exists (profile-level
-  // install) it instantiates BasicCompactionEngine itself with auto:false —
-  // the constructor registers no listeners in that mode, and cordis Service
-  // registration makes it ctx.compaction for every later call. All other
-  // dependencies (tools, systemPrompt, sessionProjections, and — via the
+  // NOTE: 'compaction' is deliberately NOT injected. The engine is ALWAYS
+  // the plugin's own ScopedEngine instance (built by engineFor below on
+  // first use) — never a realm-registered ctx.compaction, which belongs to
+  // AUTO compaction and runs the stock checkpoint instruction. Direct
+  // property access on an undeclared service throws in cordis ("cannot get
+  // property without inject"), so nothing here touches ctx.compaction.
+  // All dependencies (tools, systemPrompt, sessionProjections, and — via the
   // engine's own ctx use — tokenMeter/llm) are host-plane services.
-  // 'compaction' is deliberately NOT injected (see engineFor below): direct
-  // property access on an undeclared service THROWS in cordis ("cannot get
-  // property without inject"), which is exactly what the live cmpct-lite test
-  // exposed. The engine is resolved through ctx.get('compaction') instead
-  // (the optional-accessor channel the engine itself uses for
-  // toolResultPruner). tokenMeter/llm ARE injected because the self-hosted
-  // engine instance reaches them through OUR ctx.
   inject: ['tools', 'systemPrompt', 'sessionProjections', 'tokenMeter', 'llm'],
   apply(ctx) {
-    const PREVIEW_LIMIT = 60
-    const TAIL_WINDOW = 50
-
     // Native-event derivation folds into this projection; the registration's
     // disposer rides the plugin fiber, so it unloads with us. stateVersion 8
     // discards persisted rows from earlier reducer generations (v7 carried
@@ -299,89 +389,6 @@ export default {
       }
     }
 
-    function textPreview(content) {
-      if (!Array.isArray(content)) return ''
-      for (const block of content) {
-        if (block !== null && typeof block === 'object' && block.type === 'text' && typeof block.text === 'string') {
-          return block.text.replace(/\s+/g, ' ').slice(0, PREVIEW_LIMIT)
-        }
-      }
-      return ''
-    }
-
-    function indexEvents(events) {
-      const map = new Map()
-      for (const ev of events) {
-        if (ev !== null && typeof ev === 'object' && Number.isInteger(ev.seq)) map.set(ev.seq, ev)
-      }
-      return map
-    }
-
-    function classify(event) {
-      if (event.type === 'user/message') return { role: 'user', kind: 'message', delta: 0 }
-      if (event.type === 'assistant/message') {
-        const message = event.data && event.data.message ? event.data.message : null
-        const content = message !== null && Array.isArray(message.content) ? message.content : []
-        const toolCalls = content.filter((b) => b !== null && typeof b === 'object' && b.type === 'tool-call')
-        const toolNames = toolCalls.map((t) => (t !== null && typeof t === 'object' && typeof t.name === 'string') ? t.name : '').filter((n) => n.length > 0)
-        return { role: 'assistant', kind: toolCalls.length > 0 ? 'tool_call' : 'assistant', delta: toolCalls.length, toolNames }
-      }
-      if (event.type === 'tool/result') return { role: 'user', kind: 'tool_result', delta: -1 }
-      return { role: 'unknown', kind: 'other', delta: 0 }
-    }
-
-    function readSurface(session) {
-      const nodes = session.surface.nodes
-      const bySeq = indexEvents(sessionEvents(session))
-      const positions = []
-      let open = 0
-      let corrupt = false
-      for (let i = 0; i < nodes.length; i += 1) {
-        const seq = nodes[i]
-        const event = bySeq.get(seq)
-        // A user turn boundary re-baselines the pairing accounting: a valid
-        // history always closes every tool pair before the next user message.
-        // This keeps `corrupt` local instead of permanent — one missing event
-        // disables edges only until the next user turn, not for the rest of
-        // the session.
-        if (event !== undefined && event.type === 'user/message') {
-          open = 0
-          corrupt = false
-        }
-        const canStartEdge = !corrupt && open === 0
-        let view
-        let preview = ''
-        if (event === undefined) {
-          view = { role: 'unknown', kind: 'missing', delta: 0 }
-          corrupt = true
-        } else {
-          view = classify(event)
-          try {
-            const message = event.data && event.data.message ? event.data.message : null
-            if (message !== null && Array.isArray(message.content)) preview = textPreview(message.content)
-          } catch (err) {
-            preview = ''
-          }
-        }
-        open += view.delta
-        if (open < 0) {
-          corrupt = true
-          open = 0
-        }
-        const position = {
-          pos: i + 1,
-          role: view.role,
-          kind: view.kind,
-          preview,
-          canStartEdge,
-          canEndEdge: !corrupt && open === 0
-        }
-        if (view.toolNames !== undefined && view.toolNames.length > 0) position.toolNames = view.toolNames.slice(0, 6)
-        positions.push(position)
-      }
-      return { length: nodes.length, positions, corrupt }
-    }
-
     function errText(err) {
       return err !== null && typeof err === 'object' && err.message ? String(err.message) : String(err)
     }
@@ -395,20 +402,27 @@ export default {
       return { category: 'other', message }
     }
 
-    // Engine resolution, self-hosting tier: prefer a realm-provided
-    // ctx.compaction (preset compositions); when absent (profile/host plane,
-    // or a preset with no compaction group), instantiate BasicCompactionEngine
-    // ourselves. auto:false keeps the constructor side-effect-free; super(ctx)
-    // then registers the instance as ctx.compaction, so construction happens
-    // at most once and later calls reuse it.
+    // Engine resolution: ALWAYS the self-hosted ScopedEngine (see
+    // buildScopedEngine below) — instantiated once and cached on success.
+    // auto:false keeps the constructor side-effect-free; the shim ctx never
+    // registers the instance as a service, so a realm engine mounted for
+    // AUTO compaction is left untouched (the durable event-log lock keeps
+    // the two instances mutually exclusive).
     //
     // Module resolution: a bare-specifier import works when this plugin sits
     // inside a node_modules tree (profile npm install) but NOT from a bare
     // preset directory (the package lives in the host's npx cache). Fallback:
     // walk up from host anchors (process.argv[1], cwd) to a node_modules dir
     // containing the engine package, and import its lib entry by file URL.
-    // If even that fails, fold-capable tools degrade to an honest error;
-    // task_begin/task_fold and the observability tools keep working.
+    // If even that fails, the cache stores null (no retry — the resolution
+    // environment does not change within a process lifetime) and task_fold
+    // degrades to closing tasks unfolded.
+    // Per-session closing declaration: task_fold stashes the task name it is
+    // closing, keyed by sessionId, so concurrent folds in OTHER sessions of
+    // the same process (the engine is a singleton) never cross-contaminate
+    // each other's summary titles. Summarize() reads it via closure capture.
+    const closingTasks = new Map()
+
     let selfEngine = undefined
 
     function engineCandidatePaths() {
@@ -497,15 +511,17 @@ export default {
             : undefined
           const target = configured ?? latest ?? agentTarget
           if (target === undefined) throw new Error('no provider/model available for scoped summarization')
-          // The fold caller (task_fold) stashes the task name it is closing:
-          // the span's own tail cannot contain its ending (the executor's
-          // result event does not exist yet), so the instruction DECLARES the
-          // completion instead. It also sets the TITLE (the task name) and
-          // excludes lifecycle bookkeeping from the summary: task_begin /
-          // task_fold calls and results are the span's frame, not its content.
-          const closing = typeof this.__closingTask === 'string' && this.__closingTask.length > 0
-            ? '\nThe task this span belongs to is named "' + this.__closingTask + '". Rules for this fold:\n'
-              + '- Begin the summary with the heading line "# ' + this.__closingTask + '" — nothing before it.\n'
+          // The fold caller (task_fold) stashed the task name it is closing
+          // in the per-session closingTasks map: the span's own tail cannot
+          // contain its ending (the executor's result event does not exist
+          // yet), so the instruction DECLARES the completion instead. It also
+          // sets the TITLE (the task name) and excludes lifecycle
+          // bookkeeping from the summary: task_begin / task_fold calls and
+          // results are the span's frame, not its content.
+          const closingName = closingTasks.get(agent.session.id)
+          const closing = typeof closingName === 'string' && closingName.length > 0
+            ? '\nThe task this span belongs to is named "' + closingName + '". Rules for this fold:\n'
+              + '- Begin the summary with the heading line "# ' + closingName + '" — nothing before it.\n'
               + '- This fold CLOSES the task: the work in this span is COMPLETE. Do not report anything as unfinished or pending because of how the span ends — this very fold is the task\u0027s ending.\n'
               + '- Do NOT summarize task_begin / task_fold calls, their results, or any narration that merely announces starting or finishing the task — that is lifecycle bookkeeping, not content. Summarize the WORK itself.'
             : ''
@@ -560,13 +576,14 @@ export default {
     }
 
     async function engineFor() {
-      // Always the SCOPED instance — both tiers. A realm engine (preset row)
-      // is deliberately NOT used by our folds: it runs the stock
+      // Always the SCOPED instance, built once and cached. A realm engine
+      // (preset row) is deliberately NOT used by our folds: it runs the stock
       // continuity-checkpoint instruction. The realm instance keeps serving
       // AUTO compaction (pressure/overflow), where checkpoint semantics are
       // exactly right; task_fold's explicit folds get span summaries. The
       // durable lock is shared through the event log, so the two instances
-      // stay mutually exclusive.
+      // stay mutually exclusive. A failed build caches null for the process
+      // lifetime (resolution environment never changes mid-process).
       if (selfEngine !== undefined) return selfEngine === null ? undefined : selfEngine
       try {
         selfEngine = await buildScopedEngine()
@@ -575,17 +592,6 @@ export default {
         selfEngine = null
         return undefined
       }
-    }
-
-    function summaryTextOf(result) {
-      let summary = ''
-      if (result !== null && typeof result === 'object' && Array.isArray(result.summary)) {
-        summary = result.summary
-          .filter((b) => b !== null && typeof b === 'object' && b.type === 'text' && typeof b.text === 'string')
-          .map((b) => b.text)
-          .join('\n')
-      }
-      return summary
     }
 
     // ── span artifact: the EXACT original context, as a file ──────────────
@@ -627,7 +633,7 @@ export default {
 
     const taskBegin = {
       name: 'task_begin',
-      description: 'Begin a NAMED task. The name is the identity; when the work is done, one task_fold({ name }) call closes it AND folds its full span into a summary node titled by the name. Call alone in a step.',
+      description: 'Begin a NAMED task. The name is the identity; when the work is done, one task_fold({ name }) call closes it AND folds its full span into a summary node titled by the name. A name already open is rejected; names must not contain " —". Call alone in a step.',
       parameters: {
         type: 'object',
         properties: {
@@ -648,38 +654,40 @@ export default {
         if (agent === undefined) return { ok: false, category: 'invalid', error: 'task_begin requires an agent context' }
         const name = args !== null && typeof args === 'object' ? normalizeName(args.name) : ''
         if (name.length === 0) return { ok: false, category: 'invalid', error: 'task_begin requires a non-empty `name` (the identity key task_fold will close by)' }
+        if (!validTaskName(name)) return { ok: false, category: 'invalid', error: 'task names must not contain " —" (the result-text delimiter); pick a name without it' }
         const session = agent.session
-        let snapshot
-        try {
-          snapshot = readSurface(session)
-        } catch (err) {
-          return { ok: false, category: 'invalid', error: 'failed to read the session surface: ' + errText(err) }
+        const open = marksOf(session)
+        if (open.some((m) => m.name === name)) {
+          return { ok: false, category: 'invalid', error: 'a task named "' + name + '" is already open; names are identity keys — close it first or pick another name' }
         }
         const nodes = session.surface.nodes
-        let markSeq = null
         // CONTRACT: the mark lands on the LAST assistant message on the
         // surface, which — because task_begin is called alone in a step — is
-        // the assistant message of this very step. commit folds from that seq
-        // through the task_fold result. If the executor ever appends another
-        // assistant message within the same step, this anchoring is revisited.
-        for (let i = snapshot.positions.length - 1; i >= 0; i -= 1) {
-          const kind = snapshot.positions[i].kind
-          if (kind === 'assistant' || kind === 'tool_call') { markSeq = nodes[i]; break }
+        // the assistant message of this very step. The projection derives
+        // the push from that event + the success text; this scan only
+        // verifies an assistant message exists to anchor on.
+        const bySeq = new Map()
+        for (const ev of sessionEvents(session)) {
+          if (ev !== null && typeof ev === 'object' && Number.isInteger(ev.seq)) bySeq.set(ev.seq, ev)
+        }
+        let markSeq = null
+        for (let i = nodes.length - 1; i >= 0; i -= 1) {
+          const ev = bySeq.get(nodes[i])
+          if (ev !== undefined && ev.type === 'assistant/message') { markSeq = nodes[i]; break }
         }
         if (markSeq === null) return { ok: false, category: 'invalid', error: 'no assistant message found on the surface' }
+        void markSeq
         // No event appended: the projection derives the named push from this
         // step's assistant/message + the success text about to be returned.
-        const existing = marksOf(session).map((m) => m.name)
-        const openNames = existing.concat([name])
+        const openNames = open.map((m) => m.name).concat([name])
         const depth = openNames.length
-        void markSeq
         return { ok: true, name, depth, openNames }
       }
     }
 
     const taskEnd = {
       name: 'task_fold',
-      description: 'End a NAMED task by name AND fold its full span (begin pair + body) into one summary node titled by the name — one call does both. A name mismatch fails and changes nothing (retry); a fold that loses a race reports the reason and keeps the mark (retry). The output carries what remains open, the fold number, and the path of a temp JSON file holding the span\u0027s EXACT original request context — read/grep it with any file tool; fold_recall({ fold: N }) regenerates it. Too-small spans end the task but stay unfolded. Call alone in a step.',
+      description: 'End the INNERMOST open task by name AND fold its full span (begin pair + body) into one summary node titled by the name — one call does both. LIFO: newer open tasks block older ones; closing a blocked or unknown name fails and changes nothing (close the newer task first). A fold that loses a race reports the reason and keeps the mark (retry). If the compaction engine is unavailable, or the mark was already shadowed by another fold, the task still closes — unfolded. The output carries what remains open, the fold number, and the path of a temp JSON file holding the span\u0027s EXACT original request context — read/grep it with any file tool; fold_recall({ fold: N }) regenerates it. Too-small spans end the task but stay unfolded. Call alone in a step.',
       parameters: {
         type: 'object',
         properties: {
@@ -697,6 +705,12 @@ export default {
             return [{ type: 'text', text: 'task_fold failed (' + category + '): ' + error + hint }]
           }
           const open = value.remainingNames.length > 0 ? value.remainingNames.length + ' open: ' + value.remainingNames.join(', ') : 'all closed'
+          if (value.unfolded !== undefined) {
+            const why = value.unfolded === 'engine'
+              ? 'Engine unavailable; task closed without folding.'
+              : 'Mark no longer on the surface; task closed without folding.'
+            return [{ type: 'text', text: 'Task folded: ' + value.name + ' — ' + open + '. ' + why }]
+          }
           if (value.tooSmall === true) {
             return [{ type: 'text', text: 'Task folded: ' + value.name + ' — ' + open + '. Span too small to fold; left as-is.' }]
           }
@@ -712,37 +726,41 @@ export default {
         if (name.length === 0) return { ok: false, category: 'invalid', error: 'task_fold requires a non-empty `name`' }
         const session = agent.session
         const marks = marksOf(session)
-        // Match by name (most recent first); the reducer pops the same mark
-        // when this success result lands (its text carries the name).
-        let idx = -1
+        const engine = await engineFor()
+        const decision = foldDecision(marks, name, session.surface.nodes, engine !== undefined)
+        if (decision.action === 'invalid') {
+          return { ok: false, category: 'invalid', error: decision.error }
+        }
+        if (decision.action === 'unknown') {
+          return { ok: false, category: 'invalid', error: 'no open task named "' + name + '". Open tasks: ' + (decision.open.length > 0 ? decision.open.join(', ') : '(none)') }
+        }
+        if (decision.action === 'lifo') {
+          return { ok: false, category: 'invalid', error: 'task "' + name + '" is not the innermost open task; close the newer task(s) first: ' + decision.blocking.join(', ') }
+        }
+        // remaining = the stack minus the matched mark (most recent
+        // occurrence of this name) — mirrors what the reducer will pop.
+        const remainingNames = []
+        let skipped = false
         for (let i = marks.length - 1; i >= 0; i -= 1) {
-          if (marks[i].name === name) { idx = i; break }
+          if (!skipped && marks[i].name === name) { skipped = true; continue }
+          remainingNames.unshift(marks[i].name)
         }
-        if (idx === -1) {
-          const open = marks.map((m) => m.name)
-          return { ok: false, category: 'invalid', error: 'no open task named "' + name + '". Open tasks: ' + (open.length > 0 ? open.join(', ') : '(none)') }
+        if (decision.action === 'unfolded') {
+          // Degraded close: the mark stays closable but the span cannot fold
+          // (anchor shadowed by another fold, or no engine). The success text
+          // pops the mark — the task ends either way.
+          return { ok: true, name, remainingNames, unfolded: decision.reason }
         }
-        const mark = marks[idx]
-        const remainingNames = marks.filter((m, i) => i !== idx).map((m) => m.name)
-        // Fold [begin assistant message .. last surface node BEFORE this very
-        // step's assistant message] — the executor's own message is always the
-        // last node (task_fold is called alone in a step), so length-2 is the
-        // final balanced edge of the task body.
-        const nodes = session.surface.nodes
-        const endIdx = nodes.length - 2
-        if (endIdx < 0 || nodes[endIdx] < mark.seq) {
-          // Nothing between the begin pair and this step — a fold would be
-          // empty. The task still ends; the span stays as-is.
+        if (decision.action === 'tooSmall') {
           return { ok: true, name, remainingNames, tooSmall: true }
         }
-        const engine = await engineFor()
-        if (engine === undefined) return { ok: false, category: 'invalid', error: 'compaction service is unavailable in this composition' }
         try {
-          engine.__closingTask = name
-          const result = await engine.compactRegion(mark.seq, nodes[endIdx], agent, exec.signal)
+          closingTasks.set(session.id, name)
+          const result = await engine.compactRegion(decision.startSeq, decision.endSeq, agent, exec.signal)
           const file = writeArtifactFile(session, result.shadowedSeqs, name)
           // Fold number for recall: chronological index of compaction/summary
-          // events — the one just committed is the latest.
+          // events. compactRegion commits synchronously before returning, so
+          // the snapshot already contains the event just committed.
           let foldNo = 0
           for (const e of sessionEvents(session)) {
             if (e !== null && typeof e === 'object' && e.type === 'compaction/summary') foldNo += 1
@@ -766,7 +784,7 @@ export default {
                 : classified.message
           return { ok: false, category: classified.category, error: short }
         } finally {
-          try { delete engine.__closingTask } catch (err) { /* ignore */ }
+          closingTasks.delete(session.id)
         }
       }
     }
@@ -777,15 +795,15 @@ export default {
     ctx.systemPrompt.section({
       name: 'task-marker-compaction',
       order: 650,
-      text: '## Task lifecycle compaction\n\nTasks are NAMED. Call task_begin({ name: "…" }) to open one (alone in a step). When the work is done, call task_fold({ name }) (alone in a step): it closes the task by name AND folds the full span into one summary node titled by the name — one call does both; a fold that loses a race reports the reason and keeps the task open (retry). Too-small spans end the task but stay unfolded. Never track message positions yourself.\n\ntask_fold\u0027s output carries the fold number and the path of a temp file holding the span\u0027s EXACT original request context (the same messages the model was sent). Read or grep it with any file tool when the summary lacks the detail you need; if the temp file has been cleaned, call fold_recall({ fold: N }) to regenerate it (list_folds gives fold numbers).\n\nRuntime context may carry a todo bridge and lifecycle nudges: call task_begin when working with no task open, call task_fold for a task 20+ rounds old. Follow them so task spans stay compactable.'
+      text: '## Task lifecycle compaction\n\nTasks are NAMED. Call task_begin({ name: "…" }) to open one (alone in a step); a name already open is rejected. When the work is done, call task_fold({ name }) (alone in a step): it closes the task AND folds the full span into one summary node titled by the name — one call does both. Closing is LIFO: only the innermost open task can be closed; a blocked or unknown name fails and changes nothing (close newer tasks first). A fold that loses a race reports the reason and keeps the task open (retry). If the engine is unavailable, or the mark was shadowed by another fold, the task still closes unfolded. Too-small spans end the task but stay unfolded. Never track message positions yourself.\n\ntask_fold\u0027s output carries the fold number and the path of a temp file holding the span\u0027s EXACT original request context (the same messages the model was sent). Read or grep it with any file tool when the summary lacks the detail you need; if the temp file has been cleaned, call fold_recall({ fold: N }) to regenerate it (list_folds gives fold numbers).\n\nRuntime context may carry a todo bridge and lifecycle nudges: when the todo list changes, a line reports it with the open task roster — keep task marks in sync (task_begin for new work, task_fold for finished work); call task_begin when working with no task open, call task_fold for a task 20+ rounds old. Follow them so task spans stay compactable.'
     })
 
     const TASK_TOOL_RE = /^(task_begin|task_fold|list_folds|fold_recall|todo_write)$/
 
     function recentWorkCallCount(session) {
       // Count non-task tool calls in the last 10 assistant messages.
-      // Event shape mirrors classify(): assistant/message events carry the
-      // payload at data.message.content, and call blocks are 'tool-call'
+      // Event shape: assistant/message events carry the payload at
+      // data.message.content, and call blocks are 'tool-call'
       // (hyphen — NOT 'tool_call').
       const events = sessionEvents(session)
       let assistantSeen = 0
@@ -801,6 +819,22 @@ export default {
         }
       }
       return workCalls
+    }
+
+    // True when the MOST RECENT assistant message contains a todo_write
+    // tool-call block — the model just updated its todo list, so the next
+    // request carries the todo-bridge report line. Stateless: derived from
+    // the event log alone, no cross-render memory.
+    function lastAssistantHasTodoWrite(session) {
+      const events = sessionEvents(session)
+      for (let i = events.length - 1; i >= 0; i--) {
+        const e = events[i]
+        if (e === null || typeof e !== 'object' || e.type !== 'assistant/message') continue
+        const message = e.data !== null && typeof e.data === 'object' && e.data.message !== null && typeof e.data.message === 'object' ? e.data.message : null
+        const blocks = message !== null && Array.isArray(message.content) ? message.content : []
+        return blocks.some((b) => b !== null && typeof b === 'object' && b.type === 'tool-call' && String(b.name) === 'todo_write')
+      }
+      return false
     }
 
     // Model rounds since the most recent 'Task folded: ' result. Used to
@@ -883,34 +917,34 @@ export default {
           lines.push('Task lifecycle: no open task during tool work — call task_begin({ name: "…" }) if this is a discrete task.')
         }
 
-        // ── Nudge 2: task open for a long time ─────────────────────────
-        // Holds until the named task is closed — the wording is static
-        // ("20+ rounds") so the held line is byte-stable and produces no
-        // further snapshots while it waits.
+        // ── Nudge 2: a task left open for a long time ──────────────────
+        // Scans ALL open marks and holds on the OLDEST one aged 20+ rounds
+        // (one task per line, byte-stable). Tie-break: first hit wins —
+        // equal (cap-saturated) ages mean both are ≥20 rounds old and seqs
+        // ascend with push order, so the earlier mark is the older task.
+        // This only holds while cap ≥ threshold; revisit if either changes.
         if (ownDepth > 0) {
-          const newest = marks[marks.length - 1]
-          const age = countAssistantSince(session, newest.seq, 21)
-          if (age >= 20) {
-            lines.push('Task lifecycle: task "' + newest.name + '" is 20+ rounds old — if done, call task_fold({ name: "' + newest.name + '" }).')
+          let oldest = null
+          let oldestAge = -1
+          for (const m of marks) {
+            const age = countAssistantSince(session, m.seq, 21)
+            if (age > oldestAge) { oldestAge = age; oldest = m }
+          }
+          if (oldestAge >= 20) {
+            lines.push('Task lifecycle: task "' + oldest.name + '" is 20+ rounds old — if done, call task_fold({ name: "' + oldest.name + '" }); if a newer task blocks it, close that one first.')
           }
         }
 
-        // ── Todo bridge (existing) ─────────────────────────────────────
-        // Read the stock `todos` projection when the todo tool is mounted.
-        // The bridge engages only once the model has written a list this
-        // turn (the projection is null between turn/start and the first
-        // todo_write); undefined means the todo capability is absent, in
-        // which case this context renders nothing at all.
-        let todos
-        try { todos = ctx.sessionProjections.stateOf(session, 'todos') } catch (err) { todos = undefined }
-        if (Array.isArray(todos)) {
-          const inProgress = todos.filter((t) => t !== null && typeof t === 'object' && t.status === 'in_progress')
-          if (inProgress.length > ownDepth) {
-            const names = inProgress.slice(0, 3).map((t) => '"' + String(t.content).slice(0, 60) + '"').join(', ')
-            lines.push('Todo bridge: in-progress todos (' + names + ') lack task marks — call task_begin for them.')
-          } else if (inProgress.length < ownDepth) {
-            lines.push('Todo bridge: open tasks exceed in-progress todos — call task_fold for the finished ones.')
-          }
+        // ── Todo bridge: transient change report ──────────────────────
+        // Renders ONLY on the request right after the model called
+        // todo_write (detected statelessly in the most recent assistant
+        // message); the diff-driven snapshot engine retracts the line on
+        // the next unchanged render — one appearance per todo_write. The
+        // line reports the change plus the open task roster; whether to
+        // task_begin or task_fold is the MODEL's call — a status report,
+        // not a conditional nag.
+        if (lastAssistantHasTodoWrite(session)) {
+          lines.push(todoBridgeLine(marks.map((m) => m.name)))
         }
         return lines.join('\n')
       }

@@ -14,9 +14,9 @@
 
 | 工具 | 用途 |
 | --- | --- |
-| `task_begin({ name })` | 开启**命名**任务。名字即身份；状态由工具输出承载，零上下文注入。 |
-| `task_fold({ name })` | **按名关闭任务并同步折叠**（begin 对 + 正文）为单个摘要节点，标题自动取任务名——一次调用完成两件事。失败是原子的：标记保留、可重试。输出携带剩余任务、折叠号和**区间工件**路径。太小的跨度照常结束但不折叠。 |
-| `list_folds` | 折叠索引：每次折叠（编号、tokens、标题/预览）+ 会话总量——`fold_recall` 消费的编号来源。 |
+| `task_begin({ name })` | 开启**命名**任务。名字即身份；状态由工具输出承载，零上下文注入。已开启的同名会被拒绝；名字不得含 " —"。 |
+| `task_fold({ name })` | 关闭**最内层**开启任务并同步折叠（begin 对 + 正文）为单个摘要节点，标题自动取任务名——一次调用完成两件事。LIFO：更新的任务阻塞更早的任务；被阻塞或未知名失败是原子的（先关更新的任务再重试）。输出携带剩余任务、折叠号和**区间工件**路径。太小的跨度——或引擎不可用/标记被遮蔽——也照常结束任务，只是不折叠。 |
+| `list_folds` | 折叠索引：每次折叠（1-based 时间序编号、tokens、标题/预览）+ 会话总量——`fold_recall` 消费的编号来源。 |
 | `fold_recall({ fold })` | 临时工件被系统清理后，按折叠号**再生成**工件文件。仅此一个参数。 |
 
 `plugins/compact-region.mjs` 提供生命周期工具；`plugins/compact-stats.mjs` 提供折叠索引 + 再生成（无服务依赖）。
@@ -31,11 +31,11 @@
 
 组合行的引擎（`dsh-compaction-basic`）刻意留给**自动**压缩（压力/溢出）——那里检查点语义恰好正确。两个实例通过事件日志的持久锁天然互斥。ScopedEngine 在 shim ctx 上构造（不与服务注册冲突）、`auto: false`；先裸导入（profile 安装场景），失败则从宿主锚点向上找到引擎包的 `node_modules` 按文件 URL 导入。
 
-只依赖 host 平面服务（`tokenMeter`、`llm`），因此在**完全没有 compaction 组**的组合里也能折叠——已在 `minimal` 派生预设和 profile 安装下实测。兼容 dsh 0.1.2-alpha.4 的按需会话 API（`snapshotEvents()`；旧版的 `session.events` 亦受支持）。
+只依赖 host 平面服务（`tokenMeter`、`llm`），因此在**完全没有 compaction 组**的组合里也能折叠——已在 `minimal` 派生预设和 profile 安装下实测。引擎包完全解析不到时 `task_fold` 优雅降级：任务照常关闭、不折叠（解析结果在进程生命周期内缓存）。兼容 dsh 0.1.2-alpha.4 的按需会话 API（`snapshotEvents()`；旧版的 `session.events` 亦受支持）。
 
 ### 状态模型
 
-- 开启的任务是**命名派生态**：`taskMarks` 会话投影只折叠宿主原生事件——工具调用块注册待定意图，工具结果文本（`Task begun: NAME` / `Task folded: NAME`）按名压栈/弹栈。按名关闭不可能破坏其他任务；失败的 `task_fold` 不改变任何状态（原子结束即折叠）。
+- 开启的任务是**命名派生态**：`taskMarks` 会话投影只折叠宿主原生事件——工具调用块注册待定意图，工具结果文本（`Task begun: NAME` / `Task folded: NAME`）按名压栈/弹栈。工具层关闭是 LIFO（只能关最内层；投影本身保持按名弹，LIFO 之前的旧日志回放不变）；失败的 `task_fold` 不改变任何状态（原子结束即折叠）。
 - 标记穿越宿主重启、会话恢复和压缩（只追加日志）。无名的 legacy 标记在投影加载时自愈清除。
 
 ### 生命周期催办（hold 语义）
@@ -45,9 +45,9 @@
 | 信号 | 驻留条件 | 提示 |
 | --- | --- | --- |
 | 无任务干活 | 无开启任务、最近 10 轮 ≥3 次非任务工具调用（task_fold 后 3 轮宽限） | `task_begin({ name })` |
-| 任务开太久 | 最新开启标记满 20 轮 | `task_fold({ name })` |
+| 任务开太久 | 任一开启标记满 20 轮（点名最老的那个） | `task_fold({ name })` |
 
-另有一个 todo 桥接，把进行中的 todo 与任务标记配对（不包装原生 `todo_write` 工具）。
+另有一个 todo 桥接做状态汇报：模型调用 `todo_write` 后的下一轮出现一行瞬态提示——`Todo bridge: todos changed; open tasks: …`——要求模型保持任务标记同步（新工作 `task_begin`、完成工作 `task_fold`），再下一轮自动撤回。它是现状汇报而非条件催促：决策留给模型，且不包装原生 `todo_write` 工具。
 
 ## 安装
 
@@ -65,13 +65,9 @@ dsh plugin --profile web add github:yindf/taskfold
 package.json      npm 清单 + dsh.bundle.patch 声明
 cordis.patch.yml  host 平面 bundle 补丁（插件安装路径）
 plugins/          compact-region.mjs、compact-stats.mjs
-test/             离线测试套件（node test/*.test.mjs）——32 项
+test/             离线测试套件（node test/*.test.mjs）
 CHANGELOG.md      发布历史
 ```
-
-## 损坏边界策略
-
-若表面事件缺失（如外部折叠后），边界标记从断裂处到下一个用户消息边界之间不可信，随后配对账目重新基线——单个损坏点不会禁用会话余下部分的压缩。
 
 ## 许可
 

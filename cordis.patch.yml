@@ -2,10 +2,11 @@
 # (profile bundle layer). Tools land in the global tools registry — every
 # session of every preset sees them.
 #
-# The compaction engine resolves LAZILY inside the plugin: a realm-provided
-# engine via ctx.get('compaction') when the session's preset carries
-# dsh-compaction-basic, else a self-hosted BasicCompactionEngine(auto:false)
-# imported on demand. No compaction row is required here.
+# The compaction engine resolves LAZILY inside the plugin and is ALWAYS the
+# plugin's own ScopedEngine (span-scoped summarizer; auto:false; imported on
+# demand — bare specifier first, then a file-URL fallback walking up from
+# host anchors). A realm-registered engine, if any, is left to serve AUTO
+# compaction. No compaction row is required here.
 #
 # COLLISION WARNING: never mount this bundle alongside a preset that already
 # carries its own cmpct rows (e.g. the cmpct agent preset) — tool names live

@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { collectStats, foldOf, attachFoldTitles, collectFolds } from '../plugins/compact-stats.mjs'
+import { collectStats, foldOf, attachFoldTitles, collectFolds, renderFoldList } from '../plugins/compact-stats.mjs'
 
 /** Minimal but shape-accurate events mirroring dsh-compaction-basic output. */
 function fixture() {
@@ -163,4 +163,30 @@ test('collectFolds and collectStats outputs are lossless JSON', () => {
   assert.deepEqual(JSON.parse(JSON.stringify(stats)), stats)
   const folds = collectFolds(events)
   assert.deepEqual(JSON.parse(JSON.stringify(folds)), folds)
+})
+
+test('renderFoldList numbers folds chronologically — the domain fold_recall validates', () => {
+  // fixture() carries two folds at event seqs 5 and 7. The printed numbers
+  // MUST be the 1-based chronological index (1, 2) — fold_recall accepts
+  // exactly 1..folds.length — with the event seq demoted to an annotation.
+  const stats = collectStats(fixture(), 12)
+  const lines = renderFoldList(stats)
+  assert.equal(lines.length, 3)
+  assert.ok(lines[1].startsWith('#1 (seq 5)'), 'line 1 carries chronological #1 with the seq annotated')
+  assert.ok(lines[2].startsWith('#2 (seq 7)'), 'line 2 carries chronological #2')
+  assert.ok(!lines[1].startsWith('#5'), 'the raw event seq is never the printed fold number')
+  // Numbering matches fold_recall's parameter domain exactly: for every
+  // printed #N, N is a valid fold_recall({ fold: N }) argument.
+  for (let i = 1; i <= stats.totals.folds; i += 1) {
+    assert.ok(i >= 1 && i <= stats.folds.length)
+    assert.ok(lines[i].startsWith('#' + i + ' '))
+  }
+})
+
+test('renderFoldList: empty and defensive inputs', () => {
+  assert.deepEqual(renderFoldList({ totals: { folds: 0, shadowedTokens: 0 }, folds: [], surfaceLength: 0, eventCount: 0 }),
+    ['Surface: 0 live nodes over 0 events; folds: 0, shadowed tokens estimated: 0.'])
+  assert.equal(renderFoldList(null).length, 1, 'degenerate stats still render a header line')
+  assert.equal(renderFoldList({ folds: [{ seq: 1, shadowedTokenCount: 3, preview: 'p' }] })[1],
+    '#1 (seq 1) → 3 tokens | p', 'missing totals/range fields degrade gracefully')
 })

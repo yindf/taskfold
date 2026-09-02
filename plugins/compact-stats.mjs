@@ -1,15 +1,17 @@
 /**
  * list_folds / fold_recall — fold index and artifact regeneration tools
- * (preset plugin).
+ * (plugin-bundle form, sibling of compact-region).
  *
  * Read-only companion to compact-region: reports what compaction did for THIS
- * session by scanning the live event log (exec.agent.session.events), and
+ * session by scanning the live event log (sessionEvents accessor), and
  * recalls the ORIGINAL content of folded entries on demand. Events survive
  * folds — the surface is a projection — so nothing is ever lost, only
  * projected away. Seqs are stable archive ids (surface positions shift).
- * `save: true` materializes an artifact as a FILE under the session
- * workspace (.taskfold-artifacts/) so the model can read/grep/edit it with any
- * tool — recall stops being the only interface to folded history.
+ *
+ * Fold NUMBERING is chronological (1-based, order of collectFolds): the
+ * number list_folds prints is exactly the number fold_recall({ fold: N })
+ * consumes and exactly what task_fold's "Folded #N" counts. The event-log
+ * seq is shown as a secondary annotation only — never pass it to fold_recall.
  */
 import nodeFs from 'node:fs'
 import nodePath from 'node:path'
@@ -118,19 +120,6 @@ export function collectFolds(events) {
   return folds
 }
 
-function textOf(content, limit) {
-  if (!Array.isArray(content)) return ''
-  const parts = []
-  for (const block of content) {
-    if (block !== null && typeof block === 'object' && block.type === 'text' && typeof block.text === 'string') parts.push(block.text)
-  }
-  const joined = parts.join('\n').replace(/\s+/g, ' ').trim()
-  if (joined.length > limit) return joined.slice(0, limit) + '…'
-  return joined
-}
-
-
-
 /**
  * The `name` argument of one task_fold tool-call block, normalized — the
  * structured home of the fold title. Arguments may be a JSON string or an
@@ -187,13 +176,34 @@ export function attachFoldTitles(folds, events) {
   return folds
 }
 
+/**
+ * list_folds render lines from a collectStats() value — pure, so tests can
+ * pin the numbering contract: line i carries '#' + (i+1), the SAME 1-based
+ * chronological index fold_recall({ fold }) validates and task_fold counts.
+ * The event seq appears only as a parenthesized annotation.
+ */
+export function renderFoldList(stats) {
+  const lines = []
+  const surfaceLength = stats !== null && typeof stats === 'object' && Number.isInteger(stats.surfaceLength) ? stats.surfaceLength : 0
+  const eventCount = stats !== null && typeof stats === 'object' && Number.isInteger(stats.eventCount) ? stats.eventCount : 0
+  const totals = stats !== null && typeof stats === 'object' && stats.totals !== null && typeof stats.totals === 'object' ? stats.totals : { folds: 0, shadowedTokens: 0 }
+  const folds = stats !== null && typeof stats === 'object' && Array.isArray(stats.folds) ? stats.folds : []
+  lines.push('Surface: ' + surfaceLength + ' live nodes over ' + eventCount + ' events; folds: ' + totals.folds + ', shadowed tokens estimated: ' + totals.shadowedTokens + '.')
+  for (let i = 0; i < folds.length; i += 1) {
+    const f = folds[i]
+    const where = f.shadowedStart !== undefined ? ' range ' + f.shadowedStart + '..' + f.shadowedEnd : ''
+    const missing = f.shadowedTokenCountMissing === true ? ' (token count missing on this event)' : ''
+    lines.push('#' + (i + 1) + ' (seq ' + f.seq + ')' + where + ' → ' + f.shadowedTokenCount + ' tokens' + missing + ' | ' + (f.title !== undefined ? f.title : f.preview))
+  }
+  return lines
+}
+
 export default {
-  name: 'compact-stats',
-  inject: ['tools'],
+  name: 'compact-stats',  inject: ['tools'],
   apply(ctx) {
     ctx.tools.register({
       name: 'list_folds',
-      description: 'List every committed fold in THIS session: fold number, estimated shadowed tokens, summary preview or task title, plus surface/event totals. Fold numbers are what fold_recall({ fold: N }) consumes; call this when you need to regenerate an artifact or audit what compaction saved.',
+      description: 'List every committed fold in THIS session: fold number (1-based, chronological — the exact number fold_recall consumes), estimated shadowed tokens, summary preview or task title, plus surface/event totals. The seq shown in parentheses is an archive id, not the fold number. Call this when you need to regenerate an artifact or audit what compaction saved.',
       parameters: { type: 'object', properties: {} },
       output: {
         schema: { type: 'object', additionalProperties: true },
@@ -201,14 +211,7 @@ export default {
           if (value.ok !== true) {
             return [{ type: 'text', text: 'list_folds failed: ' + String(value.error === undefined ? 'unknown error' : value.error) }]
           }
-          const lines = []
-          lines.push('Surface: ' + value.surfaceLength + ' live nodes over ' + value.eventCount + ' events; folds: ' + value.totals.folds + ', shadowed tokens estimated: ' + value.totals.shadowedTokens + '.')
-          for (const f of value.folds) {
-            const where = f.shadowedStart !== undefined ? ' range ' + f.shadowedStart + '..' + f.shadowedEnd : ''
-            const missing = f.shadowedTokenCountMissing === true ? ' (token count missing on this event)' : ''
-            lines.push('#' + f.seq + where + ' → ' + f.shadowedTokenCount + ' tokens' + missing + ' | ' + (f.title !== undefined ? f.title : f.preview))
-          }
-          return [{ type: 'text', text: lines.join('\n') }]
+          return [{ type: 'text', text: renderFoldList(value).join('\n') }]
         }
       },
       async execute(args, exec) {

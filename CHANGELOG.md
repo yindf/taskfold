@@ -3,7 +3,37 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
-## 0.1.0 — plugin bundle generation (current)
+## 0.2.0 — review-hardening generation (current)
+
+External code review triage: no deterministic data-loss bugs, but semantic
+edges, comment drift, and dead code — all addressed.
+
+- **LIFO closing at the tool layer** (`closeTarget`/`foldDecision` pure
+  exports): only the innermost open task can close; the projection stays
+  name-keyed so pre-LIFO logs replay byte-identically.
+- **Graceful unfold degradation**: when the engine cannot be resolved or the
+  begin mark was shadowed by another fold, `task_fold` still closes the task
+  (`unfolded: 'engine' | 'anchor'`) — no more permanent retry loops.
+- **Fold numbering contract**: `list_folds` renders chronological `#N (seq X)`
+  — the exact domain `fold_recall` validates; `task_fold` reports the same
+  chronological number.
+- **Name hygiene**: `validTaskName` rejects empty names and those containing
+  the ` — ` separator; `task_begin` also rejects reopening an already-open
+  name; legacy logs with separator-bearing names match by exact equality.
+- **Per-session closing declarations**: the `__closingTask` engine field
+  became an apply-scoped map keyed by session id (no cross-session title
+  pollution in single-process multi-session hosts).
+- **Todo bridge v2**: replaced the two counting nudges with a transient,
+  stateless status line rendered the round after any `todo_write` —
+  `Todo bridge: todos changed; open tasks: …` — reporting the open-task
+  roster; the model decides begin/fold.
+- **Hygiene**: ~70 lines of dead surface-indexing removed (readSurface/
+  classify/indexEvents), stale header/NOTE comments rewritten (engine is
+  always the plugin-built ScopedEngine), version annotations unified;
+  nudge-2 now scans all open marks for the oldest.
+- Tests 21 + 11 offline suites; no reducer or stateVersion change.
+
+## 0.1.0 — plugin bundle generation
 
 The preset grew into an installable dsh plugin bundle while keeping the
 agent-preset install path.

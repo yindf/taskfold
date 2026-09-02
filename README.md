@@ -14,9 +14,9 @@ Four model tools:
 
 | Tool | Purpose |
 | --- | --- |
-| `task_begin({ name })` | Begin a **named** task. The name is the identity; state rides in the tool output, no context injection. |
-| `task_fold({ name })` | Close the task **by name AND fold its span** (begin pair + body) into one summary node titled by the name — one call does both. Failure is atomic: the mark stays, retry. Output carries remaining tasks, the fold number, and the **span artifact** path. Too-small spans end the task but stay unfolded. |
-| `list_folds` | Fold index: every committed fold (number, tokens, title/preview) plus session totals — the fold numbers `fold_recall` consumes. |
+| `task_begin({ name })` | Begin a **named** task. The name is the identity; state rides in the tool output, no context injection. A name already open is rejected; names must not contain " —". |
+| `task_fold({ name })` | Close the **innermost** open task by name AND fold its span (begin pair + body) into one summary node titled by the name — one call does both. LIFO: newer open tasks block older ones; a blocked or unknown name fails atomically (retry after closing the newer task). Output carries remaining tasks, the fold number, and the **span artifact** path. Too-small spans — or an unavailable engine / a shadowed mark — still end the task, unfolded. |
+| `list_folds` | Fold index: every committed fold (1-based chronological number, tokens, title/preview) plus session totals — the fold numbers `fold_recall` consumes. |
 | `fold_recall({ fold })` | Regenerate a fold's span artifact file when the temp copy has been cleaned. One parameter. |
 
 `plugins/compact-region.mjs` provides the lifecycle tools; `plugins/compact-stats.mjs` provides the fold index + recall (no service dependency).
@@ -31,11 +31,11 @@ Explicit folds (`task_fold`) always run through the plugin's own `ScopedEngine e
 
 A composition row's engine (`dsh-compaction-basic`) is deliberately left to serve **auto** compaction (pressure/overflow), where checkpoint semantics are exactly right. The two instances stay mutually exclusive through the durable event-log lock. Constructed on a shim ctx (no service-registration collisions) with `auto: false`, resolved by bare specifier first (profile installs), then a file-URL fallback walking up from host anchors to the engine package's `node_modules`.
 
-Tier independence needs only host-plane services (`tokenMeter`, `llm`), so the plugin folds in compositions with **no compaction group at all** — validated live on a `minimal`-derived preset and via profile-level install. Compatible with dsh 0.1.2-alpha.4's on-demand session APIs (`snapshotEvents()`; older versions' `session.events` still honored).
+Tier independence needs only host-plane services (`tokenMeter`, `llm`), so the plugin folds in compositions with **no compaction group at all** — validated live on a `minimal`-derived preset and via profile-level install. If the engine package cannot be resolved at all, `task_fold` degrades gracefully: the task still closes, unfolded (the resolution result is cached for the process lifetime). Compatible with dsh 0.1.2-alpha.4's on-demand session APIs (`snapshotEvents()`; older versions' `session.events` still honored).
 
 ### State model
 
-- Open tasks are **named derived state**: the `taskMarks` session projection folds harness-native events only — tool-call blocks register pending intents, tool-result text (`Task begun: NAME` / `Task folded: NAME`) pushes/pops by name. Closing by name cannot corrupt other tasks; a failed `task_fold` changes nothing (atomic end-and-fold).
+- Open tasks are **named derived state**: the `taskMarks` session projection folds harness-native events only — tool-call blocks register pending intents, tool-result text (`Task begun: NAME` / `Task folded: NAME`) pushes/pops by name. Closing is LIFO at the tool layer (only the innermost open task can close; the projection itself stays name-keyed so pre-LIFO logs replay unchanged); a failed `task_fold` changes nothing (atomic end-and-fold).
 - Marks survive host restarts, session resume, and compaction (append-only log). Nameless legacy marks self-heal away at projection load.
 
 ### Lifecycle nudges (hold semantics)
@@ -45,9 +45,9 @@ A clean begin→work→end flow stays completely silent. When the flow is skippe
 | Signal | Holds while | Asks for |
 | --- | --- | --- |
 | Work without a task | no open task, ≥3 non-task tool calls in the last 10 rounds (3-round grace after a task_fold) | `task_begin({ name })` |
-| A task left open | the newest open mark is 20+ rounds old | `task_fold({ name })` |
+| A task left open | any open mark is 20+ rounds old (the oldest one is named) | `task_fold({ name })` |
 
-A todo bridge additionally pairs in-progress todo items with task marks (the stock `todo_write` tool is never wrapped).
+A todo bridge additionally reports state transitions: the round right after the model calls `todo_write` (detected statelessly from the event log), a transient line appears — `Todo bridge: todos changed; open tasks: …` — asking the model to keep task marks in sync (`task_begin` for new work, `task_fold` for finished work) and retracting on the next round. It is a status report, not a conditional nag: the decision stays with the model, and the stock `todo_write` tool is never wrapped.
 
 ## Install
 
@@ -68,10 +68,6 @@ plugins/          compact-region.mjs, compact-stats.mjs
 test/             offline suites (node test/*.test.mjs)
 CHANGELOG.md      release history
 ```
-
-## Corrupt-edge policy
-
-If a surface event goes missing (e.g. after an external fold), edge flags are marked unreliable from the break until the next user-message boundary, where pairing accounting is re-baselined — one corrupt spot never disables compaction for the rest of the session.
 
 ## License
 

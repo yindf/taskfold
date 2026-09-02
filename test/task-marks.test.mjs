@@ -1,11 +1,11 @@
 // Offline tests for the taskMarks projection pieces exported from
-// compact-region.mjs (v2: derived from native events): the duck-typed state
-// schema and the reducer. Run in-process (the sandbox blocks node --test
-// child processes):
+// compact-region.mjs: the duck-typed state schema, the reducer, and the pure
+// close/fold decision helpers (closeTarget / validTaskName / foldDecision).
+// Run in-process (the sandbox blocks node --test child processes):
 //   node test/task-marks.test.mjs
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { applyTaskMarks, taskMarksStateSchema } from '../plugins/compact-region.mjs'
+import { applyTaskMarks, taskMarksStateSchema, closeTarget, validTaskName, foldDecision, todoBridgeLine } from '../plugins/compact-region.mjs'
 
 /** assistant/message carrying tool-call blocks (shape per dsh-agent-loop). */
 function assistantCall(seq, calls) {
@@ -67,7 +67,10 @@ test('begin/end round trip: named push and pop-by-name', () => {
   state = applyTaskMarks(state, toolResult('c2', BEGIN_OK('beta'), 201))
   assert.deepEqual(state.marks, [{ seq: 100, name: 'alpha' }, { seq: 200, name: 'beta' }], 'two names, two marks')
   // Closing by name, OUT OF order: ends 'alpha' first even though 'beta' is
-  // the most recent — name-keying, no implicit stack corruption.
+  // the most recent. The REDUCER stays name-keyed on purpose — old logs
+  // (recorded before the LIFO rule) must replay byte-identically; the TOOL
+  // layer (foldDecision, tested below) now rejects such closes before any
+  // event is written.
   state = applyTaskMarks(state, assistantCall(300, [{ id: 'c3', name: 'task_fold' }]))
   state = applyTaskMarks(state, toolResult('c3', END_OK('alpha'), 301))
   assert.deepEqual(state.marks, [{ seq: 200, name: 'beta' }], 'closing by name removes the matching mark')
@@ -177,5 +180,99 @@ test('name normalization: whitespace and multi-name closing', () => {
   state = applyTaskMarks(state, assistantCall(200, [{ id: 'c2', name: 'task_fold' }]))
   state = applyTaskMarks(state, toolResult('c2', 'Task folded: fix bug — all closed. …', 201))
   assert.equal(state, null, 'normalized name matches despite original multiple spaces; empty state is null')
+})
+
+test('validTaskName: rejects empty and delimiter-carrying names', () => {
+  assert.equal(validTaskName('alpha'), true)
+  assert.equal(validTaskName('fix — part 2'), false, 'the rendered-text delimiter truncates parsing')
+  assert.equal(validTaskName(''), false)
+  assert.equal(validTaskName(null), false)
+  assert.equal(validTaskName(42), false)
+  assert.equal(validTaskName('em—dash without spaces'), true, 'only " —" (space + em dash) is the delimiter')
+  assert.equal(validTaskName('— leads with bare dash'), true, 'dash without a preceding space never matches the delimiter, so parsing stays lossless')
+})
+
+test('closeTarget: four states over the open-mark stack', () => {
+  const marks = [{ seq: 10, name: 'alpha' }, { seq: 20, name: 'beta' }, { seq: 30, name: 'gamma' }]
+  assert.deepEqual(closeTarget([], 'alpha'), { status: 'empty' })
+  assert.deepEqual(closeTarget(marks, 'gamma'), { status: 'ok', mark: { seq: 30, name: 'gamma' } })
+  const unknown = closeTarget(marks, 'nope')
+  assert.equal(unknown.status, 'unknown')
+  assert.deepEqual(unknown.open, ['alpha', 'beta', 'gamma'])
+  const lifo = closeTarget(marks, 'alpha')
+  assert.equal(lifo.status, 'lifo')
+  assert.deepEqual(lifo.mark, { seq: 10, name: 'alpha' })
+  assert.deepEqual(lifo.blocking, ['beta', 'gamma'], 'blocking lists newer tasks inside the target, in order')
+})
+
+test('closeTarget: duplicate names match the most recent occurrence, blocking deduped', () => {
+  // Legacy snapshot can repeat names; the tool layer rejects duplicates.
+  const marks = [{ seq: 10, name: 'alpha' }, { seq: 20, name: 'beta' }, { seq: 30, name: 'alpha' }]
+  const target = closeTarget(marks, 'alpha')
+  assert.equal(target.status, 'ok', 'most recent occurrence IS the stack top here')
+  assert.deepEqual(target.mark, { seq: 30, name: 'alpha' })
+  const older = closeTarget(marks, 'beta')
+  assert.equal(older.status, 'lifo')
+  assert.deepEqual(older.blocking, ['alpha'], 'duplicate newer names appear once')
+})
+
+test('foldDecision: invalid names, legacy escape hatch, empty stack', () => {
+  assert.equal(foldDecision([], 'bad — name', [], true).action, 'invalid', 'delimiter name with no exact mark is invalid')
+  assert.equal(foldDecision([{ seq: 5, name: 'bad — name' }], 'bad — name', [5, 6, 7], true).action, 'fold',
+    'legacy mark whose stored name is exactly the invalid string stays closable (self-heals)')
+  assert.equal(foldDecision([], '', [], true).action, 'invalid')
+  assert.equal(foldDecision([], 'alpha', [], true).action, 'invalid', 'empty stack')
+})
+
+test('foldDecision: unknown and lifo outcomes', () => {
+  const marks = [{ seq: 10, name: 'alpha' }, { seq: 20, name: 'beta' }]
+  const nodes = [10, 11, 12, 20, 21, 22, 23]
+  const unknown = foldDecision(marks, 'nope', nodes, true)
+  assert.equal(unknown.action, 'unknown')
+  assert.deepEqual(unknown.open, ['alpha', 'beta'])
+  const lifo = foldDecision(marks, 'alpha', nodes, true)
+  assert.equal(lifo.action, 'lifo')
+  assert.deepEqual(lifo.blocking, ['beta'])
+})
+
+test('foldDecision: anchor shadowed by compaction degrades to unfolded', () => {
+  const marks = [{ seq: 10, name: 'alpha' }]
+  const decision = foldDecision(marks, 'alpha', [30, 31, 32], true)
+  assert.equal(decision.action, 'unfolded')
+  assert.equal(decision.reason, 'anchor')
+  assert.deepEqual(decision.mark, { seq: 10, name: 'alpha' })
+})
+
+test('foldDecision: tooSmall precedes the engine check', () => {
+  const marks = [{ seq: 10, name: 'alpha' }]
+  // Surface holds ONLY the begin anchor: endIdx < 0 → tooSmall with NO engine.
+  assert.equal(foldDecision(marks, 'alpha', [10], false).action, 'tooSmall')
+  // Anchor plus one body node: a (tiny) fold is ATTEMPTED; the engine's
+  // not-smaller rejection later turns it into the runtime tooSmall outcome.
+  assert.equal(foldDecision(marks, 'alpha', [10, 11], true).action, 'fold')
+})
+
+test('foldDecision: engine unavailable degrades to unfolded; available folds', () => {
+  const marks = [{ seq: 10, name: 'alpha' }]
+  const nodes = [10, 11, 12, 13, 14, 15]
+  const down = foldDecision(marks, 'alpha', nodes, false)
+  assert.equal(down.action, 'unfolded')
+  assert.equal(down.reason, 'engine')
+  const up = foldDecision(marks, 'alpha', nodes, true)
+  assert.equal(up.action, 'fold')
+  assert.equal(up.startSeq, 10)
+  assert.equal(up.endSeq, nodes[nodes.length - 2], 'end is the last node before the fold step itself')
+})
+
+test('todoBridgeLine: roster rendering with names, none, and quote defense', () => {
+  assert.equal(todoBridgeLine(['fix-bridge', 'add-tests']),
+    'Todo bridge: todos changed; open tasks: "fix-bridge", "add-tests" — keep task marks in sync: task_begin for new work, task_fold for finished work.')
+  assert.equal(todoBridgeLine([]), 'Todo bridge: todos changed; open tasks: none — keep task marks in sync: task_begin for new work, task_fold for finished work.')
+  // Quotes in task names are neutralized so the roster stays parseable.
+  assert.ok(!todoBridgeLine(['say "hi"']).includes('"say "hi""'))
+  assert.ok(todoBridgeLine(['say "hi"']).includes("'"))
+  // Defensive: non-array / junk input degrades to the empty roster.
+  assert.equal(todoBridgeLine(undefined), todoBridgeLine([]))
+  assert.equal(todoBridgeLine([null, 42, '', 'ok']).includes('"ok"'), true)
 })
 
