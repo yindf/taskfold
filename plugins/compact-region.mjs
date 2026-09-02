@@ -791,8 +791,9 @@ export default {
             const hint = value.hint === undefined ? '' : '\n' + String(value.hint)
             return [{ type: 'text', text: 'task_commit failed (' + category + '): ' + error + hint }]
           }
+          const foldPart = value.fold === undefined ? '' : ' fold #' + value.fold + '.'
           const range = value.file === undefined ? '' : ' Original context saved: ' + value.file
-          return [{ type: 'text', text: 'Task committed: ' + String(value.title) + ' (' + value.shadowedTokenCount + ' tokens shadowed).' + range }]
+          return [{ type: 'text', text: 'Task committed: ' + String(value.title) + ' (' + value.shadowedTokenCount + ' tokens shadowed).' + foldPart + range }]
         }
       },
       async execute(args, exec) {
@@ -806,7 +807,14 @@ export default {
         try {
           const result = await engine.compactRegion(record.beginSeq, record.endSeq, agent, exec.signal)
           const file = writeArtifactFile(session, result.shadowedSeqs, record.name)
-          return { ok: true, summary: summaryTextOf(result), shadowedTokenCount: result.shadowedTokenCount, title: record.name, file }
+          // Fold number for recall: the chronological index of compaction/summary
+          // events — the one just committed is the latest (its summary event is
+          // already appended when compactRegion returns).
+          let foldNo = 0
+          for (const e of sessionEvents(session)) {
+            if (e !== null && typeof e === 'object' && e.type === 'compaction/summary') foldNo += 1
+          }
+          return { ok: true, summary: summaryTextOf(result), shadowedTokenCount: result.shadowedTokenCount, title: record.name, file, fold: foldNo }
         } catch (err) {
           const classified = classifyCategory(err)
           if (classified.category === 'summary') {
