@@ -130,70 +130,58 @@ function textOf(content, limit) {
 }
 
 
+
 /**
- * Full text of a `tool/result` event (concatenated tool-result blocks), or ''
- * for anything else. Shared by digest previews and fold-title extraction.
+ * The `name` argument of one task_fold tool-call block, normalized — the
+ * structured home of the fold title. Arguments may be a JSON string or an
+ * already-parsed object depending on log provenance; both are accepted.
  */
-function resultTextOf(event) {
-  const data = event !== null && typeof event === 'object' && event.data !== null && typeof event.data === 'object' ? event.data : {}
-  const message = data.message !== null && typeof data.message === 'object' ? data.message : null
-  if (message === null || !Array.isArray(message.content)) return ''
-  const parts = []
-  for (const block of message.content) {
-    if (block !== null && typeof block === 'object' && block.type === 'tool-result' && Array.isArray(block.content)) {
-      for (const inner of block.content) {
-        if (inner !== null && typeof inner === 'object' && inner.type === 'text' && typeof inner.text === 'string') parts.push(inner.text)
-      }
-    }
-  }
-  return parts.join('\n')
+function foldNameOfCall(block) {
+  let args = block.arguments
+  if (typeof args === 'string') { try { args = JSON.parse(args) } catch (err) { return '' } }
+  if (args === null || typeof args !== 'object') return ''
+  return typeof args.name === 'string' ? args.name.replace(/\s+/g, ' ').trim() : ''
 }
 
 /**
- * Extract the fold label a task_fold result carries: 'Task folded: NAME — …'.
- * Older folds fall back to a 'Title: <name>' line. Returns undefined for
- * every other result.
- */
-export function taskEndTitleOf(event) {
-  if (event === null || typeof event !== 'object' || event.type !== 'tool/result') return undefined
-  const text = resultTextOf(event)
-  if (!text.startsWith('Task folded')) return undefined
-  // name immediately after the prefix, terminated by ' —'.
-  const named = /^Task folded: (.+?)(?: —|$)/.exec(text)
-  if (named !== null) {
-    const name = named[1].replace(/\s+/g, ' ').trim()
-    if (name.length > 0) return name
-  }
-  // legacy: explicit 'Title: <name>' line.
-  const titled = /^Title: (.+)$/m.exec(text)
-  return titled === null ? undefined : titled[1].replace(/\s+/g, ' ').trim()
-}
-
-/**
- * Attach task_fold titles to their folds: the titled fold result labels the
- * most recent `compaction/summary` before it. Folds without a titled result
+ * Attach task_fold titles to their folds, single linear pass. Correlation is
+ * temporal and exact: a fold's compaction/summary is ALWAYS appended between
+ * its task_fold CALL and its RESULT (the engine commits during execute), so
+ * the in-flight task_fold call at summary time is that fold's owner — the
+ * name comes straight from its `arguments`, no rendered-text parsing. A
+ * failed fold never gets a summary while its call is in flight, so it cannot
+ * mislabel; auto-compaction folds between steps see no in-flight call and
  * stay untitled. Mutates and returns `folds`.
  */
 export function attachFoldTitles(folds, events) {
   const list = Array.isArray(events) ? events : []
-  const bySeq = new Map()
-  for (const event of list) {
-    if (event !== null && typeof event === 'object' && Number.isInteger(event.seq)) bySeq.set(event.seq, event)
-  }
-  for (const fold of folds) {
-    if (fold.title !== undefined || fold.shadowedSeqs === undefined) continue
-    for (const seq of fold.shadowedSeqs) {
-      const title = taskEndTitleOf(bySeq.get(seq))
-      if (title !== undefined) { fold.title = title; break }
-    }
-  }
-  let last = -1
+  const pending = new Map() // callId → name, task_fold calls awaiting their result
+  let foldIdx = 0
   for (const event of list) {
     if (event === null || typeof event !== 'object' || typeof event.type !== 'string') continue
-    if (event.type === 'compaction/summary') { last += 1; continue }
-    if (last >= 0 && folds[last] !== undefined && folds[last].title === undefined) {
-      const title = taskEndTitleOf(event)
-      if (title !== undefined) folds[last].title = title
+    if (event.type === 'compaction/summary') {
+      if (foldIdx < folds.length && folds[foldIdx].title === undefined && pending.size > 0) {
+        folds[foldIdx].title = [...pending.values()][pending.size - 1]
+      }
+      foldIdx += 1
+      continue
+    }
+    const data = event.data !== null && typeof event.data === 'object' ? event.data : {}
+    const message = data.message !== null && typeof data.message === 'object' ? data.message : null
+    const content = message !== null && Array.isArray(message.content) ? message.content : []
+    if (event.type === 'assistant/message') {
+      for (const block of content) {
+        if (block !== null && typeof block === 'object' && block.type === 'tool-call' && block.name === 'task_fold' && typeof block.id === 'string') {
+          const name = foldNameOfCall(block)
+          if (name.length > 0) pending.set(block.id, name)
+        }
+      }
+    } else if (event.type === 'tool/result') {
+      for (const block of content) {
+        if (block !== null && typeof block === 'object' && block.type === 'tool-result' && typeof block.toolCallId === 'string') {
+          pending.delete(block.toolCallId)
+        }
+      }
     }
   }
   return folds

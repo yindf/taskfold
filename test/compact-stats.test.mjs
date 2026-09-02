@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { collectStats, foldOf, taskEndTitleOf, attachFoldTitles, collectFolds } from '../plugins/compact-stats.mjs'
+import { collectStats, foldOf, attachFoldTitles, collectFolds } from '../plugins/compact-stats.mjs'
 
 /** Minimal but shape-accurate events mirroring dsh-compaction-basic output. */
 function fixture() {
@@ -102,30 +102,56 @@ test('defensive against malformed fold events', () => {
 
 // ── fold titles + collectFolds (shared by stats and compact_recall) ────────
 
-function resultEvent(seq, text) {
-  return { seq, type: 'tool/result', data: { message: { content: [
-    { type: 'tool-result', toolCallId: 'c' + seq, content: [{ type: 'text', text }] }
+function foldCallEvent(seq, callId, name) {
+  return { seq, type: 'assistant/message', data: { message: { content: [
+    { type: 'tool-call', id: callId, name: 'task_fold', arguments: JSON.stringify({ name }) }
   ] } } }
 }
 
-test('taskEndTitleOf extracts the name only from task_fold successes', () => {
-  const titled = resultEvent(30, 'Task folded: implement fold titles — all closed.\nTitle: implement fold titles\n\nSummary:\nbody')
-  assert.equal(taskEndTitleOf(titled), 'implement fold titles')
-  assert.equal(taskEndTitleOf(resultEvent(31, 'Task ended and compacted into one summary node (5 tokens).')), undefined)
-  assert.equal(taskEndTitleOf(resultEvent(33, 'Title: not a task_fold result')), undefined)
-  assert.equal(taskEndTitleOf({ seq: 34, type: 'user/message', data: {} }), undefined)
-})
+function resultEvent(seq, callId) {
+  return { seq, type: 'tool/result', data: { message: { content: [
+    { type: 'tool-result', toolCallId: callId, content: [{ type: 'text', text: 'Task folded: x — all closed.' }] }
+  ] } } }
+}
 
-test('two-phase folds carry their title INSIDE the shadowed range', () => {
+function summaryEvent(seq, shadowed) {
+  return { seq, type: 'compaction/summary', data: { shadowedSeqs: shadowed, shadowedRange: { start: shadowed[0], end: shadowed[shadowed.length - 1] }, shadowedTokenCount: 42, summary: [{ type: 'text', text: '# x\n- body' }] } }
+}
+
+test('a fold is titled by the in-flight task_fold call\u0027s arguments', () => {
+  // Call → summary (engine commits during execute) → result: the temporal
+  // window guarantees the in-flight call owns the fold.
   const events = [
     { seq: 10, type: 'user/message', data: {} },
-    resultEvent(11, 'Task folded: two-phase task name — all closed. Awaiting fold: call task_commit.'),
-    { seq: 12, type: 'compaction/summary', data: { shadowedSeqs: [10, 11], shadowedRange: { start: 10, end: 11 }, shadowedTokenCount: 42, summary: [{ type: 'text', text: '## H\n- body' }] } }
+    foldCallEvent(11, 'c1', 'argument-based titles'),
+    summaryEvent(12, [10, 11]),
+    resultEvent(13, 'c1')
   ]
   const folds = collectFolds(events)
   assert.equal(folds.length, 1)
-  assert.equal(folds[0].title, 'two-phase task name', 'title extracted from inside the shadowed range')
-  assert.deepEqual(folds[0].shadowedSeqs, [10, 11], 'recall regeneration source seqs present')
+  assert.equal(folds[0].title, 'argument-based titles', 'name read from arguments, not rendered text')
+})
+
+test('failed task_fold calls never mislabel folds', () => {
+  // A failed call produces NO summary before its result — the call is
+  // retired from the in-flight map, so an auto fold after it stays untitled.
+  const events = [
+    foldCallEvent(11, 'c1', 'will fail'),
+    resultEvent(12, 'c1'),
+    summaryEvent(13, [10, 11]) // auto compaction, no in-flight call
+  ]
+  const folds = collectFolds(events)
+  assert.equal(folds[0].title, undefined, 'failed call does not label the next fold')
+})
+
+test('fold names normalize whitespace from arguments', () => {
+  const events = [
+    foldCallEvent(11, 'c1', 'fix  the   bug'),
+    summaryEvent(12, [10, 11]),
+    resultEvent(13, 'c1')
+  ]
+  const folds = collectFolds(events)
+  assert.equal(folds[0].title, 'fix the bug')
 })
 
 test('collectFolds and collectStats outputs are lossless JSON', () => {
