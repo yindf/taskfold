@@ -55,13 +55,13 @@
 **插件包**（任意 profile；所有会话可用）：
 
 ```sh
-dsh plugin --profile web add github:<you>/taskfold
+dsh plugin --profile web add github:yindf/taskfold
 ```
 
 **Agent 预设**（完整 `cordis` 组合 + taskfold）：
 
 ```sh
-git clone https://github.com/<you>/taskfold "$(dsb="${DSH_HOME:-$HOME/.dsh}"; echo "$dsb/.agent-presets/taskfold")"
+git clone https://github.com/yindf/taskfold "$(dsb="${DSH_HOME:-$HOME/.dsh}"; echo "$dsb/.agent-presets/taskfold")"
 ```
 
 两种方式装完都要重启 dsh。不要在同一进程同时挂两种——工具名在共享注册表，重复注册会失败。

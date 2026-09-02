@@ -55,13 +55,13 @@ A todo bridge additionally pairs in-progress todo items with task marks (the sto
 **Plugin bundle** (any profile; tools available in every session):
 
 ```sh
-dsh plugin --profile web add github:<you>/taskfold
+dsh plugin --profile web add github:yindf/taskfold
 ```
 
 **Agent preset** (full `cordis` composition + taskfold):
 
 ```sh
-git clone https://github.com/<you>/taskfold "$(dsb="${DSH_HOME:-$HOME/.dsh}"; echo "$dsb/.agent-presets/taskfold")"
+git clone https://github.com/yindf/taskfold "$(dsb="${DSH_HOME:-$HOME/.dsh}"; echo "$dsb/.agent-presets/taskfold")"
 ```
 
 Restart dsh after either. Do not mount both in the same process — tool names live in a shared registry and duplicate registration fails.
