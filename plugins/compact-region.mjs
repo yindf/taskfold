@@ -532,8 +532,7 @@ export default {
       '- [results, verdicts, failures and their meaning; anything a later step must know]',
       'Rules:',
       '- Preserve exact file paths, commands, error strings, identifiers, and numbers.',
-      '- End the summary with this exact line: "Folded entries remain archived — call compact_recall to read them back by fold number or seq."',
-      '- Do NOT mention summarization or compaction otherwise.',
+      '- Do NOT mention summarization or compaction.',
       '- Output only the summary text: do not call any tool or take any other action.'
     ].join('\n')
 
@@ -736,7 +735,8 @@ export default {
             const hint = value.hint === undefined ? '' : '\n' + String(value.hint)
             return [{ type: 'text', text: 'compact failed (' + category + '): ' + error + hint }]
           }
-          return [{ type: 'text', text: 'Compacted surface positions ' + value.compacted.start + '..' + value.compacted.end + ' into one summary node (' + value.shadowedTokenCount + ' shadowed tokens estimated). Original entries stay archived in the event log — compact_recall reads them back by seq.\n\nSummary:\n' + String(value.summary) }]
+          const range = value.range === undefined ? '' : ' Archived seqs ' + value.range.start + '..' + value.range.end + ' — call compact_recall({ from: ' + value.range.start + ', to: ' + value.range.end + ' }).'
+          return [{ type: 'text', text: 'Compacted surface positions ' + value.compacted.start + '..' + value.compacted.end + ' into one summary node (' + value.shadowedTokenCount + ' shadowed tokens estimated).' + range + '\n\nSummary:\n' + String(value.summary) }]
         }
       },
       async execute(args, exec) {
@@ -773,7 +773,7 @@ export default {
         }
         try {
           const result = await engine.compactRegion(nodes[start - 1], nodes[end - 1], agent, exec.signal)
-          return { ok: true, compacted: { start, end }, summary: summaryTextOf(result), shadowedTokenCount: result.shadowedTokenCount }
+          return { ok: true, compacted: { start, end }, summary: summaryTextOf(result), shadowedTokenCount: result.shadowedTokenCount, range: { start: nodes[start - 1], end: nodes[end - 1] } }
         } catch (err) {
           const classified = classifyCategory(err)
           const hints = {
@@ -899,7 +899,8 @@ export default {
             const hint = value.hint === undefined ? '' : '\n' + String(value.hint)
             return [{ type: 'text', text: 'task_commit failed (' + category + '): ' + error + hint }]
           }
-          return [{ type: 'text', text: 'Task committed: ' + String(value.title) + ' (' + value.shadowedTokenCount + ' tokens shadowed).' }]
+          const range = value.range === undefined ? '' : ' Archived seqs ' + value.range.start + '..' + value.range.end + ' — call compact_recall({ from: ' + value.range.start + ', to: ' + value.range.end + ' }).'
+          return [{ type: 'text', text: 'Task committed: ' + String(value.title) + ' (' + value.shadowedTokenCount + ' tokens shadowed).' + range }]
         }
       },
       async execute(args, exec) {
@@ -912,7 +913,7 @@ export default {
         if (record === undefined) return { ok: false, category: 'invalid', error: 'no ended task awaiting a fold; call task_end first' }
         try {
           const result = await engine.compactRegion(record.beginSeq, record.endSeq, agent, exec.signal)
-          return { ok: true, summary: summaryTextOf(result), shadowedTokenCount: result.shadowedTokenCount, title: record.name }
+          return { ok: true, summary: summaryTextOf(result), shadowedTokenCount: result.shadowedTokenCount, title: record.name, range: { start: record.beginSeq, end: record.endSeq } }
         } catch (err) {
           const classified = classifyCategory(err)
           if (classified.category === 'summary') {
