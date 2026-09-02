@@ -2,7 +2,7 @@
 
 [English](README.md) | [中文](README.zh.md)
 
-Named-task lifecycle for [DeepSeek Harness](https://www.npmjs.com/package/@deepseek-ai/dsh) (DSH): **begin → work → fold**. Each task's span folds into a titled, span-scoped summary node while its exact original request context (messages as sent, reasoning included) is saved as a JSON artifact — read/grep it with any file tool, regenerate it anytime from the append-only log. Hold-semantics lifecycle nudges keep the flow honest.
+Keeps long coding-agent sessions lean: wrap work in named tasks and, when one is done, fold its whole span into a short titled summary. The conversation stays readable, context costs stay low, and every fold's original content can be read back on demand. For [DeepSeek Harness](https://www.npmjs.com/package/@deepseek-ai/dsh) (DSH).
 
 Installable two ways:
 

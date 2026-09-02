@@ -2,7 +2,7 @@
 
 [English](README.md) | [中文](README.zh.md)
 
-[DeepSeek Harness](https://www.npmjs.com/package/@deepseek-ai/dsh)（DSH）的命名任务生命周期：**begin → work → fold**。每个任务的跨度折叠为带标题的区间摘要节点，同时把发给模型的精确原始上下文（含 reasoning）存为 JSON 工件——任意文件工具可读可搜，随时可从只追加日志再生。hold 语义的生命周期催办保证流程不被跳过。
+让长会话保持精炼：把工作包进命名任务，做完即把整段折叠成一条带标题的短摘要。会话始终可读、上下文成本始终可控，而任何被折叠的原始内容都随时可以取回。面向 [DeepSeek Harness](https://www.npmjs.com/package/@deepseek-ai/dsh)（DSH）。
 
 两种安装方式：
 
