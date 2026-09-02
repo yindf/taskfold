@@ -25,6 +25,8 @@ Four model tools:
 
 Every successful fold writes the span's **exact original request context** — the same messages the model was sent, derived by the harness's own `session.deriveEventMessage(session.eventAt(seq))` pair (the same API the engine's summarizer replays) — as a JSON file to the OS temp dir (`taskfold-artifacts/`), including reasoning blocks, tool-call arguments, and tool results verbatim. The `task_fold` output carries the path; the model reads/greps it with any file tool. Temp files are conveniences, not the source of truth: the append-only log is, so `fold_recall({ fold: N })` regenerates any artifact on demand.
 
+A task's span runs from its begin anchor to the **last surface node at fold time** — a task's final body message joins its OWN fold (never the parent's), so nested folds each recall their complete original context. Auto compaction keeps its own live-edge margin; explicit task folds need none, and the in-flight fold step itself is never inside the region (defended even on hosts that commit the step early).
+
 ### Engine (scoped, self-hosted)
 
 Explicit folds (`task_fold`) always run through the plugin's own `ScopedEngine extends BasicCompactionEngine`: only `summarize()` is overridden — replacing the stock continuity-checkpoint instruction with a **span-scoped** one (summarize only what the span contains, for the continuing model; never restate project background) that also DECLARES the task closed (the span cannot contain its own ending, so the instruction compensates) — while locking, validation, stability checks, and the commit path stay stock. The LLM call replays the same prefix (provider cache reuse preserved); only the appended instruction differs.

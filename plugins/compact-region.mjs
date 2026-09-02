@@ -172,8 +172,16 @@ export function closeTarget(marks, name) {
  *   { action:'unfolded', reason:'anchor'|'engine', mark }  close without folding
  *   { action:'tooSmall', mark }                      close, span left as-is
  *   { action:'fold', mark, startSeq, endSeq }        compactRegion inputs
+ *
+ * Region end: the LAST surface node — task_fold is an explicit close, so the
+ * span runs up to the live edge and the task's final body message folds into
+ * its own fold (not the parent's). Auto-compaction keeps its own last-node
+ * margin; this boundary is task-fold-only. Defense: when `events` is passed
+ * and the last node is the assistant message carrying this very task_fold
+ * call (a host that commits the in-flight step before tool execution), the
+ * end steps back to the previous node so the fold never shadows itself.
  */
-export function foldDecision(marks, name, surfaceNodes, engineAvailable) {
+export function foldDecision(marks, name, surfaceNodes, engineAvailable, events) {
   const list = Array.isArray(marks) ? marks : []
   const nodes = Array.isArray(surfaceNodes) ? surfaceNodes : []
   if (!validTaskName(name)) {
@@ -199,7 +207,14 @@ export function foldDecision(marks, name, surfaceNodes, engineAvailable) {
   if (nodes.indexOf(mark.seq) === -1) {
     return { action: 'unfolded', reason: 'anchor', mark }
   }
-  const endIdx = nodes.length - 2
+  let endIdx = nodes.length - 1
+  if (Array.isArray(events)) {
+    const ev = events.find((e) => e !== null && typeof e === 'object' && e.seq === nodes[endIdx])
+    if (ev !== undefined && ev.type === 'assistant/message' && Array.isArray(ev.content)
+      && ev.content.some((b) => b !== null && typeof b === 'object' && b.type === 'tool-call' && b.name === 'task_fold')) {
+      endIdx -= 1 // never fold the message carrying this fold call itself
+    }
+  }
   if (endIdx < 0 || nodes[endIdx] < mark.seq) {
     return { action: 'tooSmall', mark }
   }
@@ -727,7 +742,7 @@ export default {
         const session = agent.session
         const marks = marksOf(session)
         const engine = await engineFor()
-        const decision = foldDecision(marks, name, session.surface.nodes, engine !== undefined)
+        const decision = foldDecision(marks, name, session.surface.nodes, engine !== undefined, sessionEvents(session))
         if (decision.action === 'invalid') {
           return { ok: false, category: 'invalid', error: decision.error }
         }

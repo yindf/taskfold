@@ -3,7 +3,21 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
-## 0.2.0 — review-hardening generation (current)
+## 0.2.1 — nested folds own their full span (current)
+
+- **Region runs to the last surface node**: a task's final body message now
+  folds into its OWN fold instead of leaking into the parent's span artifact;
+  nested folds each recall their complete original context. Explicit task
+  folds need no live-edge margin (auto compaction keeps its own).
+- **Self-fold defense**: if a host commits the in-flight step before tool
+  execution, the assistant message carrying the `task_fold` call itself is
+  excluded from the region (`foldDecision` takes an optional `events`
+  argument).
+- **Nesting guidance in prompts**: the system-prompt section and the
+  `task_begin` description now tell the model tasks nest hierarchically
+  (innermost folds first; every fold keeps its own recallable context).
+
+## 0.2.0 — review-hardening generation
 
 External code review triage: no deterministic data-loss bugs, but semantic
 edges, comment drift, and dead code — all addressed.

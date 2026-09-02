@@ -245,11 +245,40 @@ test('foldDecision: anchor shadowed by compaction degrades to unfolded', () => {
 
 test('foldDecision: tooSmall precedes the engine check', () => {
   const marks = [{ seq: 10, name: 'alpha' }]
-  // Surface holds ONLY the begin anchor: endIdx < 0 → tooSmall with NO engine.
-  assert.equal(foldDecision(marks, 'alpha', [10], false).action, 'tooSmall')
-  // Anchor plus one body node: a (tiny) fold is ATTEMPTED; the engine's
-  // not-smaller rejection later turns it into the runtime tooSmall outcome.
+  // Defensive path: malformed descending nodes put the end before the anchor.
+  assert.equal(foldDecision(marks, 'alpha', [10, 9], false).action, 'tooSmall')
+  // Anchor as the ONLY node still attempts a fold (engineAvailable=false
+  // degrades BEFORE the engine call, proving the fold path was taken); the
+  // engine's not-smaller rejection later turns tiny spans into runtime tooSmall.
+  assert.equal(foldDecision(marks, 'alpha', [10], false).action, 'unfolded')
   assert.equal(foldDecision(marks, 'alpha', [10, 11], true).action, 'fold')
+})
+
+test('foldDecision: region runs to the LAST node, never past a self-carrying step', () => {
+  const marks = [{ seq: 10, name: 'alpha' }]
+  const nodes = [10, 11, 12, 13, 14, 15]
+  const plain = foldDecision(marks, 'alpha', nodes, true)
+  assert.equal(plain.endSeq, 15, 'task folds run to the live edge — the final body message joins its OWN fold')
+  // A host that commits the in-flight step early: the last node is the
+  // assistant message carrying this very task_fold call — step back past it.
+  const events = [
+    { seq: 14, type: 'assistant/message', content: [{ type: 'text', text: 'body' }] },
+    { seq: 15, type: 'assistant/message', content: [{ type: 'tool-call', name: 'task_fold' }] }
+  ]
+  const defended = foldDecision(marks, 'alpha', nodes, true, events)
+  assert.equal(defended.action, 'fold')
+  assert.equal(defended.endSeq, 14, 'the self-carrying node is excluded from the region')
+  // Other tool calls or plain text in the last node fold normally.
+  const benign = [
+    { seq: 15, type: 'assistant/message', content: [{ type: 'tool-call', name: 'grep' }] }
+  ]
+  assert.equal(foldDecision(marks, 'alpha', nodes, true, benign).endSeq, 15)
+  // Stepping back past the self node must still respect the anchor floor.
+  const tight = foldDecision(marks, 'alpha', [10, 11], true, [
+    { seq: 11, type: 'assistant/message', content: [{ type: 'tool-call', name: 'task_fold' }] }
+  ])
+  assert.equal(tight.action, 'fold')
+  assert.equal(tight.endSeq, 10, 'single-node region [begin..begin] is a legal (tiny) fold')
 })
 
 test('foldDecision: engine unavailable degrades to unfolded; available folds', () => {
@@ -261,7 +290,7 @@ test('foldDecision: engine unavailable degrades to unfolded; available folds', (
   const up = foldDecision(marks, 'alpha', nodes, true)
   assert.equal(up.action, 'fold')
   assert.equal(up.startSeq, 10)
-  assert.equal(up.endSeq, nodes[nodes.length - 2], 'end is the last node before the fold step itself')
+  assert.equal(up.endSeq, nodes[nodes.length - 1], 'end is the last surface node')
 })
 
 test('todoBridgeLine: roster rendering with names, none, and quote defense', () => {
