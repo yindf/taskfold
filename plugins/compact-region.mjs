@@ -52,6 +52,7 @@
 import nodePath from 'node:path'
 import nodeFs from 'node:fs'
 import nodeUrl from 'node:url'
+import nodeOs from 'node:os'
 
 /** Session-projection key under which the open-mark stack is published. */
 export const TASK_MARKS_KEY = 'taskMarks'
@@ -646,6 +647,42 @@ export default {
       return summary
     }
 
+    // ── span artifact: the EXACT original context, as a file ──────────────
+    // deriveEventMessage/eventAt are the harness's own request-derivation
+    // pair (the compaction engine replays them for summarization input), so
+    // the artifact is byte-identical to what the model was sent for the span
+    // — same blocks, same order, no digest, no line numbers. Written to the
+    // OS temp dir at fold time; compact_recall({ fold: N }) regenerates it
+    // from the append-only log when the temp file has been cleaned.
+    function spanMessages(session, seqs) {
+      if (typeof session.deriveEventMessage !== 'function' || typeof session.eventAt !== 'function') return undefined
+      try {
+        const messages = []
+        for (const seq of seqs) {
+          const message = session.deriveEventMessage(session.eventAt(seq))
+          if (message !== null && message !== undefined) messages.push(message)
+        }
+        return messages
+      } catch (err) {
+        return undefined
+      }
+    }
+
+    function writeArtifactFile(session, seqs, nameKey) {
+      const messages = spanMessages(session, seqs)
+      if (messages === undefined) return undefined
+      try {
+        const dir = nodePath.join(nodeOs.tmpdir(), 'cmpct-artifacts')
+        nodeFs.mkdirSync(dir, { recursive: true })
+        const slug = String(nameKey).replace(/[^\p{L}\p{N}_-]+/gu, '-').replace(/^-+|-+$/g, '').slice(0, 60)
+        const file = nodePath.join(dir, (slug.length > 0 ? slug : 'artifact') + '-' + Date.now().toString(36) + '.json')
+        nodeFs.writeFileSync(file, JSON.stringify(messages, null, 2) + '\n', 'utf8')
+        return file
+      } catch (err) {
+        return undefined
+      }
+    }
+
     const inspectTool = {
       name: 'compact_inspect',
       description: 'List the current conversation surface: 1-based positions, role, kind, preview, and whether each position can be a compaction start/end edge. Read-only. Call this before compact(start, end). By default shows the tail window when the surface is long; use from/to to inspect an older window.',
@@ -735,7 +772,7 @@ export default {
             const hint = value.hint === undefined ? '' : '\n' + String(value.hint)
             return [{ type: 'text', text: 'compact failed (' + category + '): ' + error + hint }]
           }
-          const range = value.range === undefined ? '' : ' Archived seqs ' + value.range.start + '..' + value.range.end + ' — call compact_recall({ from: ' + value.range.start + ', to: ' + value.range.end + ' }).'
+          const range = value.file === undefined ? '' : ' Original context saved: ' + value.file
           return [{ type: 'text', text: 'Compacted surface positions ' + value.compacted.start + '..' + value.compacted.end + ' into one summary node (' + value.shadowedTokenCount + ' shadowed tokens estimated).' + range + '\n\nSummary:\n' + String(value.summary) }]
         }
       },
@@ -773,7 +810,8 @@ export default {
         }
         try {
           const result = await engine.compactRegion(nodes[start - 1], nodes[end - 1], agent, exec.signal)
-          return { ok: true, compacted: { start, end }, summary: summaryTextOf(result), shadowedTokenCount: result.shadowedTokenCount, range: { start: nodes[start - 1], end: nodes[end - 1] } }
+          const file = writeArtifactFile(session, result.shadowedSeqs, 'compact-' + start + '-' + end)
+          return { ok: true, compacted: { start, end }, summary: summaryTextOf(result), shadowedTokenCount: result.shadowedTokenCount, file }
         } catch (err) {
           const classified = classifyCategory(err)
           const hints = {
@@ -899,7 +937,7 @@ export default {
             const hint = value.hint === undefined ? '' : '\n' + String(value.hint)
             return [{ type: 'text', text: 'task_commit failed (' + category + '): ' + error + hint }]
           }
-          const range = value.range === undefined ? '' : ' Archived seqs ' + value.range.start + '..' + value.range.end + ' — call compact_recall({ from: ' + value.range.start + ', to: ' + value.range.end + ' }).'
+          const range = value.file === undefined ? '' : ' Original context saved: ' + value.file
           return [{ type: 'text', text: 'Task committed: ' + String(value.title) + ' (' + value.shadowedTokenCount + ' tokens shadowed).' + range }]
         }
       },
@@ -913,7 +951,8 @@ export default {
         if (record === undefined) return { ok: false, category: 'invalid', error: 'no ended task awaiting a fold; call task_end first' }
         try {
           const result = await engine.compactRegion(record.beginSeq, record.endSeq, agent, exec.signal)
-          return { ok: true, summary: summaryTextOf(result), shadowedTokenCount: result.shadowedTokenCount, title: record.name, range: { start: record.beginSeq, end: record.endSeq } }
+          const file = writeArtifactFile(session, result.shadowedSeqs, record.name)
+          return { ok: true, summary: summaryTextOf(result), shadowedTokenCount: result.shadowedTokenCount, title: record.name, file }
         } catch (err) {
           const classified = classifyCategory(err)
           if (classified.category === 'summary') {
@@ -940,7 +979,7 @@ export default {
     ctx.systemPrompt.section({
       name: 'task-marker-compaction',
       order: 650,
-      text: '## Task lifecycle compaction\n\nTasks are NAMED. Call task_begin({ name: "…" }) to open one (alone in a step); call task_end({ name }) to close it by name — a mismatch cannot corrupt other tasks; call task_commit to fold the full span (begin pair, body, end pair) into one summary node titled by the name, so the summary sees the completed task. Too-small spans are reported and left as-is. Use compact(start, end) only for ranges that do not align with task marks; never track message positions yourself.\n\nFold summaries are terse by design. When one lacks the detail you need — an exact change, a command output, an error string — call compact_recall to read the archived originals (the seq range rides every fold output; with no args it lists all folds). The log is append-only: nothing is ever lost.\n\nRuntime context may carry a todo bridge and lifecycle nudges: call task_begin when working with no task open, call task_end for a task 20+ rounds old, call task_commit for an ended-but-unfolded task. Follow them so task spans stay compactable.'
+      text: '## Task lifecycle compaction\n\nTasks are NAMED. Call task_begin({ name: "…" }) to open one (alone in a step); call task_end({ name }) to close it by name — a mismatch cannot corrupt other tasks; call task_commit to fold the full span (begin pair, body, end pair) into one summary node titled by the name, so the summary sees the completed task. Too-small spans are reported and left as-is. Use compact(start, end) only for ranges that do not align with task marks; never track message positions yourself.\n\nFold outputs carry the path of a temp file holding the span\u0027s EXACT original request context (the same messages the model was sent). Read or grep it with any file tool when a summary lacks the detail you need; if the temp file has been cleaned, call compact_recall({ fold: N }) to regenerate it.\n\nRuntime context may carry a todo bridge and lifecycle nudges: call task_begin when working with no task open, call task_end for a task 20+ rounds old, call task_commit for an ended-but-unfolded task. Follow them so task spans stay compactable.'
     })
 
     const TASK_TOOL_RE = /^(task_begin|task_end|task_commit|compact|compact_inspect|compact_stats|compact_recall|todo_write)$/
