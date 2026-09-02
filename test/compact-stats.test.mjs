@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { collectStats, foldOf, buildRecall, digestOf, KNOWN_EVENT_TYPES, RECALL_FULL_LIMIT, taskEndTitleOf, attachFoldTitles } from '../plugins/compact-stats.mjs'
+import { collectStats, foldOf, buildRecall, digestOf, RECALL_FULL_LIMIT, taskEndTitleOf, attachFoldTitles, buildArtifactLines } from '../plugins/compact-stats.mjs'
 
 /** Minimal but shape-accurate events mirroring dsh-compaction-basic output. */
 function fixture() {
@@ -54,7 +54,6 @@ test('detects folds with totals and previews, oldest first', () => {
   assert.equal(stats.folds[0].preview, '- investigated the harness')
   assert.equal(stats.folds[1].compactionId, 'c2')
   assert.equal('provider' in stats.folds[1], false)
-  assert.deepEqual(stats.unknownEventTypes, [])
 })
 
 test('empty history is zeros, not an error', () => {
@@ -63,7 +62,6 @@ test('empty history is zeros, not an error', () => {
   assert.equal(stats.totals.shadowedTokens, 0)
   assert.equal(stats.eventCount, 0)
   assert.deepEqual(stats.folds, [])
-  assert.deepEqual(stats.unknownEventTypes, [])
 })
 
 test('fold preview skips headers, truncates with ellipsis', () => {
@@ -82,10 +80,13 @@ test('fold preview skips headers, truncates with ellipsis', () => {
   assert.equal(onlyHeaders.preview, '')
 })
 
-test('unknown event types are surfaced, never silent', () => {
+test('fold accounting keys only on compaction/summary — unknown types are invisible, not errors', () => {
+  // The exhaustive known-type set is gone by design; a log full of
+  // unfamiliar event types must not break stats or produce noise.
   const events = fixture().concat([{ seq: 9, type: 'compaction/v2-commit', data: {} }, { seq: 10, type: 'brandnew/thing', data: {} }])
   const stats = collectStats(events, 12)
-  assert.deepEqual(stats.unknownEventTypes, ['brandnew/thing', 'compaction/v2-commit'])
+  assert.equal(stats.totals.folds, 2)
+  assert.equal('unknownEventTypes' in stats, false)
 })
 
 test('defensive against malformed fold events', () => {
@@ -97,12 +98,6 @@ test('defensive against malformed fold events', () => {
   const nullish = collectStats([null, 42, { type: 7 }, undefined], 3)
   assert.equal(nullish.eventCount, 4)
   assert.equal(nullish.totals.folds, 0)
-})
-
-test('known-type set covers the core conversation types', () => {
-  for (const t of ['user/message', 'assistant/message', 'tool/result', 'todo/write', 'compaction/start', 'compaction/summary', 'compaction/end']) {
-    assert.ok(KNOWN_EVENT_TYPES.has(t), t)
-  }
 })
 
 // ── compact_recall ───────────────────────────────────────────────────────────
@@ -158,21 +153,72 @@ test('recall index mode lists folds with entry counts', () => {
   assert.equal(r.folds[1].entries, undefined)
 })
 
-test('recall fold manifest digests every archived entry', () => {
+test('recall fold mode opens the artifact: readable transcript, windowed', () => {
   const r = buildRecall(recallFixture(), { fold: 1 })
   assert.equal(r.ok, true)
-  assert.equal(r.mode, 'fold')
-  assert.equal(r.entries.length, 4)
-  const [u, a, t, plain] = r.entries
-  assert.equal(u.seq, 10)
-  assert.equal(u.kind, 'user/message')
-  assert.equal(u.preview, 'fix the bug please')
-  assert.equal(a.kind, 'assistant/tool_call')
-  assert.deepEqual(a.toolNames, ['read'])
-  assert.equal(t.kind, 'user/tool_result')
-  assert.equal(t.preview, 'the file body returned here')
-  assert.equal(plain.kind, 'assistant/assistant')
-  assert.equal(plain.preview, 'plain answer, no tools')
+  assert.equal(r.mode, 'artifact')
+  assert.equal(r.target, 'fold #1')
+  assert.ok(r.totalLines > 0)
+  const joined = r.lines.join('\n')
+  assert.ok(joined.includes('─── user'), 'user entry header rendered')
+  assert.ok(joined.includes('fix the bug please'), 'user text present')
+  assert.ok(joined.includes('→ read('), 'tool call rendered with arguments')
+  assert.ok(joined.includes('the file body returned here'), 'tool result present')
+  assert.ok(joined.includes('plain answer, no tools'), 'assistant text present')
+  // default window covers the small artifact entirely
+  assert.equal(r.more, false)
+  assert.equal(r.fromLine, 1)
+  assert.equal(r.toLine, r.totalLines)
+})
+
+test('artifact window seeks by line and is capped', () => {
+  const events = []
+  for (let i = 0; i < 30; i += 1) {
+    events.push({ seq: 100 + i, type: 'user/message', data: { message: { content: [{ type: 'text', text: 'line ' + i + ' of a long artifact entry' }] } } })
+  }
+  events.push({ seq: 200, type: 'compaction/summary', data: { shadowedSeqs: Array.from({ length: 30 }, (_, i) => 100 + i), shadowedRange: { start: 100, end: 129 }, shadowedTokenCount: 9, summary: [{ type: 'text', text: 's' }] } })
+  const head = buildRecall(events, { fold: 1 })
+  assert.equal(head.fromLine, 1)
+  assert.equal(head.lines.length, head.totalLines, 'small artifact fully windowed')
+  const seek = buildRecall(events, { fold: 1, fromLine: 10, toLine: 12 })
+  assert.equal(seek.fromLine, 10)
+  assert.equal(seek.lines.length, 3)
+  assert.ok(seek.lines[0].startsWith('line 4'), 'line 10 is the 5th entry header/body pair region')
+})
+
+test('artifact find searches by substring and reports line numbers', () => {
+  const r = buildRecall(recallFixture(), { fold: 1, find: 'FILE BODY' })
+  assert.equal(r.ok, true)
+  assert.equal(r.mode, 'find')
+  assert.equal(r.hits.length, 1)
+  assert.ok(r.hits[0].text.includes('the file body returned here'))
+  assert.ok(r.hits[0].line >= 1)
+  const none = buildRecall(recallFixture(), { fold: 1, find: 'zzz-nope' })
+  assert.equal(none.hits.length, 0)
+})
+
+test('artifact lines carry tool-call arguments', () => {
+  const events = [
+    { seq: 10, type: 'assistant/message', data: { message: { content: [
+      { type: 'text', text: 'writing the file' },
+      { type: 'tool-call', id: 'c1', name: 'write', arguments: { file_path: '/tmp/a.md', content: '# Title\nbody' } }
+    ] } } },
+    { seq: 11, type: 'compaction/summary', data: { shadowedSeqs: [10], shadowedRange: { start: 10, end: 10 }, shadowedTokenCount: 5, summary: [{ type: 'text', text: 's' }] } }
+  ]
+  const lines = buildArtifactLines(events, [10])
+  const joined = lines.join('\n')
+  assert.ok(joined.includes('→ write('), 'call name rendered')
+  assert.ok(joined.includes('file_path'), 'arguments serialized')
+})
+
+test('giant single entries are truncated inside the artifact', () => {
+  const long = 'y'.repeat(6500)
+  const events = [
+    { seq: 10, type: 'user/message', data: { message: { content: [{ type: 'text', text: long }] } } },
+    { seq: 11, type: 'compaction/summary', data: { shadowedSeqs: [10], shadowedRange: { start: 10, end: 10 }, shadowedTokenCount: 1, summary: [{ type: 'text', text: 's' }] } }
+  ]
+  const lines = buildArtifactLines(events, [10])
+  assert.ok(lines.some((l) => l.includes('chars truncated in artifact')), 'truncation marker present')
 })
 
 test('recall seq mode finds archived and live entries', () => {
@@ -200,29 +246,29 @@ test('recall rejects folds without shadowedSeqs and bad targeting', () => {
   assert.equal(badRange.ok, false)
 })
 
-test('recall range mode filters archived seqs', () => {
+test('recall range mode opens an artifact over the seq span', () => {
   const r = buildRecall(recallFixture(), { from: 10, to: 13 })
   assert.equal(r.ok, true)
-  assert.equal(r.mode, 'range')
-  assert.equal(r.entries.length, 4)
-  assert.equal(r.entries[0].fold, 1)
+  assert.equal(r.mode, 'artifact')
+  assert.equal(r.target, 'seqs 10..13')
+  assert.ok(r.totalLines > 0)
   const none = buildRecall(recallFixture(), { from: 61, to: 69 })
   assert.equal(none.ok, true)
-  assert.equal(none.entries.length, 0)
+  assert.equal(none.totalLines, 0)
 })
 
-test('recall full mode raises the cap with an ellipsis marker', () => {
+test('recall seq full mode raises the cap with an ellipsis marker', () => {
   const long = 'x'.repeat(RECALL_FULL_LIMIT + 500)
   const events = [
     { seq: 10, type: 'user/message', data: { message: { content: [{ type: 'text', text: long }] } } },
     { seq: 11, type: 'compaction/summary', data: { shadowedRange: { start: 10, end: 10 }, shadowedSeqs: [10], shadowedTokenCount: 1, summary: [{ type: 'text', text: 's' }] } }
   ]
-  const preview = buildRecall(events, { fold: 1 })
-  assert.equal(preview.entries[0].preview.length, 60 + 1) // 60 chars + ellipsis
-  assert.ok(preview.entries[0].preview.endsWith('…'))
-  const full = buildRecall(events, { fold: 1, full: true })
-  assert.equal(full.entries[0].preview.length, RECALL_FULL_LIMIT + 1)
-  assert.ok(full.entries[0].preview.endsWith('…'))
+  const preview = buildRecall(events, { seq: 10 })
+  assert.equal(preview.preview.length, 60 + 1) // 60 chars + ellipsis
+  assert.ok(preview.preview.endsWith('…'))
+  const full = buildRecall(events, { seq: 10, full: true })
+  assert.equal(full.preview.length, RECALL_FULL_LIMIT + 1)
+  assert.ok(full.preview.endsWith('…'))
 })
 
 test('digestOf defends against malformed events and unknown types', () => {
