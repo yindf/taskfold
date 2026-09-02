@@ -1,13 +1,13 @@
-# cmpct
+# taskfold
 
 [English](README.md) | [中文](README.zh.md)
 
-面向 [DeepSeek Harness](https://www.npmjs.com/package/@deepseek-ai/dsh)（DSH）的任务生命周期会话压缩：**命名任务**的完整跨度折叠为单个摘要节点、手动区间压缩、归档回看，以及 hold 语义的生命周期催办。
+[DeepSeek Harness](https://www.npmjs.com/package/@deepseek-ai/dsh)（DSH）的命名任务生命周期：**begin → work → fold**。每个任务的跨度折叠为带标题的区间摘要节点，同时把发给模型的精确原始上下文（含 reasoning）存为 JSON 工件——任意文件工具可读可搜，随时可从只追加日志再生。hold 语义的生命周期催办保证流程不被跳过。
 
 两种安装方式：
 
 - **插件包**（推荐）：`dsh plugin add` 装入 profile——工具族落在 host 平面，任何预设的每个会话都可用；会话组合未提供压缩引擎时自动自托管。
-- **Agent 预设**：克隆到 `.agent-presets/`——完整 `cordis` 编码代理组合 + compaction realm 内的 cmpct 工具。
+- **Agent 预设**：克隆到 `.agent-presets/`——完整 `cordis` 编码代理组合 + compaction realm 内的 taskfold 工具。
 
 ## 提供什么
 
@@ -24,7 +24,7 @@
 
 ### 区间工件（精确原始上下文）
 
-每次折叠成功，把该跨度的**精确原始请求上下文**——模型当时收到的同一批消息，由宿主自己的 `session.deriveEventMessage(session.eventAt(seq))` 派生（引擎摘要器重放用的同一对 API）——以 JSON 写入系统临时目录（`cmpct-artifacts/`）：reasoning 块、工具调用参数、工具结果原样在内。`task_fold` 输出携带路径，模型用任意文件工具 read/grep。临时文件只是便利品，不是事实源——事实源是只追加日志，`compact_recall({ fold: N })` 随时可再生成任何工件。
+每次折叠成功，把该跨度的**精确原始请求上下文**——模型当时收到的同一批消息，由宿主自己的 `session.deriveEventMessage(session.eventAt(seq))` 派生（引擎摘要器重放用的同一对 API）——以 JSON 写入系统临时目录（`taskfold-artifacts/`）：reasoning 块、工具调用参数、工具结果原样在内。`task_fold` 输出携带路径，模型用任意文件工具 read/grep。临时文件只是便利品，不是事实源——事实源是只追加日志，`compact_recall({ fold: N })` 随时可再生成任何工件。
 
 ### 引擎（scoped，自托管）
 
@@ -55,13 +55,13 @@
 **插件包**（任意 profile；所有会话可用）：
 
 ```sh
-dsh plugin --profile web add github:<you>/cmpct
+dsh plugin --profile web add github:<you>/taskfold
 ```
 
-**Agent 预设**（完整 `cordis` 组合 + cmpct）：
+**Agent 预设**（完整 `cordis` 组合 + taskfold）：
 
 ```sh
-git clone https://github.com/<you>/cmpct "$(dsb="${DSH_HOME:-$HOME/.dsh}"; echo "$dsb/.agent-presets/cmpct")"
+git clone https://github.com/<you>/taskfold "$(dsb="${DSH_HOME:-$HOME/.dsh}"; echo "$dsb/.agent-presets/taskfold")"
 ```
 
 两种方式装完都要重启 dsh。不要在同一进程同时挂两种——工具名在共享注册表，重复注册会失败。

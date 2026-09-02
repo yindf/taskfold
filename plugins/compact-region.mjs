@@ -613,7 +613,7 @@ export default {
       const messages = spanMessages(session, seqs)
       if (messages === undefined) return undefined
       try {
-        const dir = nodePath.join(nodeOs.tmpdir(), 'cmpct-artifacts')
+        const dir = nodePath.join(nodeOs.tmpdir(), 'taskfold-artifacts')
         nodeFs.mkdirSync(dir, { recursive: true })
         const slug = String(nameKey).replace(/[^\p{L}\p{N}_-]+/gu, '-').replace(/^-+|-+$/g, '').slice(0, 60)
         const file = nodePath.join(dir, (slug.length > 0 ? slug : 'artifact') + '-' + Date.now().toString(36) + '.json')

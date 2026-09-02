@@ -1,13 +1,13 @@
-# cmpct
+# taskfold
 
 [English](README.md) | [中文](README.zh.md)
 
-Task-lifecycle conversation compaction for [DeepSeek Harness](https://www.npmjs.com/package/@deepseek-ai/dsh) (DSH): **named tasks** whose full span folds into one summary node, ad-hoc region compaction, archive recall, and hold-semantics lifecycle nudges.
+Named-task lifecycle for [DeepSeek Harness](https://www.npmjs.com/package/@deepseek-ai/dsh) (DSH): **begin → work → fold**. Each task's span folds into a titled, span-scoped summary node while its exact original request context (messages as sent, reasoning included) is saved as a JSON artifact — read/grep it with any file tool, regenerate it anytime from the append-only log. Hold-semantics lifecycle nudges keep the flow honest.
 
 Installable two ways:
 
 - **As a plugin bundle** (recommended): `dsh plugin add` into a profile — the tool family lands on the host plane and every session, on every preset, gets it. The compaction engine is self-hosted when the session's composition provides none.
-- **As an agent preset**: clone into `.agent-presets/` — the full `cordis` coding-agent composition plus the cmpct tools inside the compaction realm.
+- **As an agent preset**: clone into `.agent-presets/` — the full `cordis` coding-agent composition plus the taskfold tools inside the compaction realm.
 
 ## What it adds
 
@@ -24,7 +24,7 @@ Seven model tools:
 
 ### Span artifacts (exact original context)
 
-Every successful fold writes the span's **exact original request context** — the same messages the model was sent, derived by the harness's own `session.deriveEventMessage(session.eventAt(seq))` pair (the same API the engine's summarizer replays) — as a JSON file to the OS temp dir (`cmpct-artifacts/`), including reasoning blocks, tool-call arguments, and tool results verbatim. The `task_fold` output carries the path; the model reads/greps it with any file tool. Temp files are conveniences, not the source of truth: the append-only log is, so `compact_recall({ fold: N })` regenerates any artifact on demand.
+Every successful fold writes the span's **exact original request context** — the same messages the model was sent, derived by the harness's own `session.deriveEventMessage(session.eventAt(seq))` pair (the same API the engine's summarizer replays) — as a JSON file to the OS temp dir (`taskfold-artifacts/`), including reasoning blocks, tool-call arguments, and tool results verbatim. The `task_fold` output carries the path; the model reads/greps it with any file tool. Temp files are conveniences, not the source of truth: the append-only log is, so `compact_recall({ fold: N })` regenerates any artifact on demand.
 
 ### Engine (scoped, self-hosted)
 
@@ -55,13 +55,13 @@ A todo bridge additionally pairs in-progress todo items with task marks (the sto
 **Plugin bundle** (any profile; tools available in every session):
 
 ```sh
-dsh plugin --profile web add github:<you>/cmpct
+dsh plugin --profile web add github:<you>/taskfold
 ```
 
-**Agent preset** (full `cordis` composition + cmpct):
+**Agent preset** (full `cordis` composition + taskfold):
 
 ```sh
-git clone https://github.com/<you>/cmpct "$(dsb="${DSH_HOME:-$HOME/.dsh}"; echo "$dsb/.agent-presets/cmpct")"
+git clone https://github.com/<you>/taskfold "$(dsb="${DSH_HOME:-$HOME/.dsh}"; echo "$dsb/.agent-presets/taskfold")"
 ```
 
 Restart dsh after either. Do not mount both in the same process — tool names live in a shared registry and duplicate registration fails.

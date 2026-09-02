@@ -8,7 +8,7 @@
  * folds — the surface is a projection — so nothing is ever lost, only
  * projected away. Seqs are stable archive ids (surface positions shift).
  * `save: true` materializes an artifact as a FILE under the session
- * workspace (.cmpct-artifacts/) so the model can read/grep/edit it with any
+ * workspace (.taskfold-artifacts/) so the model can read/grep/edit it with any
  * tool — recall stops being the only interface to folded history.
  */
 import nodeFs from 'node:fs'
@@ -276,7 +276,7 @@ export default {
           }
           const nameKey = f.title !== undefined ? f.title : 'fold-' + foldNo
           const slug = String(nameKey).replace(/[^\p{L}\p{N}_-]+/gu, '-').replace(/^-+|-+$/g, '').slice(0, 60)
-          const dir = nodePath.join(nodeOs.tmpdir(), 'cmpct-artifacts')
+          const dir = nodePath.join(nodeOs.tmpdir(), 'taskfold-artifacts')
           nodeFs.mkdirSync(dir, { recursive: true })
           const file = nodePath.join(dir, (slug.length > 0 ? slug : 'artifact') + '-' + Date.now().toString(36) + '.json')
           nodeFs.writeFileSync(file, JSON.stringify(messages, null, 2) + '\n', 'utf8')
