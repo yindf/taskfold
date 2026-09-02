@@ -89,6 +89,21 @@ export function foldOf(event) {
 }
 
 /** Full stats over a live event log. Single linear pass, O(n). */
+/**
+ * Cross-version event-log accessor: dsh ≤0.1.2-alpha.3 exposed the whole log
+ * as session.events (array); alpha.4 replaced it with on-demand APIs —
+ * session.snapshotEvents() returns a full array snapshot. Support both.
+ * (Local copy: this plugin stays dependency-free of its sibling.)
+ */
+function sessionEvents(session) {
+  if (session === undefined || session === null) return []
+  if (Array.isArray(session.events)) return session.events
+  if (typeof session.snapshotEvents === 'function') {
+    try { return session.snapshotEvents() } catch (err) { return [] }
+  }
+  return []
+}
+
 export function collectStats(events, surfaceLength) {
   const list = Array.isArray(events) ? events : []
   const folds = []
@@ -342,7 +357,7 @@ export default {
           return { ok: false, error: 'failed to read the session: ' + (err !== null && typeof err === 'object' && err.message ? String(err.message) : String(err)) }
         }
         try {
-          const stats = collectStats(session.events, session.surface.nodes.length)
+          const stats = collectStats(sessionEvents(session), session.surface.nodes.length)
           return { ok: true, ...stats }
         } catch (err) {
           return { ok: false, error: 'failed to scan the event log: ' + (err !== null && typeof err === 'object' && err.message ? String(err.message) : String(err)) }
@@ -409,7 +424,7 @@ export default {
           return { ok: false, error: 'failed to read the session: ' + (err !== null && typeof err === 'object' && err.message ? String(err.message) : String(err)) }
         }
         try {
-          return buildRecall(session.events, args)
+          return buildRecall(sessionEvents(session), args)
         } catch (err) {
           return { ok: false, error: 'failed to scan the event log: ' + (err !== null && typeof err === 'object' && err.message ? String(err.message) : String(err)) }
         }

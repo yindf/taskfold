@@ -268,6 +268,20 @@ function cloneTaskMarks(state) {
  * unambiguous closure ("all marks closed"), never "0 mark(s) still open" —
  * that phrasing made readers think the mark survived the call.
  */
+/**
+ * Cross-version event-log accessor: dsh ≤0.1.2-alpha.3 exposed the whole log
+ * as session.events (array); alpha.4 replaced it with on-demand APIs —
+ * session.snapshotEvents() returns a full array snapshot. Support both.
+ */
+export function sessionEvents(session) {
+  if (session === undefined || session === null) return []
+  if (Array.isArray(session.events)) return session.events
+  if (typeof session.snapshotEvents === 'function') {
+    try { return session.snapshotEvents() } catch (err) { return [] }
+  }
+  return []
+}
+
 function depthPhrase(depth) {
   const d = Number.isInteger(depth) ? depth : 0
   return d <= 0 ? ' — all marks closed' : ' — ' + d + ' outer mark(s) still open'
@@ -376,7 +390,7 @@ export default {
 
     function readSurface(session) {
       const nodes = session.surface.nodes
-      const bySeq = indexEvents(session.events)
+      const bySeq = indexEvents(sessionEvents(session))
       const positions = []
       let open = 0
       let corrupt = false
@@ -825,7 +839,7 @@ export default {
       // Event shape mirrors classify(): assistant/message events carry the
       // payload at data.message.content, and call blocks are 'tool-call'
       // (hyphen — NOT 'tool_call').
-      const events = session !== undefined && session !== null && Array.isArray(session.events) ? session.events : []
+      const events = sessionEvents(session)
       let assistantSeen = 0
       let workCalls = 0
       for (let i = events.length - 1; i >= 0 && assistantSeen < 10; i--) {
@@ -846,7 +860,7 @@ export default {
     // of events, so seq deltas are meaningless as "time". The scan is bounded
     // (stops at `seq` or after `cap` hits), so cost per request is negligible.
     function countAssistantSince(session, seq, cap) {
-      const events = session !== undefined && session !== null && Array.isArray(session.events) ? session.events : []
+      const events = sessionEvents(session)
       let count = 0
       for (let i = events.length - 1; i >= 0 && count < cap; i--) {
         const e = events[i]
