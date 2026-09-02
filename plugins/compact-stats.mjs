@@ -367,7 +367,7 @@ export default {
 
     ctx.tools.register({
       name: 'compact_recall',
-      description: 'Recall the ORIGINAL content of folded conversation entries. Folds remove entries from the surface projection, but the append-only event log keeps them — this tool reads them back. Seqs are stable archive ids (surface positions shift after every fold; get seqs from compact_recall listings or compaction/summary ranges). No args: index of all folds. fold=N: manifest of that fold (seq → digest for every archived entry). seq=N: one entry in full detail. from/to: archived entries whose seq falls in the range. full=true raises the per-entry text cap from 60 to 4000 chars. Read-only.',
+      description: 'Recall the ORIGINAL content of folded conversation entries. Fold summaries are terse by design — whenever one lacks the detail you need (an exact change, command output, or error string), call this to read the archived originals; the log is append-only and nothing is ever lost. Folds remove entries from the surface projection only — this tool reads them back. Seqs are stable archive ids (surface positions shift after every fold; get seqs from task_commit/compact outputs, or from this tool\u0027s own no-args fold index). No args: index of all folds. fold=N: manifest of that fold (seq → digest for every archived entry). seq=N: one entry in full detail. from/to: archived entries whose seq falls in the range (the exact range rides every task_commit/compact output). full=true raises the per-entry text cap from 60 to 4000 chars. Read-only.',
       parameters: {
         type: 'object',
         properties: {
