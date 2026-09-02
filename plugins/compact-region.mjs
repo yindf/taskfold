@@ -79,7 +79,7 @@ export const taskMarksStateSchema = {
     for (const key of Object.keys(pending)) {
       const entry = pending[key]
       if (entry === null || typeof entry !== 'object') throw new Error('taskMarks pending entries must be objects')
-      if (entry.kind !== 'begin' && entry.kind !== 'end') throw new Error('taskMarks pending kind must be begin|end')
+      if (entry.kind !== 'begin' && entry.kind !== 'end' && entry.kind !== 'commit') throw new Error('taskMarks pending kind must be begin|end|commit')
       if (!Number.isInteger(entry.anchorSeq) || entry.anchorSeq <= 0) {
         throw new Error('taskMarks pending anchorSeq must be a positive integer')
       }
@@ -194,9 +194,12 @@ export function applyTaskMarks(state, event) {
     let next = null
     for (const block of content) {
       if (block === null || typeof block !== 'object' || block.type !== 'tool-call') continue
-      if (block.name !== 'task_begin' && block.name !== 'task_end') continue
+      if (block.name !== 'task_begin' && block.name !== 'task_end' && block.name !== 'task_commit') continue
       if (next === null) next = cloneTaskMarks(state)
-      next.pending[String(block.id)] = { kind: block.name === 'task_begin' ? 'begin' : 'end', anchorSeq: seq }
+      next.pending[String(block.id)] = {
+        kind: block.name === 'task_begin' ? 'begin' : block.name === 'task_end' ? 'end' : 'commit',
+        anchorSeq: seq
+      }
     }
     return next === null ? state : next
   }
@@ -232,6 +235,14 @@ export function applyTaskMarks(state, event) {
           const removed = next.marks.splice(idx, 1)[0]
           next.lastEnded = { beginSeq: removed.seq, endSeq: Number.isInteger(event.seq) ? event.seq : 0, name }
         }
+      } else if (intent.kind === 'commit' && text.indexOf('task_commit failed (summary)') === 0) {
+        // A too-small-to-fold verdict is TERMINAL: the span never grows after
+        // end, so the record can never be committed. Treat the failure as a
+        // durable abandonment — clear lastEnded so the uncommitted-backstop
+        // nudge does not hold forever over an unfoldable span. Success
+        // ('Task committed…') needs no rule here: the compaction/summary
+        // event covering endSeq already clears the record.
+        delete next.lastEnded
       }
     }
     return next === null ? state : normalizeTaskMarks(next)

@@ -210,3 +210,20 @@ test('name normalization: whitespace and multi-name closing', () => {
   state = applyTaskMarks(state, toolResult('c2', 'Task ended: fix bug — all marks closed. …', 201))
   assert.deepEqual(state.marks, [], 'normalized name matches despite original multiple spaces')
 })
+
+test('a too-small task_commit verdict durably abandons the ended record', () => {
+  let state = null
+  state = applyTaskMarks(state, assistantCall(100, [{ id: 'c1', name: 'task_begin' }]))
+  state = applyTaskMarks(state, toolResult('c1', BEGIN_OK('alpha4 回归'), 101))
+  state = applyTaskMarks(state, assistantCall(200, [{ id: 'c2', name: 'task_end' }]))
+  state = applyTaskMarks(state, toolResult('c2', 'Task ended: alpha4 回归 — all marks closed. …', 201))
+  assert.ok(state.lastEnded !== undefined, 'ended record awaits its fold')
+  // Non-terminal failures keep the record for a retry.
+  state = applyTaskMarks(state, assistantCall(250, [{ id: 'cb', name: 'task_commit' }]))
+  state = applyTaskMarks(state, toolResult('cb', 'task_commit failed (busy): a compaction lock is active; retry…', 251))
+  assert.ok(state.lastEnded !== undefined, 'busy verdict keeps the record for retry')
+  // The engine's too-small verdict is terminal — the reducer must abandon.
+  state = applyTaskMarks(state, assistantCall(300, [{ id: 'c3', name: 'task_commit' }]))
+  state = applyTaskMarks(state, toolResult('c3', 'task_commit failed (summary): the ended task "alpha4 回归" was too small to summarize ("summary is not smaller than the shadowed content (1042 estimated framed tokens >= 838)"); its history stays on the surface as-is', 301))
+  assert.ok(state === null || state.lastEnded === undefined, 'summary-failure clears lastEnded (no eternal nudge)')
+})
