@@ -500,11 +500,14 @@ export default {
           // The fold caller (task_end) stashes the task name it is closing:
           // the span's own tail cannot contain its ending (the executor's
           // result event does not exist yet), so the instruction DECLARES the
-          // completion instead — the two-phase era needed the end result
-          // inside the range for exactly this; owning the instruction removes
-          // that constraint.
+          // completion instead. It also sets the TITLE (the task name) and
+          // excludes lifecycle bookkeeping from the summary: task_begin /
+          // task_end calls and results are the span's frame, not its content.
           const closing = typeof this.__closingTask === 'string' && this.__closingTask.length > 0
-            ? '\nThis fold CLOSES the task "' + this.__closingTask + '": the work in this span is COMPLETE. Do not report anything as unfinished or pending because of how the span ends — this very fold is the task\u0027s ending.'
+            ? '\nThe task this span belongs to is named "' + this.__closingTask + '". Rules for this fold:\n'
+              + '- Begin the summary with the heading line "# ' + this.__closingTask + '" — nothing before it.\n'
+              + '- This fold CLOSES the task: the work in this span is COMPLETE. Do not report anything as unfinished or pending because of how the span ends — this very fold is the task\u0027s ending.\n'
+              + '- Do NOT summarize task_begin / task_end calls, their results, or any narration that merely announces starting or finishing the task — that is lifecycle bookkeeping, not content. Summarize the WORK itself.'
             : ''
           const messages = [...input.messages, {
             role: 'user',
