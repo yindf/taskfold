@@ -521,8 +521,8 @@ export default {
     // summary stuffed with background the surrounding context already has.
     // Our folds want exactly the opposite: what happened IN THE SPAN.
     const SCOPED_SPAN_INSTRUCTION = [
-      'You are summarizing ONE FOLDED SPAN of a longer session, for an engineer who already knows the project. The messages above are exactly that span.',
-      'Summarize ONLY what those messages contain — what was done, tried, decided, and produced in this span. Do NOT restate project background, architecture, goals, or context the messages merely assume; the reader already has it from outside the span.',
+      'You are summarizing ONE FOLDED SPAN of a longer session. The messages above are exactly that span; your summary replaces them for the model that continues this session.',
+      'Summarize ONLY what the span contains — what was done, tried, decided, and produced. Do NOT restate project background, architecture, goals, or context the messages merely assume: the continuing model already has all of that from outside the span.',
       'Output EXACTLY this structure, terse bullets, "(none)" for empty sections:',
       '## What happened',
       '- [the work performed in this span, in order]',
@@ -532,7 +532,8 @@ export default {
       '- [results, verdicts, failures and their meaning; anything a later step must know]',
       'Rules:',
       '- Preserve exact file paths, commands, error strings, identifiers, and numbers.',
-      '- Do NOT mention summarization or compaction.',
+      '- End the summary with this exact line: "Folded entries remain archived — call compact_recall to read them back by fold number or seq."',
+      '- Do NOT mention summarization or compaction otherwise.',
       '- Output only the summary text: do not call any tool or take any other action.'
     ].join('\n')
 
