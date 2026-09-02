@@ -31,8 +31,8 @@ function toolResult(callId, text, seq) {
   return event
 }
 
-const BEGIN_OK = (n) => 'Task begun: ' + n + ' — 1 open: ' + n + '. Call task_end({ name: \'' + n + '\' }) when this task completes, then task_commit.'
-const END_OK = (n) => 'Task ended: ' + n + ' — all marks closed. Recorded for folding — call task_commit (alone in a step) to compress the complete task into one summary node.'
+const BEGIN_OK = (n) => 'Task begun: ' + n + ' — 1 open.'
+const END_OK = (n) => 'Task ended: ' + n + ' — all closed. Awaiting fold: call task_commit.'
 // legacy v3/v4 success texts (still present in existing logs) — kept so the
 // reducer's backward path is exercised. They carry no name, so named pop
 // cannot match them unless a name equals ''.

@@ -695,7 +695,7 @@ export default {
 
     const taskBegin = {
       name: 'task_begin',
-      description: 'Start a NAMED task on the current conversation surface. Give it a short, unique-enough `name` (e.g. "fix auth null-pointer"); the name is the task\u0027s identity — task_end({name}) later closes exactly that task, and task_commit folds it. Call task_begin alone in a step. No state other than the name is tracked; the name is echoed in context-free tool output, so tasks are closed by name, not by an implicit stack position.',
+      description: 'Begin a NAMED task. The name is the identity: task_end({ name }) closes exactly that task, task_commit folds its full span. Call alone in a step.',
       parameters: {
         type: 'object',
         properties: {
@@ -707,7 +707,8 @@ export default {
         schema: { type: 'object', additionalProperties: true },
         render(args, value) {
           if (value.ok !== true) return [{ type: 'text', text: 'task_begin failed: ' + String(value.error === undefined ? 'unknown error' : value.error) }]
-          return [{ type: 'text', text: 'Task begun: ' + value.name + ' — ' + value.depth + ' open: ' + value.openNames.join(', ') + '. Call task_end({ name: \u0027' + value.name + '\u0027 }) when this task completes, then task_commit.' }]
+          const openList = value.openNames.length <= 1 ? '' : ': ' + value.openNames.join(', ')
+          return [{ type: 'text', text: 'Task begun: ' + value.name + ' — ' + value.openNames.length + ' open' + openList + '.' }]
         }
       },
       async execute(args, exec) {
@@ -746,7 +747,7 @@ export default {
 
     const taskEnd = {
       name: 'task_end',
-      description: 'Close a NAMED task opened by task_begin. Pass the same `name`; the tool ends that task (it is ALWAYS terminal). This call only transitions state and returns immediately — the result text itself carries the full status (what ended, what remains open), so no context injection follows. To compress the ended task into one summary node, call task_commit right after (its range covers the begin pair, body, and this task_end pair, so the summary reflects the completed task). If you skip task_commit now, the span stays on the surface and can be committed later.',
+      description: 'End a NAMED task by name (always terminal; state transition only — the output carries the full state). The ended span then awaits task_commit, whose fold range includes this end pair so the summary sees the completed task. Call alone in a step.',
       parameters: {
         type: 'object',
         properties: {
@@ -763,7 +764,7 @@ export default {
             const hint = value.hint === undefined ? '' : '\n' + String(value.hint)
             return [{ type: 'text', text: 'task_end failed (' + category + '): ' + error + hint }]
           }
-          return [{ type: 'text', text: 'Task ended: ' + value.name + ' — ' + (value.remainingNames.length > 0 ? value.remainingNames.length + ' open: ' + value.remainingNames.join(', ') : 'all marks closed') + '. Recorded for folding — call task_commit (alone in a step) to compress the complete task into one summary node.' }]
+          return [{ type: 'text', text: 'Task ended: ' + value.name + ' — ' + (value.remainingNames.length > 0 ? value.remainingNames.length + ' open: ' + value.remainingNames.join(', ') : 'all closed') + '. Awaiting fold: call task_commit.' }]
         }
       },
       async execute(args, exec) {
@@ -790,7 +791,7 @@ export default {
 
     const taskCommit = {
       name: 'task_commit',
-      description: 'Fold the most recently ended task into one summary node. Fold INLINE, from its own execution context, the span recorded by task_end (the innermost `lastEnded` record): the task_begin pair, the body, AND the task_end pair. Because the task_end result is inside the range, the summary reflects the COMPLETED task with no stale "call task_end" pending. The fold is labelled by the task\u0027s NAME (the identity you gave task_begin/task_end) — no extra title argument. Call it alone in a step, right after task_end (or later — the record persists across restarts until committed). If the span was too small to summarize, it is left as-is.',
+      description: 'Fold the most recently ended task\u0027s full span (begin pair, body, end pair) into one summary node titled by the task name — the summary sees the completed task. Call alone in a step, right after task_end (the record persists until committed). Too-small spans are reported and left as-is.',
       parameters: { type: 'object', properties: {} },
       output: {
         schema: { type: 'object', additionalProperties: true },
@@ -801,7 +802,7 @@ export default {
             const hint = value.hint === undefined ? '' : '\n' + String(value.hint)
             return [{ type: 'text', text: 'task_commit failed (' + category + '): ' + error + hint }]
           }
-          return [{ type: 'text', text: 'Task committed into one summary node (' + value.shadowedTokenCount + ' shadowed tokens estimated): ' + String(value.title) + '.' }]
+          return [{ type: 'text', text: 'Task committed: ' + String(value.title) + ' (' + value.shadowedTokenCount + ' tokens shadowed).' }]
         }
       },
       async execute(args, exec) {
@@ -818,16 +819,16 @@ export default {
         } catch (err) {
           const classified = classifyCategory(err)
           if (classified.category === 'summary') {
-            return { ok: false, category: 'summary', error: 'the ended task "' + record.name + '" was too small to summarize ("' + classified.message + '"); its history stays on the surface as-is' }
+            return { ok: false, category: 'summary', error: 'span too small to fold — record abandoned, history stays as-is' }
           }
-          const hint = classified.category === 'changed'
-            ? 'the surface changed during the fold; retry task_commit (the record is recomputed from the log)'
-            : classified.category === 'busy'
-              ? 'a compaction lock is active; retry task_commit once it clears'
-              : undefined
-          return hint === undefined
-            ? { ok: false, category: classified.category, error: classified.message }
-            : { ok: false, category: classified.category, error: classified.message, hint }
+          const short = classified.category === 'busy'
+            ? 'compaction lock active — retry'
+            : classified.category === 'changed'
+              ? 'surface changed during fold — retry'
+              : classified.category === 'commit'
+                ? 'fold failed to commit — retry'
+                : classified.message
+          return { ok: false, category: classified.category, error: short }
         }
       }
     }
@@ -841,7 +842,7 @@ export default {
     ctx.systemPrompt.section({
       name: 'task-marker-compaction',
       order: 650,
-      text: '## Task lifecycle compaction\n\nTasks are NAMED. When you start a discrete task, call task_begin({ name: "…" }) (alone in a step) — the name is the task\u0027s identity. When it completes, call task_end({ name: "…" }) (alone in a step): the task is closed (state transition only; its output lists what ended and what remains open — nothing is injected into context). Then call task_commit (alone in a step) to compress the task\u0027s full span — begin pair, body, end pair — into one summary node; the summary sees the completed task, so it carries no stale "call task_end" pending, and the fold is labelled by the task name. If the span is too small, task_commit reports it and the history stays as-is. Close tasks by name, not by stack position — a name mismatch cannot corrupt other tasks. Never track message positions yourself; use compact(start, end) only for ranges that do not align with task marks.\n\nThe runtime context carries a todo bridge: when a todo item is in progress without a matching task it asks for task_begin, and when the in-progress list shrank while tasks remain open it asks for task_end. It also carries lifecycle nudges that fire only when the flow is skipped: working many rounds with no open task (call task_begin), a task left open for ~20 rounds (call task_end), or an ended task left uncommitted for ~10 rounds (call task_commit). Follow those nudges so task spans stay compactable.'
+      text: '## Task lifecycle compaction\n\nTasks are NAMED. task_begin({ name: "…" }) opens one (alone in a step); task_end({ name }) closes it by name — a mismatch cannot corrupt other tasks; task_commit folds the full span (begin pair, body, end pair) into one summary node titled by the name, so the summary sees the completed task. Too-small spans are reported and left as-is. Use compact(start, end) only for ranges that do not align with task marks; never track message positions yourself.\n\nRuntime context may carry a todo bridge and lifecycle nudges (task_begin when working with no task open, task_end for a task 20+ rounds old, task_commit for an ended-but-unfolded task). Follow them so task spans stay compactable.'
     })
 
     const TASK_TOOL_RE = /^(task_begin|task_end|task_commit|compact|compact_inspect|compact_stats|compact_recall|todo_write)$/
@@ -954,7 +955,7 @@ export default {
         // just cleared the record).
         if (ownDepth === 0 && lastEndedOf(session) === undefined
           && recentWorkCallCount(session) >= 3 && roundsSinceFoldOutcome(session) >= 3) {
-          lines.push('Task lifecycle: no open task marks, but you are making tool calls. If this is a discrete task, call task_begin({ name: "…" }) (alone in a step) so the span can be folded when it finishes.')
+          lines.push('Task lifecycle: no open task during tool work — call task_begin({ name: "…" }) if this is a discrete task.')
         }
 
         // ── Nudge 2: task open for a long time ─────────────────────────
@@ -965,7 +966,7 @@ export default {
           const newest = marks[marks.length - 1]
           const age = countAssistantSince(session, newest.seq, 21)
           if (age >= 20) {
-            lines.push('Task lifecycle: the task "' + newest.name + '" has been open for 20+ model rounds. If it is done, call task_end({ name: "' + newest.name + '" }) (alone in a step), then task_commit to fold it.')
+            lines.push('Task lifecycle: task "' + newest.name + '" is 20+ rounds old — if done, task_end({ name: "' + newest.name + '" }), then task_commit.')
           }
         }
 
@@ -978,7 +979,7 @@ export default {
         if (ended !== undefined && ended.name !== '') {
           const sinceEnd = countAssistantSince(session, ended.endSeq, 2)
           if (sinceEnd >= 1) {
-            lines.push('Task lifecycle: the task "' + ended.name + '" ended and still awaits its fold. Call task_commit (alone in a step) to compress it into one summary node.')
+            lines.push('Task lifecycle: task "' + ended.name + '" ended but not folded — call task_commit.')
           }
         }
 
@@ -994,9 +995,9 @@ export default {
           const inProgress = todos.filter((t) => t !== null && typeof t === 'object' && t.status === 'in_progress')
           if (inProgress.length > ownDepth) {
             const names = inProgress.slice(0, 3).map((t) => '"' + String(t.content).slice(0, 60) + '"').join(', ')
-            lines.push('Todo bridge: ' + (inProgress.length - ownDepth) + ' todo item(s) in progress (' + names + ') without a matching task mark. Call task_begin (alone in a step) so that task\'s span can be compacted when it finishes.')
+            lines.push('Todo bridge: in-progress todos (' + names + ') lack task marks — call task_begin for them.')
           } else if (inProgress.length < ownDepth) {
-            lines.push('Todo bridge: fewer todo items are in progress than there are open task marks. Call task_end (alone in a step) for each finished task to close and compact it.')
+            lines.push('Todo bridge: open tasks exceed in-progress todos — task_end the finished ones.')
           }
         }
         return lines.join('\n')
