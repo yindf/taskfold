@@ -771,7 +771,36 @@ export default {
         }
         try {
           closingTasks.set(session.id, name)
-          const result = await engine.compactRegion(decision.startSeq, decision.endSeq, agent, exec.signal)
+          // The decision's endSeq is the newest surface node, but the engine
+          // only accepts BALANCED boundaries (step ends). If the newest node
+          // sits inside an open/unbalanced step, walk back node by node and
+          // retry — a rejected compactRegion commits nothing, so retries are
+          // side-effect free. Exhausting all candidates means nothing foldable
+          // sits in the span → tooSmall semantics.
+          let result = null
+          for (let endSeq = decision.endSeq; endSeq >= decision.startSeq; ) {
+            try {
+              result = await engine.compactRegion(decision.startSeq, endSeq, agent, exec.signal)
+              break
+            } catch (err) {
+              if (err !== null && typeof err === 'object' && typeof err.message === 'string'
+                && err.message.includes('balanced boundary')) {
+                // Step back to the previous surface node below this seq.
+                let prev = -1
+                for (const s of session.surface.nodes) {
+                  if (typeof s === 'number' && s < endSeq && s >= decision.startSeq && s > prev) prev = s
+                }
+                if (prev === -1) break
+                endSeq = prev
+                continue
+              }
+              throw err
+            }
+          }
+          if (result === null) {
+            // No balanced boundary at or after the anchor — nothing foldable.
+            return { ok: true, name, remainingNames, tooSmall: true }
+          }
           const file = writeArtifactFile(session, result.shadowedSeqs, name)
           // Fold number for recall: chronological index of compaction/summary
           // events. compactRegion commits synchronously before returning, so
