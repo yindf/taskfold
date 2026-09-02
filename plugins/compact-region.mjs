@@ -502,35 +502,132 @@ export default {
       return dirs
     }
 
-    async function importEngineModule() {
-      try { return await import('@deepseek-ai/dsh-compaction-basic') } catch (err) { /* fall through */ }
+    async function importHostPackage(pkgName) {
+      try { return await import(pkgName) } catch (err) { /* fall through */ }
       for (const dir of engineCandidatePaths()) {
-        const pkgDir = nodePath.join(dir, '@deepseek-ai', 'dsh-compaction-basic')
+        const pkgDir = nodePath.join(dir, '@deepseek-ai', pkgName.replace(/^@deepseek-ai\//, ''))
         let ok = false
         try { ok = nodeFs.statSync(pkgDir).isDirectory() } catch (err) { ok = false }
         if (!ok) continue
         return await import(nodeUrl.pathToFileURL(nodePath.join(pkgDir, 'lib', 'index.js')).href)
       }
-      throw new Error('@deepseek-ai/dsh-compaction-basic is not resolvable from this install')
+      throw new Error(pkgName + ' is not resolvable from this install')
+    }
+
+    // SPAN-SCOPED summarization instruction. The stock COMPACTION_INSTRUCTION
+    // is a continuity checkpoint ("let another model resume the work"): it
+    // asks for the WHOLE conversation's Primary Request / Key Concepts /
+    // Pending Jobs, so a folded task span comes back as a project-wide
+    // summary stuffed with background the surrounding context already has.
+    // Our folds want exactly the opposite: what happened IN THE SPAN.
+    const SCOPED_SPAN_INSTRUCTION = [
+      'You are summarizing ONE FOLDED SPAN of a longer session, for an engineer who already knows the project. The messages above are exactly that span.',
+      'Summarize ONLY what those messages contain — what was done, tried, decided, and produced in this span. Do NOT restate project background, architecture, goals, or context the messages merely assume; the reader already has it from outside the span.',
+      'Output EXACTLY this structure, terse bullets, "(none)" for empty sections:',
+      '## What happened',
+      '- [the work performed in this span, in order]',
+      '## Changes',
+      '- [exact file paths written or edited, commands run, key values]',
+      '## Outcomes',
+      '- [results, verdicts, failures and their meaning; anything a later step must know]',
+      'Rules:',
+      '- Preserve exact file paths, commands, error strings, identifiers, and numbers.',
+      '- Do NOT mention summarization or compaction.',
+      '- Output only the summary text: do not call any tool or take any other action.'
+    ].join('\n')
+
+    // Scoped summarizer engine: subclasses BasicCompactionEngine so that
+    // regionDependencies()' dynamic dispatch reaches OUR summarize(), while
+    // compactRegion's locking, validation, stability checks, and commit path
+    // stay stock. The LLM call replicates summarizeWithLlm's envelope (same
+    // replayed prefix → provider prefix-cache reuse; only the appended final
+    // instruction differs).
+    async function buildScopedEngine() {
+      const engineMod = await importHostPackage('@deepseek-ai/dsh-compaction-basic')
+      const Base = engineMod.default !== undefined ? engineMod.default : engineMod.BasicCompactionEngine
+      if (typeof Base !== 'function') throw new Error('engine export missing')
+      let Assembler = class { push() {} blocks() { return [] } }
+      Assembler.prototype.finish = { kind: 'stop' }
+      try {
+        const llmMod = await importHostPackage('@deepseek-ai/dsh-llm')
+        if (typeof llmMod.BlockAssembler === 'function') Assembler = llmMod.BlockAssembler
+      } catch (err) { /* without the real assembler the summary will fail loudly */ }
+
+      class ScopedEngine extends Base {
+        async summarize(input, agent, signal) {
+          const header = agent.session.requestHeader()
+          const latest = header !== null && typeof header === 'object' && header.config !== undefined ? header.config : undefined
+          const cfg = this.config
+          const configured = typeof cfg.summarizationProvider === 'string' && cfg.summarizationProvider.length > 0
+            ? { provider: cfg.summarizationProvider, model: cfg.summarizationModel }
+            : undefined
+          const agentTarget = agent.options !== undefined && typeof agent.options.provider === 'string' && agent.options.provider.length > 0
+            && typeof agent.options.model === 'string' && agent.options.model.length > 0
+            ? { provider: agent.options.provider, model: agent.options.model }
+            : undefined
+          const target = configured ?? latest ?? agentTarget
+          if (target === undefined) throw new Error('no provider/model available for scoped summarization')
+          const messages = [...input.messages, {
+            role: 'user',
+            content: [{ type: 'text', text: SCOPED_SPAN_INSTRUCTION }]
+          }]
+          const options = {
+            provider: target.provider,
+            model: target.model,
+            messages,
+            ...(input.system === undefined ? {} : { system: input.system }),
+            ...(input.tools === undefined ? {} : { tools: [...input.tools] }),
+            maxTokens: cfg.maxTokens,
+            sessionId: agent.session.id,
+            purpose: 'compaction',
+            ...(signal === undefined ? {} : { signal })
+          }
+          const assembler = new Assembler()
+          for await (const chunk of ctx.llm.stream(options)) assembler.push(chunk)
+          const finish = assembler.finish
+          if (finish !== undefined && (finish.kind === 'error' || finish.kind === 'aborted')) {
+            throw new Error(finish.failure !== undefined && finish.failure.message !== undefined ? String(finish.failure.message) : String(finish.kind))
+          }
+          const rawOutput = assembler.blocks()
+          const summary = rawOutput.filter((b) => b !== null && typeof b === 'object' && b.type === 'text' && typeof b.text === 'string')
+          if (!summary.some((b) => b.text.trim().length > 0)) throw new Error('summarization produced no text summary content')
+          return {
+            summary,
+            rawOutput,
+            llmStreamCall: true,
+            provider: options.provider,
+            model: options.model,
+            maxTokens: cfg.maxTokens,
+            ...(assembler.usage === undefined ? {} : { usage: assembler.usage })
+          }
+        }
+      }
+
+      // Shim ctx: the cordis Service base registers itself via
+      // ctx.reflect.provide in the constructor — on a plain shim that is a
+      // no-op, so our instance never collides with (or replaces) the realm
+      // engine a preset row may have registered for AUTO compaction. The
+      // engine's current-turn path touches only these fields.
+      const shimCtx = {
+        tokenMeter: ctx.tokenMeter,
+        llm: ctx.llm,
+        get: (name) => (typeof ctx.get === 'function' ? ctx.get(name) : undefined),
+        reflect: { provide: () => {} }
+      }
+      return new ScopedEngine(shimCtx, { auto: false })
     }
 
     async function engineFor() {
-      // Prefer an engine registered by a composition row (preset realm).
-      // ctx.get() is the inject-free optional accessor; direct property
-      // access would throw ("cannot get property without inject") since
-      // 'compaction' is not in our inject list.
-      let realm
-      try {
-        const viaGet = typeof ctx.get === 'function' ? ctx.get('compaction') : undefined
-        realm = viaGet !== null && viaGet !== undefined && typeof viaGet.compactRegion === 'function' ? viaGet : undefined
-      } catch (err) { realm = undefined }
-      if (realm !== undefined) return realm
+      // Always the SCOPED instance — both tiers. A realm engine (preset row)
+      // is deliberately NOT used by our folds: it runs the stock
+      // continuity-checkpoint instruction. The realm instance keeps serving
+      // AUTO compaction (pressure/overflow), where checkpoint semantics are
+      // exactly right; our explicit folds (task_commit, compact) get span
+      // summaries. The durable compaction lock is shared through the event
+      // log, so the two instances stay mutually exclusive.
       if (selfEngine !== undefined) return selfEngine === null ? undefined : selfEngine
       try {
-        const mod = await importEngineModule()
-        const Engine = mod.default !== undefined ? mod.default : mod.BasicCompactionEngine
-        if (typeof Engine !== 'function') throw new Error('engine export missing')
-        selfEngine = new Engine(ctx, { auto: false })
+        selfEngine = await buildScopedEngine()
         return selfEngine
       } catch (err) {
         selfEngine = null
