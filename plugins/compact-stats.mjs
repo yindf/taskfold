@@ -7,7 +7,14 @@
  * recalls the ORIGINAL content of folded entries on demand. Events survive
  * folds — the surface is a projection — so nothing is ever lost, only
  * projected away. Seqs are stable archive ids (surface positions shift).
- *
+ * `save: true` materializes an artifact as a FILE under the session
+ * workspace (.cmpct-artifacts/) so the model can read/grep/edit it with any
+ * tool — recall stops being the only interface to folded history.
+ */
+import nodeFs from 'node:fs'
+import nodePath from 'node:path'
+
+/**
  * Fold shape (pinned against dsh-compaction-basic's commitCompactionBody):
  *   event.type === 'compaction/summary' with
  *     data.compactionId, data.shadowedRange {start,end},
@@ -422,17 +429,17 @@ export function buildRecall(events, args, artifactCache) {
     return find
   }
 
-  const fromLine = Number.isInteger(q.fromLine) && q.fromLine >= 1 ? q.fromLine : 1
-  const span = Number.isInteger(q.toLine) && q.toLine >= fromLine
+  const fromLine = q.save === true ? 1 : (Number.isInteger(q.fromLine) && q.fromLine >= 1 ? q.fromLine : 1)
+  const span = q.save === true ? totalLines : (Number.isInteger(q.toLine) && q.toLine >= fromLine
     ? Math.min(q.toLine - fromLine + 1, ARTIFACT_WINDOW_MAX)
-    : ARTIFACT_WINDOW_DEFAULT
+    : ARTIFACT_WINDOW_DEFAULT)
   const startIdx = Math.min(fromLine, totalLines + 1) - 1
   const endIdx = Math.min(startIdx + span, totalLines)
   const window = lines.slice(startIdx, endIdx)
   const artifact = {
     ok: true, mode: 'artifact', target, totalLines,
     fromLine: startIdx + 1, toLine: endIdx, lines: window,
-    more: endIdx < totalLines
+    more: endIdx < totalLines, save: q.save === true
   }
   if (title !== undefined) artifact.title = title
   return artifact
@@ -488,7 +495,7 @@ export default {
 
     ctx.tools.register({
       name: 'compact_recall',
-      description: 'Read folded conversation history back, like a file. Fold summaries are terse by design — when one lacks detail you need, read the span\u0027s ARTIFACT: the original conversation (messages, tool calls with arguments, tool results) rendered as a line-numbered transcript. No args: index of all folds. fold=N (or from/to seqs, the exact range rides every fold output): open the artifact — first window of lines, then seek with fromLine/toLine, or search it with find:"text" (returns matching line numbers). seq=N: one raw entry in full detail. Artifacts live in memory and rebuild from the append-only log after restart — nothing is ever lost. Read-only.',
+      description: 'Read folded conversation history back, like a file. Fold summaries are terse by design — when one lacks detail you need, read the span\u0027s ARTIFACT: the original conversation (messages, tool calls with arguments, tool results) rendered as a line-numbered transcript. No args: index of all folds. fold=N (or from/to seqs, the exact range rides every fold output): open the artifact — first window of lines, then seek with fromLine/toLine, or search it with find:"text". save=true (with fold/from-to): write the FULL artifact to <workspace>/.cmpct-artifacts/ and get the path — then read/grep it with any tool. seq=N: one raw entry in full detail. Artifacts live in memory and rebuild from the append-only log after restart — nothing is ever lost. Read-only.',
       parameters: {
         type: 'object',
         properties: {
@@ -499,6 +506,7 @@ export default {
           fromLine: { type: 'integer', description: 'Artifact window: first line, 1-based (default 1).' },
           toLine: { type: 'integer', description: 'Artifact window: last line (window capped at 400 lines, default 100).' },
           find: { type: 'string', description: 'Search the artifact: returns matching line numbers and text.' },
+          save: { type: 'boolean', description: 'fold/from-to mode: write the FULL artifact to <workspace>/.cmpct-artifacts/<slug>.md and return the path — then read/grep/edit it with any tool.' },
           full: { type: 'boolean', description: 'seq mode: raise the text cap to 4000 chars (default preview is 60).' }
         }
       },
@@ -517,6 +525,10 @@ export default {
               lines.push('fold #' + f.fold + ' (summary seq ' + f.summarySeq + '): ' + f.shadowedTokenCount + ' tokens' + where + entries + ' | ' + (f.title !== undefined ? f.title : f.preview))
             }
           } else if (value.mode === 'artifact') {
+            if (value.file !== undefined) {
+              lines.push('Artifact saved: ' + value.file + ' (' + value.totalLines + ' lines). Read, grep, or edit it with any tool — line numbers match compact_recall windows.')
+              return [{ type: 'text', text: lines.join('\n') }]
+            }
             const title = value.title === undefined ? '' : ' "' + value.title + '"'
             lines.push('artifact of ' + value.target + title + ' — lines ' + value.fromLine + '..' + value.toLine + ' of ' + value.totalLines + (value.more ? '; more below' : ' (end)') + ':')
             for (let i = 0; i < value.lines.length; i += 1) {
@@ -550,7 +562,23 @@ export default {
           return { ok: false, error: 'failed to read the session: ' + (err !== null && typeof err === 'object' && err.message ? String(err.message) : String(err)) }
         }
         try {
-          return buildRecall(sessionEvents(session), args, artifactCache)
+          const out = buildRecall(sessionEvents(session), args, artifactCache)
+          if (out.ok === true && out.save === true && Array.isArray(out.lines)) {
+            const headerInfo = exec.agent && exec.agent.session && exec.agent.session.header ? exec.agent.session.header : undefined
+            const cwd = headerInfo !== null && typeof headerInfo === 'object' && typeof headerInfo.cwd === 'string' ? headerInfo.cwd : undefined
+            if (cwd === undefined || cwd.length === 0) return { ok: false, error: 'save requires a session workspace (session.header.cwd)' }
+            const base = out.title !== undefined ? out.title : out.target
+            const slug = String(base).replace(/[^\p{L}\p{N}_-]+/gu, '-').replace(/^-+|-+$/g, '').slice(0, 60)
+            const dir = nodePath.join(cwd, '.cmpct-artifacts')
+            nodeFs.mkdirSync(dir, { recursive: true })
+            const file = nodePath.join(dir, (slug.length > 0 ? slug : 'artifact') + '.md')
+            const head = '# cmpct artifact: ' + out.target + (out.title !== undefined ? ' "' + out.title + '"' : '')
+              + '\n# ' + out.totalLines + ' lines; line numbers match compact_recall windows\n\n'
+            const body = out.lines.map((l, i) => (out.fromLine + i) + '│ ' + l).join('\n')
+            nodeFs.writeFileSync(file, head + body + '\n', 'utf8')
+            out.file = file
+          }
+          return out
         } catch (err) {
           return { ok: false, error: 'failed to scan the event log: ' + (err !== null && typeof err === 'object' && err.message ? String(err.message) : String(err)) }
         }
