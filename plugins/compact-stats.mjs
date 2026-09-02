@@ -1,5 +1,5 @@
 /**
- * list_folds / compact_recall — fold index and artifact regeneration tools
+ * list_folds / fold_recall — fold index and artifact regeneration tools
  * (preset plugin).
  *
  * Read-only companion to compact-region: reports what compaction did for THIS
@@ -193,7 +193,7 @@ export default {
   apply(ctx) {
     ctx.tools.register({
       name: 'list_folds',
-      description: 'List every committed fold in THIS session: fold number, estimated shadowed tokens, summary preview or task title, plus surface/event totals. Fold numbers are what compact_recall({ fold: N }) consumes; call this when you need to regenerate an artifact or audit what compaction saved.',
+      description: 'List every committed fold in THIS session: fold number, estimated shadowed tokens, summary preview or task title, plus surface/event totals. Fold numbers are what fold_recall({ fold: N }) consumes; call this when you need to regenerate an artifact or audit what compaction saved.',
       parameters: { type: 'object', properties: {} },
       output: {
         schema: { type: 'object', additionalProperties: true },
@@ -231,7 +231,7 @@ export default {
     })
 
     ctx.tools.register({
-      name: 'compact_recall',
+      name: 'fold_recall',
       description: 'Regenerate the artifact FILE for one fold: the span\u0027s EXACT original request context (the same messages the model was sent), written as JSON to the OS temp dir. Fold outputs carry the artifact path when the fold commits — this tool exists for when that temp file has been cleaned: pass the fold number, get a fresh file path, then read/grep it with any file tool. Use list_folds for the fold index. Read-only against the session; one file write to tmp.',
       parameters: {
         type: 'object',
@@ -244,14 +244,14 @@ export default {
         schema: { type: 'object', additionalProperties: true },
         render(args, value) {
           if (value.ok !== true) {
-            return [{ type: 'text', text: 'compact_recall failed: ' + String(value.error === undefined ? 'unknown error' : value.error) }]
+            return [{ type: 'text', text: 'fold_recall failed: ' + String(value.error === undefined ? 'unknown error' : value.error) }]
           }
           return [{ type: 'text', text: 'Artifact regenerated (' + value.entries + ' messages): ' + value.file + '\nRead or grep it with any file tool.' }]
         }
       },
       async execute(args, exec) {
         const agent = exec.agent
-        if (agent === undefined) return { ok: false, error: 'compact_recall requires an agent context' }
+        if (agent === undefined) return { ok: false, error: 'fold_recall requires an agent context' }
         let session
         try {
           session = agent.session

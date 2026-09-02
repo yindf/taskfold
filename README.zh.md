@@ -17,14 +17,14 @@
 | --- | --- |
 | `task_begin({ name })` | 开启**命名**任务。名字即身份；状态由工具输出承载，零上下文注入。 |
 | `task_fold({ name })` | **按名关闭任务并同步折叠**（begin 对 + 正文）为单个摘要节点，标题自动取任务名——一次调用完成两件事。失败是原子的：标记保留、可重试。输出携带剩余任务、折叠号和**区间工件**路径。太小的跨度照常结束但不折叠。 |
-| `list_folds` | 折叠索引：每次折叠（编号、tokens、标题/预览）+ 会话总量——`compact_recall` 消费的编号来源。 |
-| `compact_recall({ fold })` | 临时工件被系统清理后，按折叠号**再生成**工件文件。仅此一个参数。 |
+| `list_folds` | 折叠索引：每次折叠（编号、tokens、标题/预览）+ 会话总量——`fold_recall` 消费的编号来源。 |
+| `fold_recall({ fold })` | 临时工件被系统清理后，按折叠号**再生成**工件文件。仅此一个参数。 |
 
 `plugins/compact-region.mjs` 提供生命周期工具；`plugins/compact-stats.mjs` 提供折叠索引 + 再生成（无服务依赖）。
 
 ### 区间工件（精确原始上下文）
 
-每次折叠成功，把该跨度的**精确原始请求上下文**——模型当时收到的同一批消息，由宿主自己的 `session.deriveEventMessage(session.eventAt(seq))` 派生（引擎摘要器重放用的同一对 API）——以 JSON 写入系统临时目录（`taskfold-artifacts/`）：reasoning 块、工具调用参数、工具结果原样在内。`task_fold` 输出携带路径，模型用任意文件工具 read/grep。临时文件只是便利品，不是事实源——事实源是只追加日志，`compact_recall({ fold: N })` 随时可再生成任何工件。
+每次折叠成功，把该跨度的**精确原始请求上下文**——模型当时收到的同一批消息，由宿主自己的 `session.deriveEventMessage(session.eventAt(seq))` 派生（引擎摘要器重放用的同一对 API）——以 JSON 写入系统临时目录（`taskfold-artifacts/`）：reasoning 块、工具调用参数、工具结果原样在内。`task_fold` 输出携带路径，模型用任意文件工具 read/grep。临时文件只是便利品，不是事实源——事实源是只追加日志，`fold_recall({ fold: N })` 随时可再生成任何工件。
 
 ### 引擎（scoped，自托管）
 

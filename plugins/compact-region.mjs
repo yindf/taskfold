@@ -593,7 +593,7 @@ export default {
     // pair (the compaction engine replays them for summarization input), so
     // the artifact is byte-identical to what the model was sent for the span
     // — same blocks, same order, no digest, no line numbers. Written to the
-    // OS temp dir at fold time; compact_recall({ fold: N }) regenerates it
+    // OS temp dir at fold time; fold_recall({ fold: N }) regenerates it
     // from the append-only log when the temp file has been cleaned.
     function spanMessages(session, seqs) {
       if (typeof session.deriveEventMessage !== 'function' || typeof session.eventAt !== 'function') return undefined
@@ -679,7 +679,7 @@ export default {
 
     const taskEnd = {
       name: 'task_fold',
-      description: 'End a NAMED task by name AND fold its full span (begin pair + body) into one summary node titled by the name — one call does both. A name mismatch fails and changes nothing (retry); a fold that loses a race reports the reason and keeps the mark (retry). The output carries what remains open, the fold number, and the path of a temp JSON file holding the span\u0027s EXACT original request context — read/grep it with any file tool; compact_recall({ fold: N }) regenerates it. Too-small spans end the task but stay unfolded. Call alone in a step.',
+      description: 'End a NAMED task by name AND fold its full span (begin pair + body) into one summary node titled by the name — one call does both. A name mismatch fails and changes nothing (retry); a fold that loses a race reports the reason and keeps the mark (retry). The output carries what remains open, the fold number, and the path of a temp JSON file holding the span\u0027s EXACT original request context — read/grep it with any file tool; fold_recall({ fold: N }) regenerates it. Too-small spans end the task but stay unfolded. Call alone in a step.',
       parameters: {
         type: 'object',
         properties: {
@@ -777,10 +777,10 @@ export default {
     ctx.systemPrompt.section({
       name: 'task-marker-compaction',
       order: 650,
-      text: '## Task lifecycle compaction\n\nTasks are NAMED. Call task_begin({ name: "…" }) to open one (alone in a step). When the work is done, call task_fold({ name }) (alone in a step): it closes the task by name AND folds the full span into one summary node titled by the name — one call does both; a fold that loses a race reports the reason and keeps the task open (retry). Too-small spans end the task but stay unfolded. Never track message positions yourself.\n\ntask_fold\u0027s output carries the fold number and the path of a temp file holding the span\u0027s EXACT original request context (the same messages the model was sent). Read or grep it with any file tool when the summary lacks the detail you need; if the temp file has been cleaned, call compact_recall({ fold: N }) to regenerate it (list_folds gives fold numbers).\n\nRuntime context may carry a todo bridge and lifecycle nudges: call task_begin when working with no task open, call task_fold for a task 20+ rounds old. Follow them so task spans stay compactable.'
+      text: '## Task lifecycle compaction\n\nTasks are NAMED. Call task_begin({ name: "…" }) to open one (alone in a step). When the work is done, call task_fold({ name }) (alone in a step): it closes the task by name AND folds the full span into one summary node titled by the name — one call does both; a fold that loses a race reports the reason and keeps the task open (retry). Too-small spans end the task but stay unfolded. Never track message positions yourself.\n\ntask_fold\u0027s output carries the fold number and the path of a temp file holding the span\u0027s EXACT original request context (the same messages the model was sent). Read or grep it with any file tool when the summary lacks the detail you need; if the temp file has been cleaned, call fold_recall({ fold: N }) to regenerate it (list_folds gives fold numbers).\n\nRuntime context may carry a todo bridge and lifecycle nudges: call task_begin when working with no task open, call task_fold for a task 20+ rounds old. Follow them so task spans stay compactable.'
     })
 
-    const TASK_TOOL_RE = /^(task_begin|task_fold|list_folds|compact_recall|todo_write)$/
+    const TASK_TOOL_RE = /^(task_begin|task_fold|list_folds|fold_recall|todo_write)$/
 
     function recentWorkCallCount(session) {
       // Count non-task tool calls in the last 10 assistant messages.

@@ -17,14 +17,14 @@ Seven model tools:
 | --- | --- |
 | `task_begin({ name })` | Begin a **named** task. The name is the identity; state rides in the tool output, no context injection. |
 | `task_fold({ name })` | Close the task **by name AND fold its span** (begin pair + body) into one summary node titled by the name — one call does both. Failure is atomic: the mark stays, retry. Output carries remaining tasks, the fold number, and the **span artifact** path. Too-small spans end the task but stay unfolded. |
-| `list_folds` | Fold index: every committed fold (number, tokens, title/preview) plus session totals — the fold numbers `compact_recall` consumes. |
-| `compact_recall({ fold })` | Regenerate a fold's span artifact file when the temp copy has been cleaned. One parameter. |
+| `list_folds` | Fold index: every committed fold (number, tokens, title/preview) plus session totals — the fold numbers `fold_recall` consumes. |
+| `fold_recall({ fold })` | Regenerate a fold's span artifact file when the temp copy has been cleaned. One parameter. |
 
 `plugins/compact-region.mjs` provides the lifecycle tools; `plugins/compact-stats.mjs` provides the fold index + recall (no service dependency).
 
 ### Span artifacts (exact original context)
 
-Every successful fold writes the span's **exact original request context** — the same messages the model was sent, derived by the harness's own `session.deriveEventMessage(session.eventAt(seq))` pair (the same API the engine's summarizer replays) — as a JSON file to the OS temp dir (`taskfold-artifacts/`), including reasoning blocks, tool-call arguments, and tool results verbatim. The `task_fold` output carries the path; the model reads/greps it with any file tool. Temp files are conveniences, not the source of truth: the append-only log is, so `compact_recall({ fold: N })` regenerates any artifact on demand.
+Every successful fold writes the span's **exact original request context** — the same messages the model was sent, derived by the harness's own `session.deriveEventMessage(session.eventAt(seq))` pair (the same API the engine's summarizer replays) — as a JSON file to the OS temp dir (`taskfold-artifacts/`), including reasoning blocks, tool-call arguments, and tool results verbatim. The `task_fold` output carries the path; the model reads/greps it with any file tool. Temp files are conveniences, not the source of truth: the append-only log is, so `fold_recall({ fold: N })` regenerates any artifact on demand.
 
 ### Engine (scoped, self-hosted)
 
