@@ -324,16 +324,17 @@ export default {
     const TAIL_WINDOW = 50
 
     // Native-event derivation folds into this projection; the registration's
-    // disposer rides the plugin fiber, so it unloads with us. stateVersion 6
-    // discards persisted rows from earlier reducer generations (v1 whole-value
-    // seqs; v2/v3 result matching; v4 pre-name shape; v5 nameless phantoms)
-    // and folds fresh from the log.
+    // disposer rides the plugin fiber, so it unloads with us. stateVersion 7
+    // discards persisted rows from earlier reducer generations — REQUIRED
+    // whenever reducer BEHAVIOR changes, not just shape: the v6 abandonment
+    // rule landed while the version stayed 6, so stale lastEnded rows kept
+    // loading from disk instead of re-folding through the new rule.
     ctx.sessionProjections.register({
       key: TASK_MARKS_KEY,
       stateSchema: taskMarksStateSchema,
       init: () => null,
       apply: applyTaskMarks,
-      stateVersion: 6
+      stateVersion: 7
     })
 
     // ── ended-task state (consumed by the explicit task_commit tool) ──────
