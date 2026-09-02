@@ -3,7 +3,21 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
-## 0.2.1 — nested folds own their full span (current)
+## 0.2.2 — fold summaries keep user inputs and pitfalls (current)
+
+- **Five-section fold instruction** (`FOLD_SUMMARY_INSTRUCTION`, exported for
+  offline tests): fold summaries now carry `## User inputs & decisions` (the
+  user's requests, corrections, answers, approvals from the span, verbatim
+  where wording matters) and `## Pitfalls & gotchas` (failed attempts and why,
+  workarounds, environment traps, "don't do X again" lessons) as first-class
+  sections alongside What happened / Changes / Outcomes.
+- Borrowed rule from the stock checkpoint instruction, reworded for folds:
+  capture user feedback faithfully, especially corrections; never drop why
+  something failed. Continuity-checkpoint sections (Pending Jobs / Current
+  Work / Next Step) stay banned — they contradict the fold's CLOSED-task
+  contract.
+
+## 0.2.1 — nested folds own their full span
 
 - **Region runs to the last surface node**: a task's final body message now
   folds into its OWN fold instead of leaking into the parent's span artifact;

@@ -5,7 +5,7 @@
 //   node test/task-marks.test.mjs
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { applyTaskMarks, taskMarksStateSchema, closeTarget, validTaskName, foldDecision, todoBridgeLine } from '../plugins/compact-region.mjs'
+import { applyTaskMarks, taskMarksStateSchema, closeTarget, validTaskName, foldDecision, todoBridgeLine, FOLD_SUMMARY_INSTRUCTION } from '../plugins/compact-region.mjs'
 
 /** assistant/message carrying tool-call blocks (shape per dsh-agent-loop). */
 function assistantCall(seq, calls) {
@@ -303,5 +303,26 @@ test('todoBridgeLine: roster rendering with names, none, and quote defense', () 
   // Defensive: non-array / junk input degrades to the empty roster.
   assert.equal(todoBridgeLine(undefined), todoBridgeLine([]))
   assert.equal(todoBridgeLine([null, 42, '', 'ok']).includes('"ok"'), true)
+})
+
+test('FOLD_SUMMARY_INSTRUCTION: five-section structure with user-inputs and pitfalls sections', () => {
+  // v2 contract: the five section headings, in order.
+  const sections = ['## What happened', '## User inputs & decisions', '## Changes', '## Pitfalls & gotchas', '## Outcomes']
+  let at = -1
+  for (const heading of sections) {
+    const idx = FOLD_SUMMARY_INSTRUCTION.indexOf(heading)
+    assert.ok(idx !== -1, 'missing heading: ' + heading)
+    assert.ok(idx > at, 'heading out of order: ' + heading)
+    at = idx
+  }
+  // The span-scoped philosophy and the new first-class rules survive.
+  assert.ok(FOLD_SUMMARY_INSTRUCTION.includes('ONE FOLDED SPAN'))
+  assert.ok(FOLD_SUMMARY_INSTRUCTION.includes('especially corrections'), 'user feedback rule present')
+  assert.ok(FOLD_SUMMARY_INSTRUCTION.includes('why something failed'), 'pitfall-cause rule present')
+  // Continuity-checkpoint sections contradict the fold's CLOSED-task contract
+  // (they belong to the stock full-context instruction, not to folds).
+  for (const banned of ['Pending Jobs', 'Current Work', 'Next Step', 'Primary Request']) {
+    assert.ok(!FOLD_SUMMARY_INSTRUCTION.includes(banned), 'banned checkpoint section present: ' + banned)
+  }
 })
 

@@ -237,6 +237,40 @@ export function todoBridgeLine(openNames) {
 }
 
 /**
+ * SPAN-SCOPED summarization instruction for task folds. The stock
+ * COMPACTION_INSTRUCTION is a continuity checkpoint ("let another model
+ * resume the work"): it asks for the WHOLE conversation's Primary Request /
+ * Pending Jobs / Next Step, so a folded task span comes back as a
+ * project-wide summary stuffed with background the surrounding context
+ * already has — and its Pending/Next-Step sections would contradict the
+ * fold's "this task is CLOSED" contract. Our folds want exactly the
+ * opposite: what happened IN THE SPAN, with the span's user inputs and
+ * pitfalls preserved as first-class sections (v2). Exported pure so tests
+ * can pin the structure contract offline.
+ */
+export const FOLD_SUMMARY_INSTRUCTION = [
+  'You are summarizing ONE FOLDED SPAN of a longer session. The messages above are exactly that span; your summary replaces them for the model that continues this session.',
+  'Summarize ONLY what the span contains — what was done, tried, decided, and produced. Do NOT restate project background, architecture, goals, or context the messages merely assume: the continuing model already has all of that from outside the span.',
+  'Output EXACTLY this structure, terse bullets, "(none)" for empty sections:',
+  '## What happened',
+  '- [the work performed in this span, in order]',
+  '## User inputs & decisions',
+  '- [the user\'s requests, corrections, rejections, answers, and approvals from THIS span, with the decision each produced; quote verbatim where the exact wording matters]',
+  '## Changes',
+  '- [exact file paths written or edited, commands run, key values]',
+  '## Pitfalls & gotchas',
+  '- [failed attempts and WHY they failed, workarounds adopted, environment traps (sandbox denials, platform quirks), and "do not do X again" lessons from this span]',
+  '## Outcomes',
+  '- [results, verdicts, failures and their meaning; anything a later step must know]',
+  'Rules:',
+  '- Preserve exact file paths, commands, error strings, identifiers, and numbers.',
+  '- Capture user feedback and explicit instructions faithfully, especially corrections.',
+  '- Pitfalls and their causes are the span\'s most reusable knowledge: never drop why something failed.',
+  '- Do NOT mention summarization or compaction.',
+  '- Output only the summary text: do not call any tool or take any other action.'
+].join('\n')
+
+/**
  * Extract the task name from a canonical lifecycle result text:
  *   'Task begun: NAME — …' / 'Task folded: NAME — …'
  * The em dash separates the name from the status tail. Returns '' when the
@@ -473,27 +507,9 @@ export default {
       throw new Error(pkgName + ' is not resolvable from this install')
     }
 
-    // SPAN-SCOPED summarization instruction. The stock COMPACTION_INSTRUCTION
-    // is a continuity checkpoint ("let another model resume the work"): it
-    // asks for the WHOLE conversation's Primary Request / Key Concepts /
-    // Pending Jobs, so a folded task span comes back as a project-wide
-    // summary stuffed with background the surrounding context already has.
-    // Our folds want exactly the opposite: what happened IN THE SPAN.
-    const SCOPED_SPAN_INSTRUCTION = [
-      'You are summarizing ONE FOLDED SPAN of a longer session. The messages above are exactly that span; your summary replaces them for the model that continues this session.',
-      'Summarize ONLY what the span contains — what was done, tried, decided, and produced. Do NOT restate project background, architecture, goals, or context the messages merely assume: the continuing model already has all of that from outside the span.',
-      'Output EXACTLY this structure, terse bullets, "(none)" for empty sections:',
-      '## What happened',
-      '- [the work performed in this span, in order]',
-      '## Changes',
-      '- [exact file paths written or edited, commands run, key values]',
-      '## Outcomes',
-      '- [results, verdicts, failures and their meaning; anything a later step must know]',
-      'Rules:',
-      '- Preserve exact file paths, commands, error strings, identifiers, and numbers.',
-      '- Do NOT mention summarization or compaction.',
-      '- Output only the summary text: do not call any tool or take any other action.'
-    ].join('\n')
+    // SPAN-SCOPED summarization instruction: the module-level exported
+    // FOLD_SUMMARY_INSTRUCTION (see its doc comment there for why the stock
+    // continuity-checkpoint instruction is wrong for folds).
 
     // Scoped summarizer engine: subclasses BasicCompactionEngine so that
     // regionDependencies()' dynamic dispatch reaches OUR summarize(), while
@@ -542,7 +558,7 @@ export default {
             : ''
           const messages = [...input.messages, {
             role: 'user',
-            content: [{ type: 'text', text: SCOPED_SPAN_INSTRUCTION + closing }]
+            content: [{ type: 'text', text: FOLD_SUMMARY_INSTRUCTION + closing }]
           }]
           const options = {
             provider: target.provider,
