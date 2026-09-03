@@ -3,6 +3,14 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.4.2 — README rewritten around benefits, "effectively infinite context" tagline (2026-09-03)
+
+- **Docs**: both READMEs rewritten — lead with a one-line value proposition and
+  the tagline "taskfold — effectively infinite context for your coding agent",
+  explain the mechanism in plain words (fold finished tasks into summaries,
+  recall originals on demand), and trim implementation detail (the old deep
+  dive remains in git history).
+
 ## 0.4.1 — closing report becomes conditional (2026-09-03)
 
 - **Behavior**: the closing report is now conditional, not mandatory. After a
