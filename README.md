@@ -2,7 +2,9 @@
 
 [English](README.md) | [中文](README.zh.md)
 
-**Keep long AI coding sessions fast, cheap, and readable: finished work is folded into a short summary, and the full original content is always one call away.**
+**taskfold — effectively infinite context for your coding agent.**
+
+Keep long AI coding sessions fast, cheap, and readable: finished work is folded into a short summary, and the full original content is always one call away.
 
 For [DeepSeek Harness](https://www.npmjs.com/package/@deepseek-ai/dsh) (DSH).
 

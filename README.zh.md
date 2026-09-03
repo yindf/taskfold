@@ -2,7 +2,9 @@
 
 [English](README.md) | [中文](README.zh.md)
 
-**让长时间的 AI 编程会话保持快速、便宜、可读：完成的工作被折叠成一条短摘要，完整原始内容随时一条命令取回。**
+**taskfold —— 给你的编程智能体，近乎无限的上下文。**
+
+让长时间的 AI 编程会话保持快速、便宜、可读：完成的工作被折叠成一条短摘要，完整原始内容随时一条命令取回。
 
 面向 [DeepSeek Harness](https://www.npmjs.com/package/@deepseek-ai/dsh)（DSH）。
 
