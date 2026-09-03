@@ -3,7 +3,17 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
-## 0.2.2 — fold summaries keep user inputs and pitfalls (current)
+## 0.2.3 — mandatory-tone lifecycle section (current)
+
+- **System prompt section rewritten from descriptive to mandatory**: opens with
+  "MANDATORY task lifecycle discipline: every discrete task MUST be wrapped in
+  task marks"; unmarked tool work on a discrete task and leaving a finished
+  task open are both named protocol violations; multi-module work MUST be
+  split into nested subtasks; runtime-context nudges are "binding, not
+  advisory". Dropped the `## Task lifecycle compaction` heading (the section
+  now reads as directives, not documentation).
+
+## 0.2.2 — fold summaries keep user inputs and pitfalls
 
 - **Five-section fold instruction** (`FOLD_SUMMARY_INSTRUCTION`, exported for
   offline tests): fold summaries now carry `## User inputs & decisions` (the
