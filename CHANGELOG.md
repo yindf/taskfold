@@ -3,6 +3,16 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.4.3 — supported-dsh-versions declaration + release-flow reminder (2026-09-03)
+
+- **Docs**: both READMEs gain a "Supported dsh versions" section — known-good
+  `0.1.2-alpha.5`, minimum `0.1.2-alpha.5` (older alphas differ in the
+  compaction-engine internals), upper bound untested/unenforced (dsh has no
+  host-version negotiation yet; incompatible hosts degrade, never corrupt).
+- **Tooling**: `release` flow now shepherds that section — `draft` prints a
+  reminder to update it when compatibility changes, and `release` warns if
+  either README is missing the section entirely.
+
 ## 0.4.2 — README rewritten around benefits, "effectively infinite context" tagline (2026-09-03)
 
 - **Docs**: both READMEs rewritten — lead with a one-line value proposition and
