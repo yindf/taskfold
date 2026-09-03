@@ -3,6 +3,20 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.4.0 — fold-first closing contract (2026-09-03)
+
+- **Behavior**: the task lifecycle section now orders the closing sequence —
+  when a task's work is done, `task_fold` is the FIRST closing action, and the
+  user-facing closing report is written AFTER the fold, based on the fold
+  summary node then present in context. This resolves the double-summary
+  conflict: no more "summary of a summary" (fold-then-report from memory) and
+  no more reports swallowed into their own fold (report-then-fold).
+- `task_fold` success text ends with an explicit relay instruction (summary
+  node in context — adapt wording for the user, no second summary layer);
+  degraded paths (tooSmall/unfolded) stay unchanged.
+- `FOLD_SUMMARY_INSTRUCTION` gains a rule that the summary doubles as the
+  user-facing closing report basis and must stay human-readable; test pins it.
+
 ## 0.3.0 — release flow script (2026-09-03)
 
 - **Release tooling** (`scripts/release.mjs`, offline-tested in
