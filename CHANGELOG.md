@@ -3,7 +3,26 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
-## 0.2.3 — mandatory-tone lifecycle section (current)
+## 0.3.0 — release flow script (2026-09-03)
+
+- **Release tooling** (`scripts/release.mjs`, offline-tested in
+  `test/release.test.mjs`): CHANGELOG.md is the single source of truth for the
+  version; `package.json` is synced by the script, never by hand — the 0.1.0
+  desync cannot recur.
+  - `draft`: groups commits since the last version tag (Conventional Commit
+    prefixes) into a dated draft entry prepended to CHANGELOG.md for human
+    review.
+  - `release`: reads the top CHANGELOG version, syncs package.json, commits,
+    tags `vX.Y.Z`, pushes master and the tag; a push blocked by the
+    environment enters a PENDING state and re-running resumes it.
+  - `status`: reports current version, CHANGELOG/package.json agreement, and
+    unpushed commits/tags.
+- README (en/zh): "Release flow" usage section.
+- Fix: the package.json version rewrite regex missed the key's closing quote
+  (`"(version)\s*:` never matched `"version":`), which aborted the first real
+  `release` run mid-way; corrected and verified against the live file.
+
+## 0.2.3 — mandatory-tone lifecycle section
 
 - **System prompt section rewritten from descriptive to mandatory**: opens with
   "MANDATORY task lifecycle discipline: every discrete task MUST be wrapped in
