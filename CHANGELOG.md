@@ -3,6 +3,15 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.4.1 — closing report becomes conditional (2026-09-03)
+
+- **Behavior**: the closing report is now conditional, not mandatory. After a
+  successful fold, a report is written only when the user is still owed one;
+  skip it when the outcome was already reported during the work, and never
+  write one for an inner subtask fold — continue the surrounding work instead.
+- The relay instruction in `task_fold`'s success text now carries the same
+  condition, and the lifecycle section spells out the skip rules.
+
 ## 0.4.0 — fold-first closing contract (2026-09-03)
 
 - **Behavior**: the task lifecycle section now orders the closing sequence —
