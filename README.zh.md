@@ -67,9 +67,20 @@ dsh plugin --profile web add github:yindf/taskfold
 package.json      npm 清单 + dsh.bundle.patch 声明
 cordis.patch.yml  host 平面 bundle 补丁（插件安装路径）
 plugins/          compact-region.mjs、compact-stats.mjs
+scripts/          release.mjs —— 发布流程（仅源码仓库可用，不随包分发）
 test/             离线测试套件（node test/*.test.mjs）
 CHANGELOG.md      发布历史
 ```
+
+## 发布
+
+`node scripts/release.mjs`（仅源码仓库可用，脚本不进安装产物）：
+
+1. `status` —— 只读体检：CHANGELOG 顶部 × package.json × 最新 `v*` tag × 工作区，不一致 exit 1。
+2. `draft [--version X.Y.Z] [--force]` —— 要求 CLEAN 状态；取最新 tag 以来的提交按 Conventional Commit 分组（`feat` → minor，`BREAKING CHANGE`/`!:` → major，否则 patch），在 CHANGELOG.md 顶部插入 `unreleased draft` 草稿条目，人工审阅/修改。`--force` 删旧草稿重建。
+3. `release` —— 草稿头替换为当天日期定版，同步 `package.json`（CHANGELOG 是版本号唯一事实源），提交 `chore(release): vX.Y.Z`，打 tag `vX.Y.Z`，先推 tag 再推 master。
+
+CHANGELOG 顶部、package.json、最新 tag 三处必须一致；任何漂移都是 INVALID 状态——脚本绝不自动改版本号（手改版本正是当年 0.1.0/0.2.3 脱节事故的来源），只打印人工修复指引。push 中途失败后重跑 `release` 会识别 PENDING 状态，只续传推送。
 
 ## 许可
 

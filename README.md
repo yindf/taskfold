@@ -67,9 +67,20 @@ Restart dsh after the install.
 package.json      npm manifest + dsh.bundle.patch declaration
 cordis.patch.yml  host-plane bundle patch (plugin install path)
 plugins/          compact-region.mjs, compact-stats.mjs
+scripts/          release.mjs — release flow (repo source only, not shipped)
 test/             offline suites (node test/*.test.mjs)
 CHANGELOG.md      release history
 ```
+
+## Releasing
+
+`node scripts/release.mjs` (repo source only — the script is not part of the installed bundle):
+
+1. `status` — read-only health check: CHANGELOG top × package.json × latest `v*` tag × working tree, exit 1 on inconsistency.
+2. `draft [--version X.Y.Z] [--force]` — from a CLEAN state, group commits since the last tag (Conventional Commits; `feat` → minor, `BREAKING CHANGE`/`!:` → major, else patch) and insert an `unreleased draft` entry at the top of CHANGELOG.md. Review and edit it by hand. `--force` drops an existing draft and regenerates.
+3. `release` — finalize the draft header with today's date, sync `package.json` (the CHANGELOG is the single source of truth for versions), commit `chore(release): vX.Y.Z`, tag `vX.Y.Z`, push the tag then master.
+
+The CHANGELOG top entry, `package.json`, and the latest tag must always agree; any drift is an INVALID state — the script refuses to auto-repair it (hand-editing versions is how the 0.1.0/0.2.3 mismatch happened) and prints a manual fix hint instead. If a push fails midway, re-running `release` detects the PENDING state and resumes the pushes only.
 
 ## License
 

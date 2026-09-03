@@ -5,6 +5,9 @@
   "type": "module",
   "license": "MIT",
   "main": "plugins/compact-region.mjs",
+  "scripts": {
+    "release": "node scripts/release.mjs"
+  },
   "files": [
     "plugins",
     "cordis.patch.yml",
