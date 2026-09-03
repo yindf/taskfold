@@ -322,7 +322,7 @@ function cmdRelease() {
   lines[i] = finalizeDraftHeader(lines[i], date)
   writeFileSync(changelogPath, lines.join('\n'))
   const pkgText = readFileSync(pkgPath, 'utf8')
-  const newPkg = pkgText.replace(new RegExp('"(version)\\s*:\\s*"[^"]*"'), '"version": "' + version + '"')
+  const newPkg = pkgText.replace(new RegExp('"version"\\s*:\\s*"[^"]*"'), '"version": "' + version + '"')
   if (newPkg === pkgText) throw new Error('failed to update package.json version field')
   writeFileSync(pkgPath, newPkg)
   git(['add', 'CHANGELOG.md', 'package.json'])
