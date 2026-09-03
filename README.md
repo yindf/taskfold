@@ -51,10 +51,16 @@ dsh plugin --profile <your-profile> add github:yindf/taskfold
 
 Restart dsh — every session on that profile gets the tools.
 
+## Supported dsh versions
+
+- **Known to work: `0.1.2-alpha.5`** (the version this plugin is developed and tested against; `dsh`, `dsh-compaction-basic`, and `dsh-llm` ship version-locked, so one number covers the whole surface).
+- **Minimum: `0.1.2-alpha.5`.** No older version has been tested; older alphas differ in the compaction-engine internals this plugin builds on.
+- **Upper bound: untested, not enforced.** dsh does not yet expose host-version negotiation to plugins, so nothing rejects an incompatible host automatically — on an incompatible dsh, folds degrade (tasks still close, unfolded) rather than corrupt. After each dsh upgrade, re-check this section and update it with test results.
+
 ## For maintainers
 
 - Layout: `plugins/` (the two plugin files), `scripts/release.mjs`, `test/` (`node test/*.test.mjs`), `CHANGELOG.md`.
-- Releasing: `node scripts/release.mjs draft` → review the CHANGELOG entry → `node scripts/release.mjs release` (CHANGELOG is the single source of truth for versions).
+- Releasing: `node scripts/release.mjs draft` → review the CHANGELOG entry → `node scripts/release.mjs release` (CHANGELOG is the single source of truth for versions). If this release changes which dsh versions are supported, update the "Supported dsh versions" section in **both** READMEs before releasing — the release script reminds you.
 - Design decisions and history live in `CHANGELOG.md` and the design notes in the source repo.
 
 ## License

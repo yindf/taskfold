@@ -279,6 +279,7 @@ function cmdDraft(opts) {
   const title = commits.length === 0 ? '(no changes)' : summarizeTitle(commits)
   insertDraft(renderEntry(version, title, today(), groups))
   console.log('Draft ' + version + ' written to CHANGELOG.md — review/edit it, then run: node scripts/release.mjs release')
+  console.log('Reminder: if this release changes which dsh versions are supported, update the "Supported dsh versions" section in BOTH READMEs (README.md + README.zh.md) before releasing.')
 }
 
 function summarizeTitle(commits) {
@@ -316,6 +317,13 @@ function cmdRelease() {
     process.exit(1)
   }
   const version = st.version
+  // Non-blocking guard: both READMEs must declare the supported-dsh section.
+  for (const readme of ['README.md', 'README.zh.md']) {
+    const text = readFileSync(path.join(repoRoot, readme), 'utf8')
+    if (!/Supported dsh versions|支持的 dsh 版本/.test(text)) {
+      console.log('warning: ' + readme + ' is missing the "Supported dsh versions" section — add it before the next release.')
+    }
+  }
   const date = today()
   const lines = readFileSync(changelogPath, 'utf8').split(/\r?\n/)
   const i = lines.findIndex((l) => l.startsWith('## '))

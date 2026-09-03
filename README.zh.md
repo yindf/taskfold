@@ -51,10 +51,16 @@ dsh plugin --profile <你的profile> add github:yindf/taskfold
 
 重启 dsh——该 profile 下的每个会话都拥有这些工具。
 
+## 支持的 dsh 版本
+
+- **已验证可用：`0.1.2-alpha.5`**（本插件的开发与测试版本；`dsh`、`dsh-compaction-basic`、`dsh-llm` 三者版本锁步发布，一个数字覆盖全部耦合面）。
+- **最低兼容：`0.1.2-alpha.5`。** 未测试过更早版本；更早的 alpha 在本插件依赖的压缩引擎内部接口上有差异。
+- **上界：未测试、未强制。** dsh 尚未向插件提供宿主版本协商机制，不兼容的宿主不会被自动拒绝——在不兼容的 dsh 上，折叠会降级（任务照常关闭、不折叠），不会损坏数据。每次 dsh 升级后，请复核本节并按实测结果更新。
+
 ## 维护者须知
 
 - 目录：`plugins/`（两个插件文件）、`scripts/release.mjs`、`test/`（`node test/*.test.mjs`）、`CHANGELOG.md`。
-- 发版：`node scripts/release.mjs draft` → 审阅 CHANGELOG 条目 → `node scripts/release.mjs release`（CHANGELOG 是版本唯一事实源）。
+- 发版：`node scripts/release.mjs draft` → 审阅 CHANGELOG 条目 → `node scripts/release.mjs release`（CHANGELOG 是版本唯一事实源）。若本次发版改变了支持的 dsh 版本范围，发版前先更新**两份** README 的“支持的 dsh 版本”一节——release 脚本会提醒。
 - 设计决策与历史见 `CHANGELOG.md` 及源仓库中的设计笔记。
 
 ## 许可
