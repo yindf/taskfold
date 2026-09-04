@@ -3,6 +3,12 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.6.1 — pwsh brief falls back to the command when description is missing (2026-09-04)
+
+- **Fix**: `description` is model-provided and can be absent or empty; the
+  pwsh call brief now falls back to a slice of the command itself instead of
+  rendering `→pwsh ‹›`.
+
 ## 0.6.0 — web-UI-style briefs for common tools in the span preview (2026-09-04)
 
 - **Features**: preview fragments are now tool-aware (one line per message is
