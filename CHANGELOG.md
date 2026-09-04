@@ -3,6 +3,20 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.6.0 — web-UI-style briefs for common tools in the span preview (2026-09-04)
+
+- **Features**: preview fragments are now tool-aware (one line per message is
+  unchanged — the JSONL line mapping contract holds):
+  - `read`/`write`: full file path on the call side; the result side shows a
+    content excerpt instead of repeating the path header.
+  - `edit`: path plus a line delta (`→edit p.mjs +4 -2`) computed from the
+    old/new strings.
+  - `grep`: call shows the pattern (and include filter); result collapses to
+    match stats (`⇐5 matches · 2 files`).
+  - `pwsh`: call shows the command's description (`→pwsh ‹Run live probe›`).
+  - Unknown tools keep the generic `→name(args)` / `⇐excerpt` form; results
+  correlate with their call via toolCallId, degrading safely without the map.
+
 ## 0.5.2 — relay instruction moved to its own line (2026-09-04)
 
 - **Fix**: in `task_fold`'s success output, the relay instruction was appended
