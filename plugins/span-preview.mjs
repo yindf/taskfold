@@ -16,7 +16,9 @@ const TEXT_CLIP = 80
 const LINE_CLIP = 200
 
 function clip(text, max) {
-  const flat = String(text).replace(/\s+/g, ' ').trim()
+  // Newlines become a visible ⏎ marker: one preview line must stay one line,
+  // but the model should still see where the original line breaks were.
+  const flat = String(text).replace(/\s*\n+\s*/g, ' ⏎ ').replace(/\s+/g, ' ').trim()
   return flat.length > max ? flat.slice(0, max - 1) + '…' : flat
 }
 
