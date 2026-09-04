@@ -5,7 +5,7 @@
  * preset). No realm/isolate-group assumptions are made.
  *
  * Registers the task-lifecycle tools plus prompt guidance:
- *   task_begin / task_fold — named tasks; close pops the mark and QUEUES an
+ *   task_begin / task_end — named tasks; task_end pops the mark and QUEUES an
  *   archive (v9 full-deferred): the span folds AUTOMATICALLY at the next
  *   agent step boundary after the task's deliverable text lands.
  *
@@ -20,7 +20,7 @@
  *
  * Mark-stack persistence: the `taskMarks` session projection DERIVES the
  * open-mark stack from harness-native events only — `assistant/message`
- * (tool-call blocks named task_begin/task_fold register a pending intent
+ * (tool-call blocks named task_begin/task_end/task_fold register a pending intent
  * keyed by callId) and `tool/result` (the rendered text decides success;
  * success pushes/pops). No custom event types are ever appended: the
  * harness read side refuses unknown event types that are not marked
@@ -33,14 +33,14 @@
  *
  * Derivation contract with our own renderers (double-owned, stable):
  *   task_begin success text starts with 'Task begun: '
- *   task_fold  success text starts with 'Task folded: ' (pops the mark)
- *   failures start with 'task_begin failed' / 'task_fold failed'
- * A failed task_fold KEEPS the mark (atomic end-and-fold: nothing happened,
+ *   task_end   success text starts with 'Task ended: ' (pops the mark);
+ *   legacy 'Task folded: ' results replay identically. Failures start with
+ *   'task_begin failed' / 'task_end failed'. A failed close KEEPS the mark (atomic end-and-fold: nothing happened,
  * retry). Task names never contain ' —' (validTaskName): the delimiter that
  * taskNameFromText splits on, keeping the name render→parse round trip
  * lossless.
  *
- * task_fold folds [begin assistant message .. last surface node before its
+ * The SYSTEM folds [begin assistant message .. last surface node before its
  * own step] INLINE from its execute context — the session loop is naturally
  * paused there. The span cannot contain its own ending, so the scoped
  * summarizer instruction DECLARES completion ("this fold CLOSES the task
@@ -255,7 +255,7 @@ export function deferredArchivePlan(p, surfaceNodes, events, successorAnchors) {
 export function todoBridgeLine(openNames) {
   const names = Array.isArray(openNames) ? openNames.filter((n) => typeof n === 'string' && n !== '') : []
   const roster = names.length > 0 ? names.map((n) => '"' + n.replace(/"/g, "'") + '"').join(', ') : 'none'
-  return 'Todo bridge: todos changed; open tasks: ' + roster + ' — keep marks in sync: task_begin for new tasks, task_fold for finished tasks.'
+  return 'Todo bridge: todos changed; open tasks: ' + roster + ' — keep marks in sync: task_begin for new tasks, task_end for finished tasks.'
 }
 
 /**
@@ -349,7 +349,7 @@ export function applyTaskMarks(state, event) {
     let next = null
     for (const block of content) {
       if (block === null || typeof block !== 'object' || block.type !== 'tool-call') continue
-      if (block.name !== 'task_begin' && block.name !== 'task_fold') continue
+      if (block.name !== 'task_begin' && block.name !== 'task_fold' && block.name !== 'task_end') continue
       if (next === null) next = cloneTaskMarks(state)
       next.pending[String(block.id)] = {
         kind: block.name === 'task_begin' ? 'begin' : 'end',
@@ -379,8 +379,8 @@ export function applyTaskMarks(state, event) {
       if (intent.kind === 'begin' && text.indexOf('Task begun: ') === 0) {
         const name = taskNameFromText(text, 'Task begun: ')
         next.marks.push({ seq: intent.anchorSeq, name })
-      } else if (intent.kind === 'end' && text.indexOf('Task folded: ') === 0) {
-        const name = taskNameFromText(text, 'Task folded: ')
+      } else if (intent.kind === 'end' && (text.indexOf('Task folded: ') === 0 || text.indexOf('Task ended: ') === 0)) {
+        const name = taskNameFromText(text, text.indexOf('Task ended: ') === 0 ? 'Task ended: ' : 'Task folded: ')
         // Pop the most recent mark whose normalized name matches. Name-keyed
         // on purpose (old-log replay); the tool layer enforces LIFO before
         // any of these events can be written. v9 full-deferred: a successful
@@ -618,7 +618,7 @@ export default {
             ? '\nThe task this span belongs to is named "' + closingName + '". Rules for this fold:\n'
               + '- Begin the summary with the heading line "# ' + closingName + '" — nothing before it.\n'
               + '- This fold CLOSES the task: the work in this span is COMPLETE. Do not report anything as unfinished or pending because of how the span ends — this very fold is the task\u0027s ending.\n'
-              + '- Do NOT summarize task_begin / task_fold calls, their results, or any narration that merely announces starting or finishing the task — that is lifecycle bookkeeping, not content. Summarize the WORK itself.'
+              + '- Do NOT summarize task_begin / task_end / task_fold calls, their results, or any narration that merely announces starting or finishing the task — that is lifecycle bookkeeping, not content. Summarize the WORK itself.'
             : ''
           const messages = [...input.messages, {
             role: 'user',
@@ -807,6 +807,27 @@ export default {
     }
 
     let preStepRunning = false
+    // One-shot fold notices, keyed by session id. A system-executed fold has
+    // no tool result to render into, so its old-style output (fold number,
+    // token count, artifact path, per-message preview) rides a single
+    // runtime-context line: the context callback drains the queue when the
+    // next request assembles, the diff engine retracts it on the following
+    // render. Mirrors what the model-facing task_fold used to print.
+    const foldNotices = new Map()
+    function pushFoldNotice(sessionId, name, result) {
+      const lines = ['Folded "' + String(name).replace(/"/g, "'") + '" #' + result.fold + ' (' + result.tokens + ' tokens) — summary node in context; original context saved (JSONL, one message per line): ' + String(result.file === undefined ? '(write failed)' : result.file)]
+      if (Array.isArray(result.preview)) lines.push(...result.preview)
+      const list = foldNotices.get(sessionId)
+      if (list === undefined) foldNotices.set(sessionId, [lines])
+      else list.push(lines)
+    }
+    function drainFoldNotices(sessionId) {
+      const list = foldNotices.get(sessionId)
+      if (list === undefined || list.length === 0) return []
+      foldNotices.delete(sessionId)
+      return list
+    }
+
     // The deliverable-gated auto-folder: at every agent step boundary, drain
     // queue entries whose deliverable has landed (deferredArchivePlan gate),
     // innermost (highest seq) first. Serial by construction; the projection
@@ -844,6 +865,7 @@ export default {
             closingTasks.set(session.id, p.name)
             const result = await foldRegion(session, agent, engine, p.name, plan.startSeq, plan.endSeq, guardedSignal(signal))
             if (result === null) markArchiveSettled(session, p.seq)
+            else pushFoldNotice(session.id, p.name, result)
             clearArchiveFailure(session, p.name)
             // A committed fold drops the entry via the reducer's
             // compaction/summary handler; loop re-reads state.
@@ -890,7 +912,7 @@ export default {
 
     const taskBegin = {
       name: 'task_begin',
-      description: 'Begin a NAMED task. The name is the identity; when the work is done, one task_fold({ name }) call closes it and queues archival — the span folds automatically at the next step boundary after your deliverable. A name already open is rejected; names must not contain " —". Tasks can nest: task_begin while a task is open opens a subtask (innermost closes first). Call alone in a step.',
+      description: 'Begin a NAMED task. The name is the identity; when the work is done, one task_end({ name }) call ends it and queues archival — the span folds automatically at the next step boundary after your deliverable. A name already open is rejected; names must not contain " —". Tasks can nest: task_begin while a task is open opens a subtask (innermost closes first). Call alone in a step.',
       parameters: {
         type: 'object',
         properties: {
@@ -910,7 +932,7 @@ export default {
         const agent = exec.agent
         if (agent === undefined) return { ok: false, category: 'invalid', error: 'task_begin requires an agent context' }
         const name = args !== null && typeof args === 'object' ? normalizeName(args.name) : ''
-        if (name.length === 0) return { ok: false, category: 'invalid', error: 'task_begin requires a non-empty `name` (the identity key task_fold will close by)' }
+        if (name.length === 0) return { ok: false, category: 'invalid', error: 'task_begin requires a non-empty `name` (the identity key task_end will end by)' }
         if (!validTaskName(name)) return { ok: false, category: 'invalid', error: 'task names must not contain " —" (the result-text delimiter); pick a name without it' }
         const session = agent.session
         const open = marksOf(session)
@@ -943,12 +965,12 @@ export default {
     }
 
     const taskEnd = {
-      name: 'task_fold',
-      description: 'End the INNERMOST open task by name: it closes the task and QUEUES archival — the span folds AUTOMATICALLY at the next step boundary after the task\u0027s deliverable/report text lands (possibly mid-turn). So: finish the work, call task_fold, then deliver the report in the same turn with full context — folding never precedes a deliverable. LIFO: newer open tasks block older ones; a blocked or unknown name fails and changes nothing (close the newer task first). Calling task_fold again for a task whose archival is still queued forces the fold immediately. Too-small spans close without folding. Failure outcomes are explained in the result; follow it. Call alone in a step.',
+      name: 'task_end',
+      description: 'End the INNERMOST open task by name: it closes the task and QUEUES archival — the span folds AUTOMATICALLY at the next step boundary after the task\u0027s deliverable/report text lands (possibly mid-turn). So: finish the work, call task_end, then deliver the report in the same turn with full context — folding never precedes a deliverable. Folds are system-executed: the fold notice (fold number, artifact path, per-message preview) arrives as a one-shot runtime-context line. LIFO: newer open tasks block older ones; a blocked or unknown name fails and changes nothing (close the newer task first). Too-small spans close without folding; failed auto-folds retry at every step boundary. Failure outcomes are explained in the result; follow it. Call alone in a step.',
       parameters: {
         type: 'object',
         properties: {
-          name: { type: 'string', description: 'Name of the open task to close (same string given to its task_begin).' }
+          name: { type: 'string', description: 'Name of the open task to end (same string given to its task_begin).' }
         },
         required: ['name']
       },
@@ -959,73 +981,34 @@ export default {
             const category = value.category === undefined ? 'invalid' : String(value.category)
             const error = value.error === undefined ? 'unknown error' : String(value.error)
             const hint = value.hint === undefined ? '' : '\n' + String(value.hint)
-            return [{ type: 'text', text: 'task_fold failed (' + category + '): ' + error + hint }]
+            return [{ type: 'text', text: 'task_end failed (' + category + '): ' + error + hint }]
           }
           const open = value.remainingNames.length > 0 ? value.remainingNames.length + ' open: ' + value.remainingNames.join(', ') : 'all closed'
-          if (value.queued === true) {
-            // Full-deferred close (v9): mark popped, archive queued. The
-            // 'Task folded: ' prefix is LOAD-BEARING — the reducer keys the
-            // mark pop AND the pendingArchive registration on it.
-            return [{ type: 'text', text: 'Task folded: ' + value.name + ' — ' + open + '. Archival queued — the span folds automatically at your next step boundary; deliver your report now with full context.' }]
-          }
           if (value.unfolded !== undefined) {
             const why = value.unfolded === 'engine'
               ? 'Engine unavailable; task closed without folding.'
               : 'Mark no longer on the surface; task closed without folding.'
-            return [{ type: 'text', text: 'Task folded: ' + value.name + ' — ' + open + '. ' + why }]
+            return [{ type: 'text', text: 'Task ended: ' + value.name + ' — ' + open + '. ' + why }]
           }
-          if (value.tooSmall === true) {
-            return [{ type: 'text', text: 'Task folded: ' + value.name + ' — ' + open + '. Span too small to fold; left as-is.' }]
-          }
-          const foldPart = value.fold === undefined ? '' : ' Folded #' + value.fold + ' (' + value.tokens + ' tokens).'
-          const filePart = value.file === undefined ? '' : ' Original context saved (JSONL, one message per line): ' + value.file
-          const previewPart = Array.isArray(value.preview) && value.preview.length > 0 ? '\n' + value.preview.join('\n') : ''
-          const reportPart = value.fold === undefined ? '' : '\nDeviation check: if you have NOT yet sent this task\u0027s report or deliverable in an earlier step, and no tasks remain open, write it now from the fold summaries in context (adapt the wording; no second summary layer); otherwise — deliverable already sent, or tasks still open — do not report; continue the surrounding work.'
-          return [{ type: 'text', text: 'Task folded: ' + value.name + ' — ' + open + '.' + foldPart + filePart + previewPart + reportPart }]
+          // The 'Task ended: ' prefix is LOAD-BEARING — the reducer keys the
+          // mark pop AND the pendingArchive registration on it ('Task folded: '
+          // from legacy logs still matches).
+          return [{ type: 'text', text: 'Task ended: ' + value.name + ' — ' + open + '. Archival queued — the span folds automatically at your next step boundary; deliver your report now with full context.' }]
         }
       },
       async execute(args, exec) {
         const agent = exec.agent
-        if (agent === undefined) return { ok: false, category: 'invalid', error: 'task_fold requires an agent context' }
+        if (agent === undefined) return { ok: false, category: 'invalid', error: 'task_end requires an agent context' }
         const name = args !== null && typeof args === 'object' ? normalizeName(args.name) : ''
-        if (name.length === 0) return { ok: false, category: 'invalid', error: 'task_fold requires a non-empty `name`' }
+        if (name.length === 0) return { ok: false, category: 'invalid', error: 'task_end requires a non-empty `name`' }
         const session = agent.session
         const marks = marksOf(session)
         const openNamesNow = marks.map((m) => m.name)
-        // ── Manual supplement: task closed, archive still queued → fold NOW.
-        // Escape hatch for a stuck auto-fold (engine busy etc.): a forced
-        // fold commits a compaction/summary whose shadowedSeqs drop the
-        // queue entry via the reducer. settledArchives entries (folded as
-        // too-small) are not re-foldable — treated as unknown below.
         if (!openNamesNow.some((n) => n === name)) {
           const entries = archivesOf(session)
-          const entry = [...entries].reverse().find((p) => p.name === name && !isSettledArchive(session, p.seq))
-          if (entry !== undefined) {
-            const engine = await engineFor()
-            if (engine === undefined) return { ok: true, name, remainingNames: openNamesNow, unfolded: 'engine' }
-            try {
-              closingTasks.set(session.id, name)
-              const result = await foldRegion(session, agent, engine, name, entry.seq, lastSurfaceNode(session), guardedSignal(exec.signal))
-              if (result === null) {
-                markArchiveSettled(session, entry.seq)
-                return { ok: true, name, remainingNames: openNamesNow, tooSmall: true }
-              }
-              markArchiveSettled(session, entry.seq)
-              return { ok: true, name, remainingNames: openNamesNow, tokens: result.tokens, fold: result.fold, file: result.file, preview: result.preview }
-            } catch (err) {
-              const classified = classifyCategory(err)
-              if (classified.category === 'summary') {
-                markArchiveSettled(session, entry.seq)
-                return { ok: true, name, remainingNames: openNamesNow, tooSmall: true }
-              }
-              return { ok: false, category: classified.category, error: classified.category === 'busy' ? 'compaction lock active — retry task_fold' : classified.message }
-            } finally {
-              closingTasks.delete(session.id)
-            }
-          }
           const queuedNames = entries.filter((p) => !isSettledArchive(session, p.seq)).map((p) => p.name)
           const lists = 'open: ' + (openNamesNow.length > 0 ? openNamesNow.join(', ') : '(none)')
-            + (queuedNames.length > 0 ? '; queued for archival: ' + queuedNames.join(', ') : '')
+            + (queuedNames.length > 0 ? '; queued for archival (folds automatically): ' + queuedNames.join(', ') : '')
           return { ok: false, category: 'invalid', error: 'no open task named "' + name + '". ' + lists }
         }
         // ── Standard close: LIFO check, then queue the archive.
@@ -1058,10 +1041,10 @@ export default {
     ctx.systemPrompt.section({
       name: 'task-marker-compaction',
       order: 650,
-      text: 'MANDATORY task lifecycle discipline: every discrete task MUST be wrapped in task marks. A task is work that produces a verifiable outcome (a fix, a module, an analysis, a delegated review); a single read/grep/probe is a step, not a task — never open a mark for a step, and when in doubt, treat the work as a task (a small fold costs one summary node; an unfolded task costs a degraded context). Before a task, call task_begin({ name }) alone in a step. The moment its work is done, call task_fold({ name }) alone in a step: it closes the task and QUEUES archival — then deliver the task\u0027s report or deliverable (to the user, or a subagent\u0027s report to its parent) in the SAME turn, written with FULL context while every detail is still on the surface. The fold itself happens AUTOMATICALLY at the next step boundary after your deliverable lands — possibly mid-turn — so folding never precedes a deliverable and the details you deliver from are never compressed. The mark is a bookmark, not a deadline: while waiting on a background job or user reply, leave it open and do other work; fold when the wait resolves. Multi-part work MUST be split into nested subtasks (innermost closes first); a long detour or dead-end exploration inside a task is one such part — wrap it as a short subtask and close it. When a new task depends on an earlier folded task\u0027s details, recall that fold (list_folds → fold_recall → read/grep) before starting. Folded details are never lost: list_folds → fold_recall({ fold }) → read/grep the artifact. Recall on demand — when a summary\u0027s anchors fail to answer a concrete question the work or the report needs; never guess, and never ask the user before recalling; never recall preemptively. Never restate a folded span from memory; never track message positions yourself. Runtime context carries lifecycle nudges — treat them as directives and act on them.'
+      text: 'MANDATORY task lifecycle discipline: every discrete task MUST be wrapped in task marks. A task is work that produces a verifiable outcome (a fix, a module, an analysis, a delegated review); a single read/grep/probe is a step, not a task — never open a mark for a step, and when in doubt, treat the work as a task (a small fold costs one summary node; an unfolded task costs a degraded context). Before a task, call task_begin({ name }) alone in a step. The moment its work is done, call task_end({ name }) alone in a step: it ends the task and QUEUES archival — then deliver the task\u0027s report or deliverable (to the user, or a subagent\u0027s report to its parent) in the SAME turn, written with FULL context while every detail is still on the surface. The fold itself happens AUTOMATICALLY at the next step boundary after your deliverable lands — possibly mid-turn — so folding never precedes a deliverable and the details you deliver from are never compressed. The mark is a bookmark, not a deadline: while waiting on a background job or user reply, leave it open and do other work; fold when the wait resolves. Multi-part work MUST be split into nested subtasks (innermost closes first); a long detour or dead-end exploration inside a task is one such part — wrap it as a short subtask and close it. When a new task depends on an earlier folded task\u0027s details, recall that fold (list_folds → fold_recall → read/grep) before starting. Folded details are never lost: list_folds → fold_recall({ fold }) → read/grep the artifact. Recall on demand — when a summary\u0027s anchors fail to answer a concrete question the work or the report needs; never guess, and never ask the user before recalling; never recall preemptively. Never restate a folded span from memory; never track message positions yourself. A one-shot fold notice in runtime context reports each system fold (fold number, artifact path, per-message preview). Runtime context carries lifecycle nudges — treat them as directives and act on them.'
     })
 
-    const TASK_TOOL_RE = /^(task_begin|task_fold|list_folds|fold_recall|todo_write)$/
+    const TASK_TOOL_RE = /^(task_begin|task_end|task_fold|list_folds|fold_recall|todo_write)$/
 
     function recentWorkCallCount(session) {
       // Count non-task tool calls in the last 10 assistant messages.
@@ -1117,7 +1100,7 @@ export default {
           const text = Array.isArray(b.content)
             ? b.content.filter(isTaskResultText).map((x) => x.text).join('\n')
             : ''
-          if (text.indexOf('Task folded: ') === 0) {
+          if (text.indexOf('Task folded: ') === 0 || text.indexOf('Task ended: ') === 0) {
             return countAssistantSince(session, e.seq, 4)
           }
         }
@@ -1194,7 +1177,7 @@ export default {
             if (age > oldestAge) { oldestAge = age; oldest = m }
           }
           if (oldestAge >= 20) {
-            lines.push('Task lifecycle: task "' + oldest.name + '" is 20+ rounds old — if done, call task_fold({ name: "' + oldest.name + '" }); if a newer task blocks it, close that first; if it is genuinely waiting on a job or reply, leave it open.')
+            lines.push('Task lifecycle: task "' + oldest.name + '" is 20+ rounds old — if done, call task_end({ name: "' + oldest.name + '" }); if a newer task blocks it, close that first; if it is genuinely waiting on a job or reply, leave it open.')
           }
         }
 
@@ -1205,8 +1188,17 @@ export default {
         const fails = autoFoldFailures.get(session.id)
         if (fails !== undefined) {
           for (const [failName, bucket] of fails) {
-            lines.push('Task lifecycle: auto-fold for "' + failName.replace(/"/g, "'") + '" is failing (' + bucket + ') — it retries automatically at every step boundary; to force it now, call task_fold({ name: "' + failName.replace(/"/g, "'") + '" }).')
+            lines.push('Task lifecycle: auto-fold for "' + failName.replace(/"/g, "'") + '" is failing (' + bucket + ') — it retries automatically at every step boundary; no action needed.')
           }
+        }
+
+        // ── Fold notices: one-shot system-fold output ─────────────────────
+        // The system-executed fold has no tool result to render into, so its
+        // output (fold number, tokens, artifact path, per-message preview)
+        // rides these lines once: drained here, retracted by the diff engine
+        // on the next render.
+        for (const notice of drainFoldNotices(session.id)) {
+          lines.push(...notice)
         }
 
         // ── Todo bridge: transient change report ──────────────────────

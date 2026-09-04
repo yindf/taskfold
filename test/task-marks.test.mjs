@@ -195,6 +195,22 @@ test('name normalization: whitespace and multi-name closing', () => {
   assert.deepEqual(state.pendingArchives, [{ seq: 100, name: 'fix bug', foldResultSeq: 201 }], 'the close queued its archive')
 })
 
+test('task_end result prefix pops the mark and queues, legacy Task folded still replays', () => {
+  let state = null
+  state = applyTaskMarks(state, assistantCall(290, [{ id: 'b0', name: 'task_begin' }]))
+  state = applyTaskMarks(state, toolResult('b0', 'Task begun: modern task — 1 open. …', 291))
+  state = applyTaskMarks(state, assistantCall(300, [{ id: 'e1', name: 'task_end' }]))
+  state = applyTaskMarks(state, toolResult('e1', 'Task ended: modern task — all closed. Archival queued — …', 301))
+  assert.deepEqual(state.marks, [], 'new prefix pops the mark')
+  assert.deepEqual(state.pendingArchives, [{ seq: 290, name: 'modern task', foldResultSeq: 301 }], 'new prefix queues the archive')
+  state = applyTaskMarks(state, assistantCall(350, [{ id: 'b1', name: 'task_begin' }]))
+  state = applyTaskMarks(state, toolResult('b1', 'Task begun: legacy replay — 1 open. …', 351))
+  state = applyTaskMarks(state, assistantCall(400, [{ id: 'e2', name: 'task_fold' }]))
+  state = applyTaskMarks(state, toolResult('e2', 'Task folded: legacy replay — all closed. …', 401))
+  assert.deepEqual(state.marks, [], 'legacy prefix still accepted on old-log replay')
+  assert.deepEqual(state.pendingArchives.some((p) => p.name === 'legacy replay'), true, 'legacy close queues too')
+})
+
 test('validTaskName: rejects empty and delimiter-carrying names', () => {
   assert.equal(validTaskName('alpha'), true)
   assert.equal(validTaskName('fix — part 2'), false, 'the rendered-text delimiter truncates parsing')
@@ -231,8 +247,8 @@ test('closeTarget: duplicate names match the most recent occurrence, blocking de
 
 test('todoBridgeLine: roster rendering with names, none, and quote defense', () => {
   assert.equal(todoBridgeLine(['fix-bridge', 'add-tests']),
-    'Todo bridge: todos changed; open tasks: "fix-bridge", "add-tests" — keep marks in sync: task_begin for new tasks, task_fold for finished tasks.')
-  assert.equal(todoBridgeLine([]), 'Todo bridge: todos changed; open tasks: none — keep marks in sync: task_begin for new tasks, task_fold for finished tasks.')
+    'Todo bridge: todos changed; open tasks: "fix-bridge", "add-tests" — keep marks in sync: task_begin for new tasks, task_end for finished tasks.')
+  assert.equal(todoBridgeLine([]), 'Todo bridge: todos changed; open tasks: none — keep marks in sync: task_begin for new tasks, task_end for finished tasks.')
   // Quotes in task names are neutralized so the roster stays parseable.
   assert.ok(!todoBridgeLine(['say "hi"']).includes('"say "hi""'))
   assert.ok(todoBridgeLine(['say "hi"']).includes("'"))
