@@ -738,7 +738,7 @@ export default {
           const foldPart = value.fold === undefined ? '' : ' Folded #' + value.fold + ' (' + value.tokens + ' tokens).'
           const filePart = value.file === undefined ? '' : ' Original context saved (JSONL, one message per line): ' + value.file
           const previewPart = Array.isArray(value.preview) && value.preview.length > 0 ? '\n' + value.preview.join('\n') : ''
-          const reportPart = value.fold === undefined ? '' : ' The fold summary node is now in context. If the user is still owed a closing report for this work, write it from that node (adapt the wording, no second summary layer); if the outcome was already reported or other tasks remain open, do not — a subtask fold never gets its own report.'
+          const reportPart = value.fold === undefined ? '' : '\nThe fold summary node is now in context. If the user is still owed a closing report for this work, write it from that node (adapt the wording, no second summary layer); if the outcome was already reported or other tasks remain open, do not — a subtask fold never gets its own report.'
           return [{ type: 'text', text: 'Task folded: ' + value.name + ' — ' + open + '.' + foldPart + filePart + previewPart + reportPart }]
         }
       },
