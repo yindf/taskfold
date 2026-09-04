@@ -3,6 +3,14 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.10.0 — preview distinguishes tool results from user input (2026-09-04)
+
+- **Features**: harness tool results arrive as user-role messages, which made
+  them indistinguishable from genuine user input in the span preview. A
+  message whose blocks are all tool-results now reads `NN tool: ←…`; real
+  user text (and runtime-context snapshots) keeps `NN user: …`. Mixed-block
+  messages keep their original role label.
+
 ## 0.9.0 — teach the model the recall path (2026-09-04)
 
 - **Prompt**: the lifecycle section now carries the full recall recipe —
