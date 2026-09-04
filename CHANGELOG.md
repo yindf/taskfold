@@ -3,6 +3,21 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.5.0 — span preview in fold output, JSONL artifacts (2026-09-04)
+
+- **Behavior**: `task_fold`'s result now carries a one-line-per-message
+  preview of the folded span — every folded message summarized as a single
+  numbered line (`NN role: [think]… →tool(args) ⇐result`, whitespace
+  flattened, clipped), capped at 30 lines with an overflow pointer.
+- **Artifact format change**: span artifacts are now **JSONL** — one message
+  per line, in the exact order and numbering of the preview lines, so the
+  model can map a preview line straight to its full original by line number.
+  `fold_recall` regenerates the same JSONL format and also prints the
+  preview. Old `.json` artifacts already on disk remain readable.
+- New shared module `plugins/span-preview.mjs` (single source for both
+  plugins, keeps preview and file numbering in lockstep); 4 new tests
+  (51 total).
+
 ## 0.4.3 — supported-dsh-versions declaration + release-flow reminder (2026-09-03)
 
 - **Docs**: both READMEs gain a "Supported dsh versions" section — known-good
