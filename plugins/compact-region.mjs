@@ -64,11 +64,10 @@
 import nodePath from 'node:path'
 import nodeFs from 'node:fs'
 import nodeUrl from 'node:url'
-import { randomUUID } from 'node:crypto'
 
 // Shared span-preview/JSONL helpers: preview line N and artifact line N are
 // derived from the same message, so numbering maps both ways.
-import { renderSpanPreview, writeSpanArtifact } from './span-preview.mjs'
+import { writeSpanArtifact } from './span-preview.mjs'
 
 /** Session-projection key under which the open-mark stack is published. */
 export const TASK_MARKS_KEY = 'taskMarks'
@@ -647,8 +646,31 @@ export default {
           const rawOutput = assembler.blocks()
           const summary = rawOutput.filter((b) => b !== null && typeof b === 'object' && b.type === 'text' && typeof b.text === 'string')
           if (!summary.some((b) => b.text.trim().length > 0)) throw new Error('summarization produced no text summary content')
+          // FOLD METADATA EMBEDDED IN THE SUMMARY NODE (product ruling): this
+          // hook is the last stop before the engine commits the node, and it
+          // owns the summary text — so the fold number (existing summaries in
+          // THIS session + 1; per-session counters, the event-log lock makes
+          // the fold serial) and the artifact path (input.messages IS the
+          // exact span) are computed HERE and appended as a footer line. The
+          // committed node then carries its own recall handles; no separate
+          // notice message is injected at all. If the engine later rejects
+          // the commit, the pre-written artifact becomes an orphan temp
+          // file — harmless.
+          const withFooter = [...summary]
+          if (withFooter.length > 0) {
+            let foldNo = 0
+            for (const e of sessionEvents(agent.session)) {
+              if (e !== null && typeof e === 'object' && e.type === 'compaction/summary') foldNo += 1
+            }
+            foldNo += 1
+            const file = writeSpanArtifact(input.messages, typeof closingName === 'string' && closingName.length > 0 ? closingName : 'fold')
+            if (file !== undefined) {
+              const last = withFooter[withFooter.length - 1]
+              withFooter[withFooter.length - 1] = { ...last, text: last.text.replace(/\s+$/, '') + '\n\n[fold #' + foldNo + ' · originals (JSONL, one message per line): ' + file + ']' }
+            }
+          }
           return {
-            summary,
+            summary: withFooter,
             rawOutput,
             llmStreamCall: true,
             provider: options.provider,
@@ -693,27 +715,12 @@ export default {
     }
 
     // ── span artifact: the full original content, as a file ───────────────
-    // deriveEventMessage/eventAt are the harness's own request-derivation
-    // pair (the compaction engine replays them for summarization input), so
-    // the artifact is byte-identical to what the model was sent for the span
-    // — same blocks, same order, no digest, no line numbers. Written to the
-    // OS temp dir at fold time as JSONL, one message per line, in the same
-    // order task_fold's preview lines number; fold_recall({ fold: N })
-    // regenerates it from the append-only log when the temp file is cleaned.
-    function spanMessages(session, seqs) {
-      if (typeof session.deriveEventMessage !== 'function' || typeof session.eventAt !== 'function') return undefined
-      try {
-        const messages = []
-        for (const seq of seqs) {
-          const message = session.deriveEventMessage(session.eventAt(seq))
-          if (message !== null && message !== undefined) messages.push(message)
-        }
-        return messages
-      } catch (err) {
-        return undefined
-      }
-    }
-
+    // The span artifact is written by the summarize override directly from
+    // input.messages (the engine's own request derivation for the span — the
+    // same messages the model was sent, same blocks and order), so the
+    // artifact and the footer line inside the summary node are exact.
+    // fold_recall({ fold: N }) regenerates it from the append-only log when
+    // the temp file is cleaned.
 
     // ── Full-deferred archive machinery (v9) ─────────────────────────────
     // settledArchives: per-session Set of begin-anchor seqs whose archive is
@@ -799,40 +806,13 @@ export default {
         }
       }
       if (result === null) return null
-      const messages = spanMessages(session, result.shadowedSeqs)
-      const file = messages === undefined ? undefined : writeSpanArtifact(messages, name)
-      const preview = messages === undefined ? undefined : renderSpanPreview(messages)
-      let foldNo = 0
-      for (const e of sessionEvents(session)) {
-        if (e !== null && typeof e === 'object' && e.type === 'compaction/summary') foldNo += 1
-      }
-      return { tokens: result.shadowedTokenCount, fold: foldNo, file, preview }
+      // Fold number / artifact / preview now live INSIDE the committed
+      // summary node (embedded by our summarize override before commit);
+      // this core only reports the token count.
+      return { tokens: result.shadowedTokenCount }
     }
 
     let preStepRunning = false
-    // One-shot fold notices, keyed by session id. A system-executed fold has
-    // no tool result to render into, so its old-style output (fold number,
-    // token count, artifact path, per-message preview) rides a single
-    // runtime-context line: the context callback drains the queue when the
-    // next request assembles, the diff engine retracts it on the following
-    // render. Mirrors what the model-facing task_fold used to print.
-    const foldNotices = new Map()
-    function foldNoticeLines(name, result) {
-      const lines = ['Folded "' + String(name).replace(/"/g, "'") + '" #' + result.fold + ' (' + result.tokens + ' tokens) — summary node in context; original context saved (JSONL, one message per line): ' + String(result.file === undefined ? '(write failed)' : result.file)]
-      if (Array.isArray(result.preview)) lines.push(...result.preview)
-      return lines
-    }
-    function pushFoldNoticeLines(sessionId, lines) {
-      const list = foldNotices.get(sessionId)
-      if (list === undefined) foldNotices.set(sessionId, [lines])
-      else list.push(lines)
-    }
-    function drainFoldNotices(sessionId) {
-      const list = foldNotices.get(sessionId)
-      if (list === undefined || list.length === 0) return []
-      foldNotices.delete(sessionId)
-      return list
-    }
 
     // The deliverable-gated auto-folder: at every agent step boundary, drain
     // queue entries whose deliverable has landed (deferredArchivePlan gate),
@@ -841,20 +821,13 @@ export default {
     // the surface (the previous entry's summary may shadow the next entry's
     // anchor — the reducer then drops it and the re-read no longer lists it).
     async function processDeferredArchives(agent, signal) {
-      // Returns the notice line-arrays generated THIS run so the pre-step
-      // listener can append them to the current request's messages — the
-      // fold notice then reaches the model in the SAME request the fold
-      // committed in, not one assembly later. (The host assembles the step
-      // context BEFORE dispatching the pre-step waterfall, so the context
-      // callback alone would always lag one step.)
-      const generated = []
-      if (preStepRunning) return generated
+      if (preStepRunning) return
       preStepRunning = true
       try {
         const session = agent.session
         for (;;) {
           const entries = archivesOf(session).filter((p) => !isSettledArchive(session, p.seq))
-          if (entries.length === 0) return generated
+          if (entries.length === 0) return
           entries.sort((a, b) => b.seq - a.seq)
           const p = entries[0]
           // Successor anchors: every begin anchor that is still OPEN or still
@@ -863,7 +836,7 @@ export default {
           const anchors = marksOf(session).map((m) => m.seq)
             .concat(archivesOf(session).filter((q) => q.seq !== p.seq).map((q) => q.seq))
           const plan = deferredArchivePlan(p, session.surface.nodes, sessionEvents(session), anchors)
-          if (plan.action === 'wait' || plan.action === 'defer') return generated
+          if (plan.action === 'wait' || plan.action === 'defer') return
           if (plan.action === 'drop') {
             markArchiveSettled(session, p.seq)
             clearArchiveFailure(session, p.name)
@@ -872,13 +845,15 @@ export default {
           const engine = await engineFor()
           if (engine === undefined) {
             recordArchiveFailure(session, p.name, 'engine unavailable')
-            return generated
+            return
           }
           try {
             closingTasks.set(session.id, p.name)
             const result = await foldRegion(session, agent, engine, p.name, plan.startSeq, plan.endSeq, guardedSignal(signal))
             if (result === null) markArchiveSettled(session, p.seq)
-            else generated.push(foldNoticeLines(p.name, result))
+            // No notice message is injected: the committed summary node
+            // itself carries the fold number and artifact path (embedded by
+            // the summarize override before commit).
             clearArchiveFailure(session, p.name)
             // A committed fold drops the entry via the reducer's
             // compaction/summary handler; loop re-reads state.
@@ -890,12 +865,11 @@ export default {
               continue
             }
             recordArchiveFailure(session, p.name, failureBucket(classified.category))
-            return generated
+            return
           } finally {
             closingTasks.delete(session.id)
           }
         }
-        return generated
       } finally {
         preStepRunning = false
       }
@@ -907,51 +881,18 @@ export default {
       // crash reading decision.kind, and skipping next() wedges the step.
       // The engine's own AUTO compaction registers the same way and awaits
       // its work inside the hook; guardedSignal bounds our fold attempts.
-      // Notices generated by folds in THIS hook are appended to the
-      // decision's messages (a defensive copy) so the fold notice reaches
-      // the model in the same request the fold committed — the step context
-      // was assembled before this waterfall ran, so the context callback
-      // alone would always deliver it one step late.
       ctx.on('agent/pre-step', async (payload, next) => {
         const pass = typeof next === 'function' ? () => next() : () => undefined
-        let notices = []
         try {
           const agent = payload !== null && typeof payload === 'object' ? payload.agent : undefined
           if (agent !== undefined) {
             const signal = payload !== null && typeof payload === 'object' && payload.signal !== undefined ? payload.signal : undefined
-            notices = await processDeferredArchives(agent, signal)
+            await processDeferredArchives(agent, signal)
           }
         } catch (err) {
           // retried at the next pre-step; never wedge the step
         }
-        const decision = await pass()
-        const deliverable = notices.length > 0 && decision !== null && typeof decision === 'object'
-          && decision.kind === 'enter' && Array.isArray(decision.messages)
-        if (deliverable) {
-          // Appended messages are committed as user/message events (agent-loop
-          // appends every decision message), and the host's runtime-context
-          // projection then reads message.source.kind on each — a bare
-          // {role, content} object crashes it ("reading 'kind'"). Carry a
-          // plugin source so the notice reads as ours (NOT the system-prompt
-          // snapshots', so it is never suppressed/replaced) and survives in
-          // history with its artifact path. An `id` is equally mandatory: the
-          // load-time session validation ("... lacks an identified message")
-          // rejects an id-less user/message, which marks the WHOLE stored
-          // session corrupt and makes its history unloadable — exactly the
-          // 0.15.2 bug where one such notice bricked session-cf0121eb.
-          decision.messages = [...decision.messages, ...notices.map((lines) => ({
-            id: randomUUID(),
-            role: 'user',
-            content: [{ type: 'text', text: lines.join('\n') }],
-            source: { kind: 'plugin', plugin: 'dsh-taskfold' }
-          }))]
-        } else if (notices.length > 0 && payload !== null && typeof payload === 'object'
-          && payload.agent !== undefined && payload.agent.session != null) {
-          // Could not append (rejected decision / unexpected shape): fall
-          // back to the context-callback queue — delivered one step later.
-          for (const lines of notices) pushFoldNoticeLines(payload.agent.session.id, lines)
-        }
-        return decision
+        return pass()
       })
     } catch (err) {
       // Hook unavailable in this host build: queued archives stay unfolded
@@ -1014,7 +955,7 @@ export default {
 
     const taskEnd = {
       name: 'task_end',
-      description: 'End the INNERMOST open task by name: it closes the task and QUEUES archival — the span folds AUTOMATICALLY at the next step boundary after the task\u0027s deliverable/report text lands (possibly mid-turn). So: finish the work, call task_end, then deliver the report in the same turn with full context — folding never precedes a deliverable. Folds are system-executed: the fold notice (fold number, artifact path, per-message preview) arrives as a one-shot runtime-context line. LIFO: newer open tasks block older ones; a blocked or unknown name fails and changes nothing (close the newer task first). Too-small spans close without folding; failed auto-folds retry at every step boundary. Failure outcomes are explained in the result; follow it. Call alone in a step.',
+      description: 'End the INNERMOST open task by name: it closes the task and QUEUES archival — the span folds AUTOMATICALLY at the next step boundary after the task\u0027s deliverable/report text lands (possibly mid-turn). So: finish the work, call task_end, then deliver the report in the same turn with full context — folding never precedes a deliverable. Folds are system-executed: the committed summary node itself ends with a footer line carrying the fold number and the artifact path (JSONL, one message per line) — read/grep it to recall the originals. LIFO: newer open tasks block older ones; a blocked or unknown name fails and changes nothing (close the newer task first). Too-small spans close without folding; failed auto-folds retry at every step boundary. Failure outcomes are explained in the result; follow it. Call alone in a step.',
       parameters: {
         type: 'object',
         properties: {
@@ -1089,7 +1030,7 @@ export default {
     ctx.systemPrompt.section({
       name: 'task-marker-compaction',
       order: 650,
-      text: 'MANDATORY task lifecycle discipline: every discrete task MUST be wrapped in task marks. A task is work that produces a verifiable outcome (a fix, a module, an analysis, a delegated review); a single read/grep/probe is a step, not a task — never open a mark for a step, and when in doubt, treat the work as a task (a small fold costs one summary node; an unfolded task costs a degraded context). Before a task, call task_begin({ name }) alone in a step. The moment its work is done, call task_end({ name }) alone in a step: it ends the task and QUEUES archival — then deliver the task\u0027s report or deliverable (to the user, or a subagent\u0027s report to its parent) in the SAME turn, written with FULL context while every detail is still on the surface. The fold itself happens AUTOMATICALLY at the next step boundary after your deliverable lands — possibly mid-turn — so folding never precedes a deliverable and the details you deliver from are never compressed. The mark is a bookmark, not a deadline: while waiting on a background job or user reply, leave it open and do other work; fold when the wait resolves. Multi-part work MUST be split into nested subtasks (innermost closes first); a long detour or dead-end exploration inside a task is one such part — wrap it as a short subtask and close it. When a new task depends on an earlier folded task\u0027s details, recall that fold (list_folds → fold_recall → read/grep) before starting. Folded details are never lost: list_folds → fold_recall({ fold }) → read/grep the artifact. Recall on demand — when a summary\u0027s anchors fail to answer a concrete question the work or the report needs; never guess, and never ask the user before recalling; never recall preemptively. Never restate a folded span from memory; never track message positions yourself. A one-shot fold notice in runtime context reports each system fold (fold number, artifact path, per-message preview). Runtime context carries lifecycle nudges — treat them as directives and act on them.'
+      text: 'MANDATORY task lifecycle discipline: every discrete task MUST be wrapped in task marks. A task is work that produces a verifiable outcome (a fix, a module, an analysis, a delegated review); a single read/grep/probe is a step, not a task — never open a mark for a step, and when in doubt, treat the work as a task (a small fold costs one summary node; an unfolded task costs a degraded context). Before a task, call task_begin({ name }) alone in a step. The moment its work is done, call task_end({ name }) alone in a step: it ends the task and QUEUES archival — then deliver the task\u0027s report or deliverable (to the user, or a subagent\u0027s report to its parent) in the SAME turn, written with FULL context while every detail is still on the surface. The fold itself happens AUTOMATICALLY at the next step boundary after your deliverable lands — possibly mid-turn — so folding never precedes a deliverable and the details you deliver from are never compressed. The mark is a bookmark, not a deadline: while waiting on a background job or user reply, leave it open and do other work; fold when the wait resolves. Multi-part work MUST be split into nested subtasks (innermost closes first); a long detour or dead-end exploration inside a task is one such part — wrap it as a short subtask and close it. When a new task depends on an earlier folded task\u0027s details, recall that fold (list_folds → fold_recall → read/grep) before starting. Folded details are never lost: list_folds → fold_recall({ fold }) → read/grep the artifact. Recall on demand — when a summary\u0027s anchors fail to answer a concrete question the work or the report needs; never guess, and never ask the user before recalling; never recall preemptively. Never restate a folded span from memory; never track message positions yourself. Each fold summary node ends with a footer line carrying its fold number and artifact path. Runtime context carries lifecycle nudges — treat them as directives and act on them.'
     })
 
     const TASK_TOOL_RE = /^(task_begin|task_end|task_fold|list_folds|fold_recall|todo_write)$/
@@ -1238,15 +1179,6 @@ export default {
           for (const [failName, bucket] of fails) {
             lines.push('Task lifecycle: auto-fold for "' + failName.replace(/"/g, "'") + '" is failing (' + bucket + ') — it retries automatically at every step boundary; no action needed.')
           }
-        }
-
-        // ── Fold notices: one-shot system-fold output ─────────────────────
-        // The system-executed fold has no tool result to render into, so its
-        // output (fold number, tokens, artifact path, per-message preview)
-        // rides these lines once: drained here, retracted by the diff engine
-        // on the next render.
-        for (const notice of drainFoldNotices(session.id)) {
-          lines.push(...notice)
         }
 
         // ── Todo bridge: transient change report ──────────────────────
