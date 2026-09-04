@@ -12,7 +12,7 @@ For [DeepSeek Harness](https://www.npmjs.com/package/@deepseek-ai/dsh) (DSH).
 
 Long sessions drown in their own history: every request re-sends hours of finished work — old tool outputs, debug logs, abandoned attempts. Costs climb, the model gets distracted, and eventually the context window fills up.
 
-taskfold fixes this the way a good notebook does. While working, the agent wraps each task with `task_begin("fix the login bug")`. When the task is done, `task_fold` closes it **and** replaces the entire back-and-forth with a short titled summary:
+taskfold fixes this the way a good notebook does. While working, the agent wraps each task with `task_begin("fix the login bug")`. When the task is done, `task_end` closes it **and** replaces the entire back-and-forth with a short titled summary:
 
 ```
 Before:  [800 messages of raw debugging…]
@@ -39,7 +39,7 @@ Four agent tools (plus the reminders above):
 | Tool | One-liner |
 | --- | --- |
 | `task_begin({ name })` | Open a named task. |
-| `task_fold({ name })` | Close it and fold its whole span into one titled summary. |
+| `task_end({ name })` | Close it and fold its whole span into one titled summary. |
 | `list_folds` | List all folds (number, size, title). |
 | `fold_recall({ fold })` | Bring back any fold's original content on demand. |
 
