@@ -3,6 +3,27 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.18.3 — prompt-text corrections across all four model-facing surfaces (2026-09-04)
+
+- **Fixes**: a full prompt audit tightened every surface the model sees.
+  The fold_recall description pointed at the runtime-context fold notices
+  removed in 0.17.0 — it now points at the Fold archive section of the
+  committed summary, and its "read-only" wording no longer contradicts
+  the tmp write it performs. The fold-summary instruction no longer
+  contradicts itself: the "# NAME" heading explicitly prefixes the
+  five-section structure, the word caps bind only the four action
+  sections (User inputs & decisions is exempt by design), Changes keeps
+  only grep-able durable artifacts while commands move to What happened,
+  and the closing rule separates closed from succeeded so genuine
+  failures report honestly in Outcomes. The lifecycle section makes fold
+  recall strictly on-demand (a dependent new task counts as demand) and
+  states that deliverable text must land after the task_end result, not
+  in the same message as the call. Name-ban, todo-bridge, and relay
+  wording tightened; tests pin the new clauses.
+- **Docs**: both READMEs still said task_fold in the fold workflow; they
+  now say task_end (the name retired in 0.18.0 survives only in this
+  changelog).
+
 ## 0.18.2 — Fold archive preview renders as a fenced code block (2026-09-04)
 
 - **Fix**: the archive section used single newlines between preview lines;
