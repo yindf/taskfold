@@ -52,6 +52,15 @@ test('messagePreviewLine: numbered, role-prefixed, single line, capped length', 
   assert.ok(messagePreviewLine({ role: 'user', content: [{ type: 'text', text: 'y'.repeat(500) }] }, 1).length <= 201, 'line clips at 200 chars')
 })
 
+test('messagePreviewLine: all-tool-result messages label as tool, user text stays user', () => {
+  const toolLine = messagePreviewLine({ role: 'user', content: [{ type: 'tool-result', toolCallId: 'c1', content: [{ type: 'text', text: 'probe output' }] }] }, 7)
+  assert.ok(toolLine.startsWith('  7 tool: ←probe output'), 'tool-result message reads tool:')
+  const userLine = messagePreviewLine({ role: 'user', content: [{ type: 'text', text: 'Current runtime context.' }] }, 3)
+  assert.ok(userLine.startsWith('  3 user: Current runtime context'), 'genuine user text keeps user:')
+  const mixed = messagePreviewLine({ role: 'user', content: [{ type: 'text', text: 'note' }, { type: 'tool-result', toolCallId: 'c1', content: [{ type: 'text', text: 'r' }] }] }, 4)
+  assert.ok(mixed.startsWith('  4 user: '), 'mixed blocks keep the original role label')
+})
+
 test('renderSpanPreview: header counts messages, cap collapses the tail with a pointer', () => {
   const lines = renderSpanPreview(span(), 3)
   assert.equal(lines[0], 'Span preview (4 messages, one per line — same order/numbering as the JSONL artifact):')
