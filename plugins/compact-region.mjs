@@ -210,9 +210,15 @@ function hasDeliverableText(event) {
  *                                     (AUTO compaction shadowed it) — the
  *                                     task is already closed; discard
  *   { action:'fold', startSeq, endSeq, name }  gate open; region is
- *                                     begin..end INCLUSIVE (endSeq = the
- *                                     close result's own seq) — everything
- *                                     after the end stays on the surface
+ *                                     start..end INCLUSIVE, bracketed by
+ *                                     the two lifecycle RESULTS: startSeq =
+ *                                     the "Task begun" result's seq
+ *                                     (fallback: the begin call itself),
+ *                                     endSeq = the close result's own seq —
+ *                                     the begin call (with its opening
+ *                                     reasoning) stays on the surface as
+ *                                     the live bookmark; everything after
+ *                                     the end stays on the surface too
  *
  * successorAnchors = seqs of begin anchors opened AFTER this entry's
  * foldResultSeq that are STILL open or pending (caller derives from
@@ -237,15 +243,50 @@ export function deferredArchivePlan(p, surfaceNodes, events, successorAnchors) {
   if (deliverableSeq === null) return { action: 'wait' }
   if (successor !== null && deliverableSeq > successor) return { action: 'defer' }
   if (nodes.indexOf(p.seq) === -1) return { action: 'drop' }
-  // END: the close result itself — the region is begin..end INCLUSIVE
-  // (product ruling). Everything written AFTER the end — the deliverable,
-  // probes, later turns — stays on the surface untouched; a LATER task's
-  // fold swallows those leftovers when its own [begin..end] spans them.
-  // If the close result is no longer on the surface, the span is gone
-  // (AUTO compaction shadowed it): drop, exactly like a shadowed anchor.
+  // END: the close result itself; START: the "Task begun" result — the
+  // region is bracketed by the two lifecycle results, both INCLUSIVE
+  // (product ruling). The begin CALL (with its opening reasoning) stays on
+  // the surface as the task's live bookmark, which is why a folded task
+  // shows its task_begin call with no visible result: the summary node
+  // takes that result's place. Everything written AFTER the end — the
+  // deliverable, probes, later turns — stays on the surface untouched; a
+  // LATER task's fold swallows those leftovers when its own span covers
+  // them. If the close result is no longer on the surface, the span is
+  // gone (AUTO compaction shadowed it): drop, exactly like a shadowed
+  // anchor. Legacy/defensive fallback: no "Task begun" result between the
+  // anchor and the close (or it left the surface) → fold from the call
+  // itself, the v0.18 region.
   if (!Number.isInteger(foldResultSeq) || foldResultSeq < p.seq) return { action: 'wait' }
   if (nodes.indexOf(foldResultSeq) === -1) return { action: 'drop' }
-  return { action: 'fold', startSeq: p.seq, endSeq: foldResultSeq, name: p.name }
+  let startSeq = p.seq
+  for (const e of list) {
+    if (e === null || typeof e !== 'object' || !Number.isInteger(e.seq)) continue
+    if (e.seq <= p.seq || e.seq >= foldResultSeq) continue
+    if (taskResultEventText(e).indexOf('Task begun: ') !== 0) continue
+    if (nodes.indexOf(e.seq) !== -1) startSeq = e.seq
+    break
+  }
+  return { action: 'fold', startSeq, endSeq: foldResultSeq, name: p.name }
+}
+
+/**
+ * Joined text of every tool-result block in a 'tool/result' event,
+ * mirroring the reducer's extraction (prefix matches on 'Task begun: ' /
+ * 'Task ended: ' rely on the same shape).
+ */
+function taskResultEventText(e) {
+  if (e === null || typeof e !== 'object' || e.type !== 'tool/result') return ''
+  const message = e.data !== null && typeof e.data === 'object' && e.data.message !== null
+    && typeof e.data.message === 'object' ? e.data.message : null
+  const blocks = message !== null && Array.isArray(message.content) ? message.content : []
+  let out = ''
+  for (const block of blocks) {
+    if (block === null || typeof block !== 'object' || block.type !== 'tool-result' || !Array.isArray(block.content)) continue
+    for (const b of block.content) {
+      if (isTaskResultText(b)) out += (out.length > 0 ? '\n' : '') + b.text
+    }
+  }
+  return out
 }
 
 /**
@@ -273,7 +314,7 @@ export function todoBridgeLine(openNames) {
  * can pin the structure contract offline.
  */
 export const FOLD_SUMMARY_INSTRUCTION = [
-  'You are summarizing ONE FOLDED SPAN of a longer session. The messages above are exactly that span; your summary replaces them for the model that continues this session.',
+  'You are summarizing ONE FOLDED SPAN of a longer session. The messages above are exactly that span; your summary replaces them for the model that continues this session. The span opens with the \'Task begun\' result and closes with the \'Task ended\' result — the begin call\'s opening reasoning stays outside the span by design; do not treat its absence as missing work.',
   'Summarize ONLY what the span contains — what was done, tried, decided, and produced. Do NOT restate project background, architecture, goals, or context the messages merely assume: the continuing model already has all of that from outside the span.',
   'Output EXACTLY this structure, terse bullets, "(none)" for empty sections:',
   '## What happened',
@@ -654,7 +695,8 @@ export default {
           // (input.messages IS the exact span) are computed HERE and
           // appended as a section formatted like the summary's own five:
           //   ## Fold archive
-          //   - fold #N · originals (JSONL, one message per line): <path>
+          //   - fold #N · originals (JSONL, one message per line — span
+          //     "Task begun" result … "Task ended" result): <path>
           //   + the per-message span preview (preview line N = artifact
           //     line N). The committed node then carries its own recall
           //     handles; no separate notice message is injected at all. If
@@ -668,13 +710,13 @@ export default {
             }
             foldNo += 1
             const name = typeof closingName === 'string' && closingName.length > 0 ? closingName : 'fold'
-            const file = writeSpanArtifact(input.messages, name)
+            const file = writeSpanArtifact(input.messages, name, agent.session.id)
             if (file !== undefined) {
               // Markdown-safe formatting: single newlines collapse into one
               // paragraph in every markdown renderer, which mashed the
               // preview into a blob. A fenced code block preserves the
               // per-line layout; a blank line separates the metadata bullet.
-              const section = '\n\n## Fold archive\n\n- fold #' + foldNo + ' · originals (JSONL, one message per line): ' + file + '\n\n```\n'
+              const section = '\n\n## Fold archive\n\n- fold #' + foldNo + ' · originals (JSONL, one message per line — span: "Task begun" result … "Task ended" result): ' + file + '\n\n```\n'
                 + renderArchivePreview(input.messages).join('\n') + '\n```'
               const last = withFooter[withFooter.length - 1]
               withFooter[withFooter.length - 1] = { ...last, text: last.text.replace(/\s+$/, '') + section }
@@ -912,7 +954,7 @@ export default {
 
     const taskBegin = {
       name: 'task_begin',
-      description: 'Begin a NAMED task. The name is the identity; when the work is done, one task_end({ name }) call ends it and queues archival — the span folds automatically at the next step boundary after your deliverable. A name already open is rejected; names must not contain " —" (a space followed by an em dash). Tasks can nest: task_begin while a task is open opens a subtask (innermost closes first). Call alone in a step.',
+      description: 'Begin a NAMED task. The name is the identity; when the work is done, one task_end({ name }) call ends it and queues archival — the span folds automatically at the next step boundary after your deliverable. A name already open is rejected; names must not contain " —" (a space followed by an em dash). Tasks can nest: task_begin while a task is open opens a subtask (innermost closes first). The call message (with its opening reasoning) stays live in the transcript as the task\'s bookmark; the eventual fold\'s archive starts at the \'Task begun\' result — the fold\'s summary node stands in for it. Call alone in a step.',
       parameters: {
         type: 'object',
         properties: {
@@ -966,7 +1008,7 @@ export default {
 
     const taskEnd = {
       name: 'task_end',
-      description: 'End the INNERMOST open task by name: it closes the task and QUEUES archival — the span folds AUTOMATICALLY at the next step boundary after the task\u0027s deliverable/report text lands (possibly mid-turn). So: finish the work, call task_end, then deliver the report in the same turn with full context — the report is text that lands AFTER the task_end result (text in the same assistant message as the call does not count as the deliverable); folding never precedes a deliverable. Folds are system-executed: the committed summary node ends with a Fold archive section (same format as the summary sections) carrying the fold number, the artifact path (JSONL, one message per line), and the per-message span preview. LIFO: newer open tasks block older ones; a blocked or unknown name fails and changes nothing (close the newer task first). Too-small spans close without folding; failed auto-folds retry at every step boundary. Failure outcomes are explained in the result; follow it. Call alone in a step.',
+      description: 'End the INNERMOST open task by name: it closes the task and QUEUES archival — the span folds AUTOMATICALLY at the next step boundary after the task\u0027s deliverable/report text lands (possibly mid-turn). So: finish the work, call task_end, then deliver the report in the same turn with full context — the report is text that lands AFTER the task_end result (text in the same assistant message as the call does not count as the deliverable); folding never precedes a deliverable. Folds are system-executed: the committed summary node ends with a Fold archive section (same format as the summary sections) carrying the fold number, the artifact path (JSONL, one message per line — the span runs from the \u0027Task begun\u0027 result through the \u0027Task ended\u0027 result, so the task_begin call and its opening reasoning stay live in the transcript), and the per-message span preview. LIFO: newer open tasks block older ones; a blocked or unknown name fails and changes nothing (close the newer task first). Too-small spans close without folding; failed auto-folds retry at every step boundary. Failure outcomes are explained in the result; follow it. Call alone in a step.',
       parameters: {
         type: 'object',
         properties: {
@@ -1041,7 +1083,7 @@ export default {
     ctx.systemPrompt.section({
       name: 'task-marker-compaction',
       order: 650,
-      text: 'MANDATORY task lifecycle discipline: every discrete task MUST be wrapped in task marks. A task is work that produces a verifiable outcome (a fix, a module, an analysis, a delegated review); a single read/grep/probe is a step, not a task — never open a mark for a step, and when in doubt, treat the work as a task (a small fold costs one summary node; an unfolded task costs a degraded context). Before a task, call task_begin({ name }) alone in a step. The moment its work is done, call task_end({ name }) alone in a step: it ends the task and QUEUES archival — then deliver the task\u0027s report or deliverable (to the user, or a subagent\u0027s report to its parent) in the SAME turn, as text AFTER the task_end result and written with FULL context while every detail is still on the surface. The fold itself happens AUTOMATICALLY at the next step boundary after your deliverable lands — possibly mid-turn — so folding never precedes a deliverable and the details you deliver from are never compressed. The mark is a bookmark, not a deadline: while waiting on a background job or user reply, leave it open and do other work; fold when the wait resolves. Multi-part work MUST be split into nested subtasks (innermost closes first); a long detour or dead-end exploration inside a task is one such part — wrap it as a short subtask and close it. Folded details are never lost: list_folds → fold_recall({ fold }) → read/grep the artifact. Recall on demand — when a summary\u0027s anchors fail to answer a concrete question the work or the report needs, or when a new task genuinely depends on an earlier folded task\u0027s details (recall that fold, list_folds → fold_recall → read/grep, before starting it); never guess, never ask the user\u0027s permission to recall, never recall without such a need. Never restate a folded span from memory; never track message positions yourself. Each fold summary node ends with a Fold archive section (fold number, artifact path, per-message preview). Runtime context carries lifecycle nudges — treat them as directives and act on them.'
+      text: 'MANDATORY task lifecycle discipline: every discrete task MUST be wrapped in task marks. A task is work that produces a verifiable outcome (a fix, a module, an analysis, a delegated review); a single read/grep/probe is a step, not a task — never open a mark for a step, and when in doubt, treat the work as a task (a small fold costs one summary node; an unfolded task costs a degraded context). Before a task, call task_begin({ name }) alone in a step. The moment its work is done, call task_end({ name }) alone in a step: it ends the task and QUEUES archival — then deliver the task\u0027s report or deliverable (to the user, or a subagent\u0027s report to its parent) in the SAME turn, as text AFTER the task_end result and written with FULL context while every detail is still on the surface. The fold itself happens AUTOMATICALLY at the next step boundary after your deliverable lands — possibly mid-turn — so folding never precedes a deliverable and the details you deliver from are never compressed. The mark is a bookmark, not a deadline: while waiting on a background job or user reply, leave it open and do other work; fold when the wait resolves. Multi-part work MUST be split into nested subtasks (innermost closes first); a long detour or dead-end exploration inside a task is one such part — wrap it as a short subtask and close it. Folded details are never lost: list_folds → fold_recall({ fold }) → read/grep the artifact. Recall on demand — when a summary\u0027s anchors fail to answer a concrete question the work or the report needs, or when a new task genuinely depends on an earlier folded task\u0027s details (recall that fold, list_folds → fold_recall → read/grep, before starting it); never guess, never ask the user\u0027s permission to recall, never recall without such a need. Never restate a folded span from memory; never track message positions yourself. Each fold summary node ends with a Fold archive section (fold number, artifact path, per-message preview). A fold\u0027s archive spans the \u0027Task begun\u0027 result through the \u0027Task ended\u0027 result, so the task_begin call and its opening reasoning stay live: a folded task shows its begin call with no visible result — the fold\u0027s summary node stands in for it. Runtime context carries lifecycle nudges — treat them as directives and act on them.'
     })
 
     const TASK_TOOL_RE = /^(task_begin|task_end|task_fold|list_folds|fold_recall|todo_write)$/

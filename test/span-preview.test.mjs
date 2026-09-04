@@ -63,11 +63,13 @@ test('messagePreviewLine: all-tool-result messages label as tool, user text stay
   assert.ok(snap.startsWith('  3 harness: Current runtime context'), 'plugin-injected snapshots read harness:')
 })
 
-test('renderSpanPreview: header counts messages, cap collapses the tail with a pointer', () => {
+test('renderSpanPreview: over-cap spans keep head AND tail with true numbering', () => {
   const lines = renderSpanPreview(span(), 3)
   assert.equal(lines[0], 'Span preview (4 messages, one per line — same order/numbering as the JSONL artifact):')
-  assert.equal(lines.length, 5, 'header + 3 capped lines + overflow')
-  assert.equal(lines[4], '… +1 more messages — read the artifact file for the rest.')
+  assert.equal(lines.length, 4, 'header + 1 head line + elision pointer + 1 tail line')
+  assert.ok(lines[1].startsWith('  1 user: fix the fold boundary ↵ please'), 'head keeps the span\'s first line')
+  assert.equal(lines[2], '… +2 messages between head and tail elided — read the artifact file for the middle.')
+  assert.ok(lines[3].startsWith('  4 assistant: Fixed and tested.'), 'tail keeps the span\'s last line with its TRUE number')
   assert.deepEqual(renderSpanPreview([]), ['Span preview: (empty)'])
   assert.equal(renderSpanPreview(span())[1].startsWith('  1 user: fix the fold boundary ↵ please'), true, 'default cap 30 keeps all of a small span')
 })
@@ -127,7 +129,18 @@ test('writeSpanArtifact: provenance metadata is stripped, content kept whole', (
   nodeFs.rmSync(file)
 })
 
-test('renderArchivePreview: budget-aware — small spans get no inline lines, large spans get the full capped preview', () => {
+test('writeSpanArtifact: a session key scopes artifacts into a per-session subdirectory', () => {
+  const file = writeSpanArtifact(span(), 'scoped artifact', 'sess 42/b')
+  assert.ok(file !== undefined)
+  const dir = nodePath.dirname(file)
+  assert.equal(nodePath.basename(dir), 'sess-42-b', 'session key is slugified into its own subdir')
+  assert.equal(nodePath.basename(nodePath.dirname(dir)), 'taskfold-artifacts', 'subdir sits under the shared taskfold-artifacts root')
+  assert.ok(nodeFs.existsSync(file), 'artifact written inside the session dir')
+  nodeFs.rmSync(file)
+  nodeFs.rmdirSync(dir)
+})
+
+test('renderArchivePreview: budget-aware — small spans get no inline lines, large spans keep head AND tail', () => {
   const tiny = span()
   const small = renderArchivePreview(tiny)
   assert.ok(small[0].startsWith('Span preview (4 messages'), 'header present')
@@ -139,7 +152,11 @@ test('renderArchivePreview: budget-aware — small spans get no inline lines, la
   }
   const large = renderArchivePreview(big)
   assert.ok(large.length > 5, 'large span keeps substantial preview lines')
-  assert.ok(large[large.length - 1].startsWith('… +'), 'overflow pointer for the rest')
+  const pointerIdx = large.findIndex((l) => l.startsWith('… +'))
+  assert.ok(pointerIdx > 0 && pointerIdx < large.length - 1, 'elision pointer sits between the head and the tail')
+  assert.ok(large[large.length - 1].startsWith('120 '), 'the span\'s final message is the last preview line (true number kept)')
+  const tailShown = large.length - pointerIdx - 1
+  assert.ok(tailShown >= 1 && tailShown <= 4, 'reserved tail lines follow the pointer')
   const totalChars = large.join('\n').length
   const estChars = JSON.stringify(big).length
   assert.ok(totalChars < estChars * 0.15 + 400, 'preview stays a small fraction of the span')

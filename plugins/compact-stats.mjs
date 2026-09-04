@@ -266,7 +266,7 @@ export default {
 
     ctx.tools.register({
       name: 'fold_recall',
-      description: 'Regenerate the artifact FILE for one fold: the span\u0027s full original message content (role + content blocks), written as JSONL to the OS temp dir, one message per line, numbered. Each committed fold summary\u0027s trailing Fold archive section carries the artifact path; use this tool when that temp file has since been cleaned — pass the fold number, get a fresh file path plus a per-message preview, then read/grep it with any file tool. Use list_folds for the fold index. Changes no session state; the only write is the fresh JSONL file itself.',
+      description: 'Regenerate the artifact FILE for one fold: every span message from the \u0027Task begun\u0027 result through the \u0027Task ended\u0027 result — full original content (role + content blocks) — written as JSONL to the OS temp dir, one message per line, numbered. Each committed fold summary\u0027s trailing Fold archive section carries the artifact path; use this tool when that temp file has since been cleaned — pass the fold number, get a fresh file path plus a per-message preview, then read/grep it with any file tool. Use list_folds for the fold index. Changes no session state; the only write is the fresh JSONL file itself.',
       parameters: {
         type: 'object',
         properties: {
@@ -309,7 +309,7 @@ export default {
             if (message !== null && message !== undefined) messages.push(message)
           }
           const nameKey = f.title !== undefined ? f.title : 'fold-' + foldNo
-          const file = writeSpanArtifact(messages, nameKey)
+          const file = writeSpanArtifact(messages, nameKey, session.id)
           if (file === undefined) return { ok: false, error: 'failed to write the JSONL artifact to the OS temp dir' }
           const preview = renderSpanPreview(messages)
           return { ok: true, fold: foldNo, entries: messages.length, file, preview }

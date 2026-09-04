@@ -262,38 +262,54 @@ function assistantMsg(seq, blocks) {
   return { seq, type: 'assistant/message', data: { message: { content: blocks } } }
 }
 
+/** tool/result event helper carrying one text tool-result. */
+function toolResultEvent(seq, text) {
+  return { seq, type: 'tool/result', data: { message: { content: [{ type: 'tool-result', toolCallId: 'r' + seq, content: [{ type: 'text', text }] }] } } }
+}
+
 test('deferredArchivePlan: the deliverable gate (wait / fold / defer / drop)', () => {
   const p = { seq: 10, name: 'alpha', foldResultSeq: 25 }
-  const nodes = [10, 15, 20, 25, 30, 35]
+  const begun = toolResultEvent(11, 'Task begun: alpha — 1 open.')
+  const nodes = [10, 11, 15, 20, 25, 30, 35]
   // ① No deliverable after the close → never fold (reasoning and tool calls
   // do NOT count as deliverables).
-  const reasoningOnly = [assistantMsg(30, [{ type: 'reasoning', text: 'thinking…' }, { type: 'tool-call', id: 'c', name: 'read', arguments: '{}' }])]
+  const reasoningOnly = [begun, assistantMsg(30, [{ type: 'reasoning', text: 'thinking…' }, { type: 'tool-call', id: 'c', name: 'read', arguments: '{}' }])]
   assert.equal(deferredArchivePlan(p, nodes, reasoningOnly, []).action, 'wait', 'reasoning/tool-call steps are not deliverables')
-  // ② Deliverable text landed, no successor anchor → fold begin..end
-  // INCLUSIVE: endSeq is the close result's own seq; the deliverable and
-  // anything after it stay on the surface.
+  // ② Deliverable text landed, no successor anchor → fold, bracketed by the
+  // two lifecycle RESULTS: startSeq is the "Task begun" result's seq, endSeq
+  // is the close result's own seq; the begin CALL (seq 10) stays on the
+  // surface, and so does everything after the end.
   const delivered = [...reasoningOnly, assistantMsg(35, [{ type: 'text', text: 'final report' }])]
   const plan = deferredArchivePlan(p, nodes, delivered, [])
   assert.equal(plan.action, 'fold')
-  assert.equal(plan.startSeq, 10)
-  assert.equal(plan.endSeq, 25, 'region is begin..end inclusive — never the deliverable')
-  // ③ Successor anchor open with deliverable before it → same begin..end
-  // region (successors sit after the end by construction).
-  const trimNodes = [10, 15, 20, 25, 28, 30, 35]
-  const earlyDeliverable = [assistantMsg(28, [{ type: 'text', text: 'final report' }])]
+  assert.equal(plan.startSeq, 11, 'span opens at the "Task begun" result, not the call')
+  assert.equal(plan.endSeq, 25, 'span closes at the close result — never the deliverable')
+  // ③ Successor anchor open with deliverable before it → same
+  // result..result region (successors sit after the end by construction).
+  const trimNodes = [10, 11, 15, 20, 25, 28, 30, 35]
+  const earlyDeliverable = [begun, assistantMsg(28, [{ type: 'text', text: 'final report' }])]
   const withSuccessor = deferredArchivePlan(p, trimNodes, earlyDeliverable, [30])
   assert.equal(withSuccessor.action, 'fold')
   assert.equal(withSuccessor.endSeq, 25, 'region still ends at the close result')
   // ④ Deliverable AFTER the successor anchor (out-of-order close) → defer.
-  const lateDeliverable = [assistantMsg(40, [{ type: 'text', text: 'late report' }])]
+  const lateDeliverable = [begun, assistantMsg(40, [{ type: 'text', text: 'late report' }])]
   assert.equal(deferredArchivePlan(p, [...trimNodes, 40], lateDeliverable, [30]).action, 'defer')
   // ⑤ Anchor shadowed (AUTO compaction took seq 10 off the surface) → drop.
-  assert.equal(deferredArchivePlan(p, [15, 20, 25, 30], delivered, []).action, 'drop')
+  assert.equal(deferredArchivePlan(p, [11, 15, 20, 25, 30], delivered, []).action, 'drop')
   // ⑥ Close result shadowed (AUTO compaction took seq 25 off the surface) →
   // the span's end is gone; drop rather than fold a truncated region.
-  assert.equal(deferredArchivePlan(p, [10, 15, 20, 30, 35], delivered, []).action, 'drop')
+  assert.equal(deferredArchivePlan(p, [10, 11, 15, 20, 30, 35], delivered, []).action, 'drop')
+  // ⑦ "Task begun" result shadowed while the call is still on the surface →
+  // fall back to the v0.18 region (fold from the call) rather than drop.
+  const fallback = deferredArchivePlan(p, [10, 15, 20, 25, 30, 35], delivered, [])
+  assert.equal(fallback.action, 'fold')
+  assert.equal(fallback.startSeq, 10, 'shadowed begin result folds from the call itself')
+  // ⑧ Legacy events without any "Task begun" result → same fallback.
+  const legacy = deferredArchivePlan(p, nodes, delivered.filter((e) => e !== begun), [])
+  assert.equal(legacy.action, 'fold')
+  assert.equal(legacy.startSeq, 10, 'legacy spans fold from the call, exactly like v0.18')
   // Empty-text deliverables do not count.
-  const blank = [assistantMsg(30, [{ type: 'text', text: '   ' }])]
+  const blank = [begun, assistantMsg(30, [{ type: 'text', text: '   ' }])]
   assert.equal(deferredArchivePlan(p, nodes, blank, []).action, 'wait', 'whitespace-only text is not a deliverable')
 })
 
@@ -309,6 +325,7 @@ test('FOLD_SUMMARY_INSTRUCTION: five-section structure with user-inputs and pitf
   }
   // The span-scoped philosophy and the new first-class rules survive.
   assert.ok(FOLD_SUMMARY_INSTRUCTION.includes('ONE FOLDED SPAN'))
+  assert.ok(FOLD_SUMMARY_INSTRUCTION.includes('\'Task begun\' result'), 'span bracket declared: opens at the Task begun result, closes at the Task ended result')
   assert.ok(FOLD_SUMMARY_INSTRUCTION.includes('especially corrections'), 'user feedback rule present')
   assert.ok(FOLD_SUMMARY_INSTRUCTION.includes('why something failed'), 'pitfall-cause rule present')
   assert.ok(FOLD_SUMMARY_INSTRUCTION.includes('relay'), 'fallback-relay rule present (summary may back a never-sent deliverable)')

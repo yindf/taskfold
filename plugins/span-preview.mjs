@@ -3,7 +3,11 @@
 // CONTRACT: the preview lines task_fold prints and the lines of the JSONL
 // artifact are derived from the SAME messages in the SAME order — line N of
 // the artifact file is exactly what preview line N describes. The model can
-// map a one-line preview back to its full original by line number.
+// map a one-line preview back to its full original by line number. When a
+// span exceeds the preview cap, the window is HEAD+TAIL: opening lines and
+// closing lines are kept and the middle collapses into one elision pointer
+// — shown lines always keep their TRUE 1-based numbers, so the line-N
+// contract holds for the tail too.
 //
 // Kept dependency-free (node builtins only) so both bundle plugins can import
 // it without touching the bundle patch — it is a plain module, not a row.
@@ -142,15 +146,31 @@ export function messagePreviewLine(message, index, calls) {
   return numbered.length > LINE_CLIP ? numbered.slice(0, LINE_CLIP - 1) + '…' : numbered
 }
 
-// The full preview block: a header plus one line per message, capped. Lines
-// beyond the cap collapse into one overflow pointer at the artifact file.
+// The full preview block: a header plus one line per message, capped. When
+// the span exceeds the cap the window is HEAD+TAIL: the opening lines and
+// the closing lines are kept (the span's ending — final verification, the
+// close — is exactly what a head-only window would cut) and the middle
+// collapses into one elision pointer at the artifact file.
+const TAIL_LINES = 4
+
+function headTailSplit(total, cap) {
+  if (total <= cap) return { head: total, tail: 0, elided: 0 }
+  const tail = Math.max(1, Math.min(TAIL_LINES, cap - 2))
+  const head = cap - tail - 1 // one line of the cap is spent on the pointer
+  return { head, tail, elided: total - head - tail }
+}
+
 export function renderSpanPreview(messages, maxLines) {
   const cap = Number.isInteger(maxLines) && maxLines > 0 ? maxLines : 30
   if (!Array.isArray(messages) || messages.length === 0) return ['Span preview: (empty)']
   const lines = ['Span preview (' + messages.length + ' messages, one per line — same order/numbering as the JSONL artifact):']
   const calls = collectToolCalls(messages)
-  for (let i = 0; i < messages.length && i < cap; i += 1) lines.push(messagePreviewLine(messages[i], i + 1, calls))
-  if (messages.length > cap) lines.push('… +' + (messages.length - cap) + ' more messages — read the artifact file for the rest.')
+  const win = headTailSplit(messages.length, cap)
+  for (let i = 0; i < win.head; i += 1) lines.push(messagePreviewLine(messages[i], i + 1, calls))
+  if (win.elided > 0) {
+    lines.push('… +' + win.elided + ' messages between head and tail elided — read the artifact file for the middle.')
+    for (let i = messages.length - win.tail; i < messages.length; i += 1) lines.push(messagePreviewLine(messages[i], i + 1, calls))
+  }
   return lines
 }
 
@@ -159,25 +179,51 @@ export function renderSpanPreview(messages, maxLines) {
 // shadowed span, so the whole appendix (metadata bullet + preview) must stay
 // a small FRACTION of the span: the preview is trimmed to ~15% of the span's
 // estimated chars (minus the metadata line), never exceeding the 30-line
-// cap. Tiny spans may end up with no preview lines at all — just the header
-// pointing at the artifact, which is always complete.
+// cap. Within that budget the window is HEAD+TAIL (see renderSpanPreview):
+// the closing lines are reserved FIRST — up to a quarter of the budget — so
+// the span's ending survives whenever any preview is shown at all. Tiny
+// spans may end up with no preview lines — just the header pointing at the
+// artifact, which is always complete.
 export function renderArchivePreview(messages) {
   if (!Array.isArray(messages) || messages.length === 0) return ['Span preview: (empty)']
   const header = 'Span preview (' + messages.length + ' messages, one per line — same order/numbering as the JSONL artifact):'
   const estChars = JSON.stringify(messages).length
-  let budget = Math.floor(estChars * 0.15) - 220 - header.length
+  const budget = Math.floor(estChars * 0.15) - 220 - header.length
   if (budget < 80) return [header, '… span too small to preview inline — read the artifact file.']
   const calls = collectToolCalls(messages)
   const lines = [header]
+  const win = headTailSplit(messages.length, 30)
+  // Reserve the tail first, kept from the span's LAST message backwards for
+  // as long as the tail budget (at most a quarter of the total) allows.
+  const tailAll = []
+  for (let i = messages.length - win.tail; i < messages.length; i += 1) {
+    tailAll.push(messagePreviewLine(messages[i], i + 1, calls))
+  }
+  let tailBudget = Math.min(tailAll.reduce((sum, l) => sum + l.length, 0), Math.floor(budget / 4))
+  const keptTail = []
+  for (let k = tailAll.length - 1; k >= 0; k -= 1) {
+    if (tailBudget < tailAll[k].length) break
+    tailBudget -= tailAll[k].length
+    keptTail.unshift(tailAll[k])
+  }
+  let headBudget = budget - keptTail.reduce((sum, l) => sum + l.length, 0)
   let shown = 0
-  for (let i = 0; i < messages.length && i < 30; i += 1) {
+  for (let i = 0; i < win.head && i < messages.length; i += 1) {
     const line = messagePreviewLine(messages[i], i + 1, calls)
-    if (line.length > budget && shown > 0) break
+    if (shown > 0 && line.length > headBudget) break
     lines.push(line)
-    budget -= line.length
+    headBudget -= line.length
     shown += 1
   }
-  if (messages.length > shown) lines.push('… +' + (messages.length - shown) + ' more messages — read the artifact file for the rest.')
+  const shownTotal = shown + keptTail.length
+  if (messages.length > shownTotal && shownTotal > 0) {
+    if (keptTail.length > 0) {
+      lines.push('… +' + (messages.length - shownTotal) + ' messages between head and tail elided — read the artifact file for the middle.')
+      lines.push(...keptTail)
+    } else {
+      lines.push('… +' + (messages.length - shownTotal) + ' more messages — read the artifact file for the rest.')
+    }
+  }
   return lines
 }
 
@@ -187,11 +233,22 @@ export function renderArchivePreview(messages) {
 // serves content recovery; audit metadata stays in the durable event log.
 // Returns the file path, or undefined when writing fails (the fold itself
 // must not fail because a diagnostic file could not be written).
-export function writeSpanArtifact(messages, nameKey) {
+function slugPart(raw, max) {
+  const slug = String(raw).replace(/[^\p{L}\p{N}_-]+/gu, '-').replace(/^-+|-+$/g, '').slice(0, max)
+  return slug.length > 0 ? slug : ''
+}
+
+export function writeSpanArtifact(messages, nameKey, sessionKey) {
   try {
-    const dir = nodePath.join(nodeOs.tmpdir(), 'taskfold-artifacts')
+    const root = nodePath.join(nodeOs.tmpdir(), 'taskfold-artifacts')
+    // Per-session subdirectory: the OS temp dir is shared by every session
+    // on the machine, and a flat directory interleaves concurrent sessions'
+    // artifacts (and leaks task names across them). Scope writes by session
+    // id; without one, fall back to the legacy flat directory.
+    const scope = slugPart(sessionKey, 64)
+    const dir = scope.length > 0 ? nodePath.join(root, scope) : root
     nodeFs.mkdirSync(dir, { recursive: true })
-    const slug = String(nameKey).replace(/[^\p{L}\p{N}_-]+/gu, '-').replace(/^-+|-+$/g, '').slice(0, 60)
+    const slug = slugPart(nameKey, 60)
     const file = nodePath.join(dir, (slug.length > 0 ? slug : 'artifact') + '-' + Date.now().toString(36) + '.jsonl')
     const body = messages.map((m) => JSON.stringify(m !== null && typeof m === 'object' ? { role: m.role, content: m.content } : m)).join('\n') + '\n'
     nodeFs.writeFileSync(file, body, 'utf8')
