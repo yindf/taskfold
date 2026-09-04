@@ -3,6 +3,27 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.12.0 — five-round prompt overhaul + delegation deliverable carve-out (2026-09-04)
+
+- **Prompt (five-round adversarial review, fully landed)**: granularity rule
+  (a task produces a verifiable outcome; single reads/greps are steps; when in
+  doubt it is a task), bookmark-not-deadline suspension semantics, detour
+  wrapping folded into the multi-part MUST, dedup of LIFO/exception detail
+  between section and descriptions (~40% fixed overhead cut), summary budgets
+  (80–150 words typical / 250 large / 300 cap; User inputs uncapped by
+  design), What-happened vs Changes boundary (grep-able), on-demand recall
+  recipe with dependency line ("when a new task depends on a folded task,
+  recall it before starting"), nudge-2 three-way branch (done / blocked /
+  genuinely waiting), todo bridge granularity fix, relay text synced.
+- **Prompt (timing fix)**: a delegation's final deliverable (a subagent's
+  report to its parent) is composed and sent with FULL context BEFORE
+  folding — fold afterwards as the archival last action. Evidence: the
+  five-round reviewer's own artifacts showed every deliverable was written
+  post-fold from the summary alone (round 1: 47 KB of reading compressed
+  before its review was composed). Fold-first now applies only to interactive
+  closing reports to the human user.
+  - five-round prompt review — granularity rule, bookmark semantics, dedup, summary budget, dependency recall
+
 ## 0.11.0 — runtime-context snapshots read harness: in the preview (2026-09-04)
 
 - **Features**: plugin-injected messages (runtime-context snapshots, sandbox
