@@ -3,6 +3,22 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.18.0 — Fold archive: a proper summary section with the span preview (2026-09-04)
+
+- **Features**: the metadata appended inside each committed summary node is
+  now a section formatted like the summary's own five, restoring the
+  per-message preview that 0.17.0 had dropped:
+
+      ## Fold archive
+      - fold #N · originals (JSONL, one message per line): <path>
+      Span preview (N messages, one per line — …):
+        1 assistant: …
+        2 tool: …
+
+  Preview line N maps to artifact line N. The bare footer line form from
+  0.17.0 is gone; prompts (task_end description, lifecycle section)
+  describe the section accordingly.
+
 ## 0.17.0 — fold metadata lives inside the summary node; no notice messages (2026-09-04)
 
 - **Behavior**: the scoped summarize override — the last stop before the
