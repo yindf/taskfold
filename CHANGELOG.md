@@ -3,6 +3,14 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.14.1 — fix host crash: pre-step listener must follow the waterfall contract (2026-09-04)
+
+- **Fix**: v0.14.0's `agent/pre-step` listener returned undefined and never
+  called `next()`, so the host's waterfall decision was undefined and every
+  step crashed with "Cannot read properties of undefined (reading 'kind')".
+  The listener now awaits deferred folds inside the hook (as the engine's own
+  AUTO compaction does) and always returns `next()`.
+
 ## 0.14.0 — full-deferred folds: queue on close, auto-fold after the deliverable (2026-09-04)
 
 - **Behavior (design `docs/design/deferred-report-fold.md` v5)**: `task_fold`
