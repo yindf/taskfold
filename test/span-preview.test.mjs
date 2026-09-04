@@ -79,6 +79,7 @@ test('callBrief: tool-specific call summaries for common tools', () => {
   assert.equal(callBrief('edit', '{"file_path":"p.mjs","old_string":"a\\nb","new_string":"a\\nb\\nc\\nd"}'), '→edit p.mjs +4 -2')
   assert.equal(callBrief('grep', '{"pattern":"reportPart","include":"*.mjs"}'), '→grep "reportPart" (*.mjs)')
   assert.equal(callBrief('pwsh', '{"command":"node -e …","description":"Run live probe"}'), '→pwsh ‹Run live probe›')
+  assert.equal(callBrief('pwsh', '{"command":"node -e \\"console.log(1)\\""}'), '→pwsh ‹node -e "console.log(1)"›', 'empty description falls back to the command')
   assert.equal(callBrief('other', '{"x":1}'), '→other({"x":1})', 'unknown tools keep the generic form')
 })
 

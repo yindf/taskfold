@@ -54,7 +54,12 @@ export function callBrief(name, argsStr) {
     return '→edit ' + String(args.file_path === undefined ? '?' : args.file_path) + ' +' + added + ' -' + removed
   }
   if (tool === 'grep') return '→grep "' + clip(args.pattern === undefined ? '' : args.pattern, 60) + '"' + (args.include !== undefined ? ' (' + args.include + ')' : '')
-  if (tool === 'pwsh') return '→pwsh ‹' + clip(args.description === undefined ? '' : args.description, 60) + '›'
+  if (tool === 'pwsh') {
+    // description is the best label but is model-provided and may be empty —
+    // fall back to a slice of the command itself.
+    const label = typeof args.description === 'string' && args.description.trim().length > 0 ? args.description : String(args.command === undefined ? '' : args.command)
+    return '→pwsh ‹' + clip(label, 60) + '›'
+  }
   return '→' + tool + '(' + clip(argsStr === undefined ? '' : argsStr, TEXT_CLIP) + ')'
 }
 
