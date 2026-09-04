@@ -3,6 +3,18 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.16.1 — fix corrupt session: notice messages need an id (unreleased draft 2026-09-04)
+
+- **Fix**: the host commits every pre-step decision message as a
+  `user/message` session event VERBATIM, and load-time validation rejects a
+  message event without a string `id` ("session event at seq N lacks an
+  identified message") — marking the WHOLE stored session corrupt and making
+  its history unloadable. The 0.15.2 notice shape `{role, content, source}`
+  still lacked that `id`, so every session that received a same-request fold
+  notice under 0.15.2+ became unloadable after restart (one such session
+  bricked at seq 379458). Notice messages now carry `id: randomUUID()`,
+  matching the host's own `createUserMessage` contract.
+
 ## 0.16.0 — fold region is exactly begin..end, deliverable stays on the surface (2026-09-04)
 
 - **Behavior**: the deferred fold's region is now [begin anchor .. the

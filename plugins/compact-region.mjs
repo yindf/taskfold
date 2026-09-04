@@ -64,6 +64,7 @@
 import nodePath from 'node:path'
 import nodeFs from 'node:fs'
 import nodeUrl from 'node:url'
+import { randomUUID } from 'node:crypto'
 
 // Shared span-preview/JSONL helpers: preview line N and artifact line N are
 // derived from the same message, so numbering maps both ways.
@@ -933,8 +934,13 @@ export default {
           // {role, content} object crashes it ("reading 'kind'"). Carry a
           // plugin source so the notice reads as ours (NOT the system-prompt
           // snapshots', so it is never suppressed/replaced) and survives in
-          // history with its artifact path.
+          // history with its artifact path. An `id` is equally mandatory: the
+          // load-time session validation ("... lacks an identified message")
+          // rejects an id-less user/message, which marks the WHOLE stored
+          // session corrupt and makes its history unloadable — exactly the
+          // 0.15.2 bug where one such notice bricked session-cf0121eb.
           decision.messages = [...decision.messages, ...notices.map((lines) => ({
+            id: randomUUID(),
             role: 'user',
             content: [{ type: 'text', text: lines.join('\n') }],
             source: { kind: 'plugin', plugin: 'dsh-taskfold' }
