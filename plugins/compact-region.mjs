@@ -925,9 +925,17 @@ export default {
         const deliverable = notices.length > 0 && decision !== null && typeof decision === 'object'
           && decision.kind === 'enter' && Array.isArray(decision.messages)
         if (deliverable) {
+          // Appended messages are committed as user/message events (agent-loop
+          // appends every decision message), and the host's runtime-context
+          // projection then reads message.source.kind on each — a bare
+          // {role, content} object crashes it ("reading 'kind'"). Carry a
+          // plugin source so the notice reads as ours (NOT the system-prompt
+          // snapshots', so it is never suppressed/replaced) and survives in
+          // history with its artifact path.
           decision.messages = [...decision.messages, ...notices.map((lines) => ({
             role: 'user',
-            content: [{ type: 'text', text: lines.join('\n') }]
+            content: [{ type: 'text', text: lines.join('\n') }],
+            source: { kind: 'plugin', plugin: 'dsh-taskfold' }
           }))]
         } else if (notices.length > 0 && payload !== null && typeof payload === 'object'
           && payload.agent !== undefined && payload.agent.session != null) {
