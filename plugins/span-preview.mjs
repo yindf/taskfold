@@ -24,12 +24,85 @@ function clip(text, max) {
 
 // One brief fragment per content block. Unknown block types degrade to their
 // type name so the preview never crashes on a future harness block shape.
-export function blockBrief(block) {
+//
+// Tool-specific rendering: common tools get a web-UI-style brief instead of
+// raw arguments/output (read → full path + content excerpt, grep → pattern +
+// match stats, pwsh → its description, edit → path + line delta). Correlating
+// a tool-result with its call needs the call map built by collectToolCalls —
+// blockBrief stays callable without it (generic formatters only).
+// ── Tool-specific briefs (web-UI-style: short but pointed) ──────────────────
+
+function parseArgs(argStr) {
+  if (typeof argStr !== 'string' || argStr.length === 0) return {}
+  try { return JSON.parse(argStr) } catch (err) { return {} }
+}
+
+function lineCount(s) {
+  if (typeof s !== 'string' || s.length === 0) return 0
+  return s.split('\n').length
+}
+
+// The CALL side (assistant message fragment): what the model asked for.
+export function callBrief(name, argsStr) {
+  const args = parseArgs(argsStr)
+  const tool = String(name === undefined ? 'tool' : name)
+  if (tool === 'read') return '→read ' + String(args.file_path === undefined ? '?' : args.file_path)
+  if (tool === 'write') return '→write ' + String(args.file_path === undefined ? '?' : args.file_path)
+  if (tool === 'edit') {
+    const added = lineCount(args.new_string)
+    const removed = lineCount(args.old_string)
+    return '→edit ' + String(args.file_path === undefined ? '?' : args.file_path) + ' +' + added + ' -' + removed
+  }
+  if (tool === 'grep') return '→grep "' + clip(args.pattern === undefined ? '' : args.pattern, 60) + '"' + (args.include !== undefined ? ' (' + args.include + ')' : '')
+  if (tool === 'pwsh') return '→pwsh ‹' + clip(args.description === undefined ? '' : args.description, 60) + '›'
+  return '→' + tool + '(' + clip(argsStr === undefined ? '' : argsStr, TEXT_CLIP) + ')'
+}
+
+// The RESULT side (user message fragment): what came back, summarized per
+// tool. Falls back to a generic excerpt for every other tool.
+export function resultBrief(tool, inner) {
+  const text = typeof inner === 'string' ? inner : ''
+  if (tool === 'grep') {
+    const found = text.match(/Found (\d+) matches?/)
+    if (found !== null) {
+      const files = new Set()
+      for (const m of text.matchAll(/\n([A-Za-z]:\\[^:\n]+\.m?js):/g)) files.add(m[1])
+      const nf = files.size > 0 ? files.size : (found[1] === '0' ? 0 : 1)
+      return found[1] + (found[1] === '1' ? ' match' : ' matches') + ' · ' + nf + (nf === 1 ? ' file' : ' files')
+    }
+    return clip(text, TEXT_CLIP)
+  }
+  if (tool === 'read' || tool === 'edit' || tool === 'write') {
+    // Tool results for file tools open with a <path>/<type> header; the
+    // useful excerpt is the content, not the path repeated back.
+    const cut = text.replace(/^<path>[^\n]*\n(<type>[^\n]*\n)?/, '')
+    return clip(cut.length > 0 ? cut : text, TEXT_CLIP)
+  }
+  return clip(text, TEXT_CLIP)
+}
+
+// callId → { name, args } across the whole span, so a tool-result fragment
+// (in a LATER user message) can be formatted for the tool that produced it.
+export function collectToolCalls(messages) {
+  const map = new Map()
+  if (!Array.isArray(messages)) return map
+  for (const m of messages) {
+    if (m === null || typeof m !== 'object' || !Array.isArray(m.content)) continue
+    for (const b of m.content) {
+      if (b !== null && typeof b === 'object' && b.type === 'tool-call' && typeof b.id === 'string') {
+        map.set(b.id, { name: b.name, args: b.arguments })
+      }
+    }
+  }
+  return map
+}
+
+export function blockBrief(block, calls) {
   if (block === null || typeof block !== 'object') return '?'
   if (block.type === 'text') return clip(block.text === undefined ? '' : block.text, TEXT_CLIP)
   if (block.type === 'reasoning') return '[think] ' + clip(block.text === undefined ? '' : block.text, TEXT_CLIP)
   if (block.type === 'tool-call') {
-    return '→' + String(block.name === undefined ? 'tool' : block.name) + '(' + clip(block.arguments === undefined ? '' : block.arguments, TEXT_CLIP) + ')'
+    return callBrief(block.name, block.arguments)
   }
   if (block.type === 'tool-result') {
     let inner = ''
@@ -37,7 +110,9 @@ export function blockBrief(block) {
     else if (Array.isArray(block.content)) {
       inner = block.content.filter((b) => b !== null && typeof b === 'object' && typeof b.text === 'string').map((b) => b.text).join(' ')
     }
-    return '⇐' + (block.isError === true ? 'ERROR: ' : '') + clip(inner, TEXT_CLIP)
+    const call = calls !== undefined && typeof block.toolCallId === 'string' ? calls.get(block.toolCallId) : undefined
+    const brief = call === undefined ? clip(inner, TEXT_CLIP) : resultBrief(call.name, inner)
+    return '⇐' + (block.isError === true ? 'ERROR: ' : '') + brief
   }
   return '[' + String(block.type === undefined ? 'block' : block.type) + ']'
 }
@@ -45,10 +120,10 @@ export function blockBrief(block) {
 // One preview line per message: `NN role: fragments`. The line number matches
 // the message's 1-based position in the span — and its line in the JSONL
 // artifact written by writeSpanArtifact.
-export function messagePreviewLine(message, index) {
+export function messagePreviewLine(message, index, calls) {
   const role = message !== null && typeof message === 'object' && typeof message.role === 'string' ? message.role : '?'
   const blocks = message !== null && typeof message === 'object' && Array.isArray(message.content) ? message.content : []
-  const joined = blocks.map(blockBrief).join(' ')
+  const joined = blocks.map((b) => blockBrief(b, calls)).join(' ')
   const body = joined.length > 0 ? joined : '(empty)'
   const numbered = String(index).padStart(3, ' ') + ' ' + role + ': ' + body
   return numbered.length > LINE_CLIP ? numbered.slice(0, LINE_CLIP - 1) + '…' : numbered
@@ -60,7 +135,8 @@ export function renderSpanPreview(messages, maxLines) {
   const cap = Number.isInteger(maxLines) && maxLines > 0 ? maxLines : 30
   if (!Array.isArray(messages) || messages.length === 0) return ['Span preview: (empty)']
   const lines = ['Span preview (' + messages.length + ' messages, one per line — same order/numbering as the JSONL artifact):']
-  for (let i = 0; i < messages.length && i < cap; i += 1) lines.push(messagePreviewLine(messages[i], i + 1))
+  const calls = collectToolCalls(messages)
+  for (let i = 0; i < messages.length && i < cap; i += 1) lines.push(messagePreviewLine(messages[i], i + 1, calls))
   if (messages.length > cap) lines.push('… +' + (messages.length - cap) + ' more messages — read the artifact file for the rest.')
   return lines
 }
