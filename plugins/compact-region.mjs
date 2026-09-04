@@ -60,7 +60,10 @@
 import nodePath from 'node:path'
 import nodeFs from 'node:fs'
 import nodeUrl from 'node:url'
-import nodeOs from 'node:os'
+
+// Shared span-preview/JSONL helpers: preview line N and artifact line N are
+// derived from the same message, so numbering maps both ways.
+import { renderSpanPreview, writeSpanArtifact } from './span-preview.mjs'
 
 /** Session-projection key under which the open-mark stack is published. */
 export const TASK_MARKS_KEY = 'taskMarks'
@@ -631,8 +634,9 @@ export default {
     // pair (the compaction engine replays them for summarization input), so
     // the artifact is byte-identical to what the model was sent for the span
     // — same blocks, same order, no digest, no line numbers. Written to the
-    // OS temp dir at fold time; fold_recall({ fold: N }) regenerates it
-    // from the append-only log when the temp file has been cleaned.
+    // OS temp dir at fold time as JSONL, one message per line, in the same
+    // order task_fold's preview lines number; fold_recall({ fold: N })
+    // regenerates it from the append-only log when the temp file is cleaned.
     function spanMessages(session, seqs) {
       if (typeof session.deriveEventMessage !== 'function' || typeof session.eventAt !== 'function') return undefined
       try {
@@ -642,21 +646,6 @@ export default {
           if (message !== null && message !== undefined) messages.push(message)
         }
         return messages
-      } catch (err) {
-        return undefined
-      }
-    }
-
-    function writeArtifactFile(session, seqs, nameKey) {
-      const messages = spanMessages(session, seqs)
-      if (messages === undefined) return undefined
-      try {
-        const dir = nodePath.join(nodeOs.tmpdir(), 'taskfold-artifacts')
-        nodeFs.mkdirSync(dir, { recursive: true })
-        const slug = String(nameKey).replace(/[^\p{L}\p{N}_-]+/gu, '-').replace(/^-+|-+$/g, '').slice(0, 60)
-        const file = nodePath.join(dir, (slug.length > 0 ? slug : 'artifact') + '-' + Date.now().toString(36) + '.json')
-        nodeFs.writeFileSync(file, JSON.stringify(messages, null, 2) + '\n', 'utf8')
-        return file
       } catch (err) {
         return undefined
       }
@@ -719,7 +708,7 @@ export default {
 
     const taskEnd = {
       name: 'task_fold',
-      description: 'End the INNERMOST open task by name AND fold its full span (begin pair + body) into one summary node titled by the name — one call does both. LIFO: newer open tasks block older ones; closing a blocked or unknown name fails and changes nothing (close the newer task first). A fold that loses a race reports the reason and keeps the mark (retry). If the compaction engine is unavailable, or the mark was already shadowed by another fold, the task still closes — unfolded. The output carries what remains open, the fold number, and the path of a temp JSON file holding the span\u0027s EXACT original request context — read/grep it with any file tool; fold_recall({ fold: N }) regenerates it. Too-small spans end the task but stay unfolded. Call alone in a step.',
+      description: 'End the INNERMOST open task by name AND fold its full span (begin pair + body) into one summary node titled by the name — one call does both. LIFO: newer open tasks block older ones; closing a blocked or unknown name fails and changes nothing (close the newer task first). A fold that loses a race reports the reason and keeps the mark (retry). If the compaction engine is unavailable, or the mark was already shadowed by another fold, the task still closes — unfolded. The output carries what remains open, the fold number, a one-line-per-message preview of the folded span, and the path of a temp JSONL file holding the span\u0027s EXACT original request context — one message per line, numbered like the preview — read/grep it with any file tool; fold_recall({ fold: N }) regenerates it. Too-small spans end the task but stay unfolded. Call alone in a step.',
       parameters: {
         type: 'object',
         properties: {
@@ -747,9 +736,10 @@ export default {
             return [{ type: 'text', text: 'Task folded: ' + value.name + ' — ' + open + '. Span too small to fold; left as-is.' }]
           }
           const foldPart = value.fold === undefined ? '' : ' Folded #' + value.fold + ' (' + value.tokens + ' tokens).'
-          const filePart = value.file === undefined ? '' : ' Original context saved: ' + value.file
+          const filePart = value.file === undefined ? '' : ' Original context saved (JSONL, one message per line): ' + value.file
+          const previewPart = Array.isArray(value.preview) && value.preview.length > 0 ? '\n' + value.preview.join('\n') : ''
           const reportPart = value.fold === undefined ? '' : ' The fold summary node is now in context. If the user is still owed a closing report for this work, write it from that node (adapt the wording, no second summary layer); if the outcome was already reported or other tasks remain open, do not — a subtask fold never gets its own report.'
-          return [{ type: 'text', text: 'Task folded: ' + value.name + ' — ' + open + '.' + foldPart + filePart + reportPart }]
+          return [{ type: 'text', text: 'Task folded: ' + value.name + ' — ' + open + '.' + foldPart + filePart + previewPart + reportPart }]
         }
       },
       async execute(args, exec) {
@@ -819,7 +809,9 @@ export default {
             // No balanced boundary at or after the anchor — nothing foldable.
             return { ok: true, name, remainingNames, tooSmall: true }
           }
-          const file = writeArtifactFile(session, result.shadowedSeqs, name)
+          const messages = spanMessages(session, result.shadowedSeqs)
+          const file = messages === undefined ? undefined : writeSpanArtifact(messages, name)
+          const preview = messages === undefined ? undefined : renderSpanPreview(messages)
           // Fold number for recall: chronological index of compaction/summary
           // events. compactRegion commits synchronously before returning, so
           // the snapshot already contains the event just committed.
@@ -827,7 +819,7 @@ export default {
           for (const e of sessionEvents(session)) {
             if (e !== null && typeof e === 'object' && e.type === 'compaction/summary') foldNo += 1
           }
-          return { ok: true, name, remainingNames, tokens: result.shadowedTokenCount, fold: foldNo, file }
+          return { ok: true, name, remainingNames, tokens: result.shadowedTokenCount, fold: foldNo, file, preview }
         } catch (err) {
           const classified = classifyCategory(err)
           if (classified.category === 'summary') {

@@ -13,9 +13,10 @@
  * consumes and exactly what task_fold's "Folded #N" counts. The event-log
  * seq is shown as a secondary annotation only — never pass it to fold_recall.
  */
-import nodeFs from 'node:fs'
-import nodePath from 'node:path'
-import nodeOs from 'node:os'
+// Shared span-preview/JSONL helpers: regenerated artifacts keep the exact
+// format (JSONL, one message per line) and numbering that task_fold's
+// preview lines use.
+import { renderSpanPreview, writeSpanArtifact } from './span-preview.mjs'
 
 /**
  * Fold shape (pinned against dsh-compaction-basic's commitCompactionBody):
@@ -235,7 +236,7 @@ export default {
 
     ctx.tools.register({
       name: 'fold_recall',
-      description: 'Regenerate the artifact FILE for one fold: the span\u0027s EXACT original request context (the same messages the model was sent), written as JSON to the OS temp dir. Fold outputs carry the artifact path when the fold commits — this tool exists for when that temp file has been cleaned: pass the fold number, get a fresh file path, then read/grep it with any file tool. Use list_folds for the fold index. Read-only against the session; one file write to tmp.',
+      description: 'Regenerate the artifact FILE for one fold: the span\u0027s EXACT original request context (the same messages the model was sent), written as JSONL to the OS temp dir — one message per line, numbered like task_fold\u0027s preview lines. Fold outputs carry the artifact path when the fold commits — this tool exists for when that temp file has been cleaned: pass the fold number, get a fresh file path plus a per-message preview, then read/grep it with any file tool. Use list_folds for the fold index. Read-only against the session; one file write to tmp.',
       parameters: {
         type: 'object',
         properties: {
@@ -249,7 +250,7 @@ export default {
           if (value.ok !== true) {
             return [{ type: 'text', text: 'fold_recall failed: ' + String(value.error === undefined ? 'unknown error' : value.error) }]
           }
-          return [{ type: 'text', text: 'Artifact regenerated (' + value.entries + ' messages): ' + value.file + '\nRead or grep it with any file tool.' }]
+          return [{ type: 'text', text: 'Artifact regenerated (' + value.entries + ' messages): ' + value.file + (Array.isArray(value.preview) && value.preview.length > 0 ? '\n' + value.preview.join('\n') : '') + '\nRead or grep it with any file tool.' }]
         }
       },
       async execute(args, exec) {
@@ -278,12 +279,10 @@ export default {
             if (message !== null && message !== undefined) messages.push(message)
           }
           const nameKey = f.title !== undefined ? f.title : 'fold-' + foldNo
-          const slug = String(nameKey).replace(/[^\p{L}\p{N}_-]+/gu, '-').replace(/^-+|-+$/g, '').slice(0, 60)
-          const dir = nodePath.join(nodeOs.tmpdir(), 'taskfold-artifacts')
-          nodeFs.mkdirSync(dir, { recursive: true })
-          const file = nodePath.join(dir, (slug.length > 0 ? slug : 'artifact') + '-' + Date.now().toString(36) + '.json')
-          nodeFs.writeFileSync(file, JSON.stringify(messages, null, 2) + '\n', 'utf8')
-          return { ok: true, fold: foldNo, entries: messages.length, file }
+          const file = writeSpanArtifact(messages, nameKey)
+          if (file === undefined) return { ok: false, error: 'failed to write the JSONL artifact to the OS temp dir' }
+          const preview = renderSpanPreview(messages)
+          return { ok: true, fold: foldNo, entries: messages.length, file, preview }
         } catch (err) {
           return { ok: false, error: 'failed to regenerate: ' + (err !== null && typeof err === 'object' && err.message ? String(err.message) : String(err)) }
         }
