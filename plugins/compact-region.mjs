@@ -5,16 +5,18 @@
  * preset). No realm/isolate-group assumptions are made.
  *
  * Registers the task-lifecycle tools plus prompt guidance:
- *   task_begin / task_fold — named tasks; end closes AND folds in one call
+ *   task_begin / task_fold — named tasks; close pops the mark and QUEUES an
+ *   archive (v9 full-deferred): the span folds AUTOMATICALLY at the next
+ *   agent step boundary after the task's deliverable text lands.
  *
  * Zero module dependencies: every capability arrives through `inject`; the
  * compaction engine is self-hosted (see engineFor below).
  *
  * Close semantics (v3): LIFO — only the INNERMOST open task can be closed;
  * closing a blocked or unknown name fails atomically. Degraded closes: a
- * shadowed anchor or an unavailable engine still CLOSES the task, unfolded.
- * The foldDecision() export carries this whole decision as a pure function;
- * execute is an I/O shell.
+ * shadowed anchor still CLOSES the task, unfolded. The deferredArchivePlan()
+ * export carries the deliverable gate as a pure function; the pre-step
+ * auto-folder and the manual supplement path are I/O shells around it.
  *
  * Mark-stack persistence: the `taskMarks` session projection DERIVES the
  * open-mark stack from harness-native events only — `assistant/message`
@@ -73,8 +75,11 @@ export const TASK_MARKS_KEY = 'taskMarks'
  * calls `.parse(value)` on persisted rows, so a hand validator satisfies the
  * contract without importing zod (whose module resolution from a preset
  * directory is not guaranteed). Throws on malformed state, returns it as-is
- * otherwise. v6 state: null, or { pending: { [callId]: {kind, anchorSeq} },
- * marks: [{seq, name}...] } with only non-empty names retained.
+ * otherwise. v9 state: null, or { pending: { [callId]: {kind, anchorSeq} },
+ * marks: [{seq, name}...], pendingArchives: [{seq, name, foldResultSeq}...] }
+ * with only non-empty names retained. pendingArchives (v9, full-deferred
+ * folds) is optional/loose — rows persisted by v8 or earlier lack it and
+ * replay fine (their task_fold closed-and-folded inline).
  */
 export const taskMarksStateSchema = {
   parse(value) {
@@ -101,14 +106,22 @@ export const taskMarksStateSchema = {
         throw new Error('taskMarks state .marks must contain { seq, name } objects (got ' + JSON.stringify(mark) + ')')
       }
     }
+    if (value.pendingArchives !== undefined) {
+      if (!Array.isArray(value.pendingArchives)) throw new Error('taskMarks state .pendingArchives must be an array')
+      for (const entry of value.pendingArchives) {
+        if (entry === null || typeof entry !== 'object' || !Number.isInteger(entry.seq) || entry.seq <= 0 || typeof entry.name !== 'string') {
+          throw new Error('taskMarks pendingArchives must contain { seq, name, foldResultSeq } objects')
+        }
+      }
+    }
     const named = marks.filter((m) => normalizeName(m.name) !== '')
-    if (named.length !== marks.length) return { pending: value.pending, marks: named }
+    if (named.length !== marks.length) return { pending: value.pending, marks: named, ...(value.pendingArchives === undefined ? {} : { pendingArchives: value.pendingArchives }) }
     return value
   }
 }
 
 function emptyTaskMarksState() {
-  return { pending: Object.create(null), marks: [] }
+  return { pending: Object.create(null), marks: [], pendingArchives: [] }
 }
 
 function isTaskResultText(block) {
@@ -165,66 +178,72 @@ export function closeTarget(marks, name) {
 }
 
 /**
- * Full close/fold decision as a pure function (offline-testable; execute is
- * only an I/O shell around it). Order matters: tooSmall precedes the engine
- * check (a too-small span needs no engine), the anchor check precedes both
- * (a shadowed anchor cannot fold regardless). Returns one of:
- *   { action:'invalid', error }                      bad name / empty stack
- *   { action:'unknown', open:[names] }               no such open task
- *   { action:'lifo', blocking:[names] }              blocked by newer tasks
- *   { action:'unfolded', reason:'anchor'|'engine', mark }  close without folding
- *   { action:'tooSmall', mark }                      close, span left as-is
- *   { action:'fold', mark, startSeq, endSeq }        compactRegion inputs
- *
- * Region end: the LAST surface node — task_fold is an explicit close, so the
- * span runs up to the live edge and the task's final body message folds into
- * its own fold (not the parent's). Auto-compaction keeps its own last-node
- * margin; this boundary is task-fold-only. Defense: when `events` is passed
- * and the last node is the assistant message carrying this very task_fold
- * call (a host that commits the in-flight step before tool execution), the
- * end steps back to the previous node so the fold never shadows itself.
+ * Deliverable detection: does an assistant/message event at seq >
+ * fromSeq contain a non-empty TEXT block? Reasoning blocks and tool-call
+ * blocks deliberately do NOT count — reasoning trails every step, so
+ * counting it would make the gate always-true and defeat deliverable-gating.
  */
-export function foldDecision(marks, name, surfaceNodes, engineAvailable, events) {
-  const list = Array.isArray(marks) ? marks : []
+function hasDeliverableText(event) {
+  if (event === null || typeof event !== 'object' || event.type !== 'assistant/message') return false
+  const message = event.data !== null && typeof event.data === 'object' && event.data.message !== null
+    && typeof event.data.message === 'object' ? event.data.message : null
+  const blocks = message !== null && Array.isArray(message.content) ? message.content : []
+  return blocks.some((b) => b !== null && typeof b === 'object' && b.type === 'text'
+    && typeof b.text === 'string' && b.text.trim().length > 0)
+}
+
+/**
+ * Deferred-archive plan for ONE pendingArchive entry (v9 full-deferred
+ * folds; pure and offline-testable). The deliverable gate (product owner's
+ * G2 ruling) folds a task only after its closing task_fold has been followed
+ * by a deliverable text, AND only while that deliverable precedes any
+ * successor task anchor that is still open or pending. Returns:
+ *   { action:'wait' }                no deliverable text yet — never fold
+ *   { action:'defer' }               deliverable sits AFTER the successor
+ *                                     anchor (out-of-order close): postpone;
+ *                                     once the successor closes and folds,
+ *                                     the trim point moves up and the
+ *                                     deliverable lands inside the span
+ *   { action:'drop' }                begin anchor no longer on the surface
+ *                                     (AUTO compaction shadowed it) — the
+ *                                     task is already closed; discard
+ *   { action:'fold', startSeq, endSeq, name }  gate open; region runs to the
+ *                                     node before the successor anchor (or
+ *                                     the last node), never below startSeq
+ *
+ * successorAnchors = seqs of begin anchors opened AFTER this entry's
+ * foldResultSeq that are STILL open or pending (caller derives from
+ * live marks + pendingArchives).
+ */
+export function deferredArchivePlan(p, surfaceNodes, events, successorAnchors) {
   const nodes = Array.isArray(surfaceNodes) ? surfaceNodes : []
-  if (!validTaskName(name)) {
-    // Legacy escape hatch: a mark whose stored name is EXACTLY this invalid
-    // string (only possible from a legacy task/mark snapshot) may still be
-    // closed — closing it removes it, self-healing the stack.
-    const exact = list.some((m) => m !== null && typeof m === 'object' && m.name === name)
-    if (!exact) {
-      return { action: 'invalid', error: 'task names must be non-empty and must not contain " —" (the result-text delimiter)' }
+  const list = Array.isArray(events) ? events : []
+  const foldResultSeq = Number.isInteger(p.foldResultSeq) ? p.foldResultSeq : 0
+  // ① deliverable: first assistant text after the close result.
+  let deliverableSeq = null
+  for (const e of list) {
+    if (e === null || typeof e !== 'object' || !Number.isInteger(e.seq)) continue
+    if (e.seq <= foldResultSeq) continue
+    if (hasDeliverableText(e)) { deliverableSeq = e.seq; break }
+  }
+  // ② successor anchor: first still-open/pending begin anchor after the close.
+  let successor = null
+  for (const s of Array.isArray(successorAnchors) ? successorAnchors : []) {
+    if (Number.isInteger(s) && s > foldResultSeq && (successor === null || s < successor)) successor = s
+  }
+  if (deliverableSeq === null) return { action: 'wait' }
+  if (successor !== null && deliverableSeq > successor) return { action: 'defer' }
+  if (nodes.indexOf(p.seq) === -1) return { action: 'drop' }
+  // END: last node strictly before the successor anchor, else the last node.
+  let endSeq = nodes[nodes.length - 1]
+  if (successor !== null) {
+    endSeq = null
+    for (const s of nodes) {
+      if (typeof s === 'number' && s < successor && s >= p.seq && s > (endSeq === null ? -1 : endSeq)) endSeq = s
     }
   }
-  const target = closeTarget(list, name)
-  if (target.status === 'empty') {
-    return { action: 'invalid', error: 'no open tasks; call task_begin first' }
-  }
-  if (target.status === 'unknown') {
-    return { action: 'unknown', open: target.open }
-  }
-  if (target.status === 'lifo') {
-    return { action: 'lifo', blocking: target.blocking }
-  }
-  const mark = target.mark
-  if (nodes.indexOf(mark.seq) === -1) {
-    return { action: 'unfolded', reason: 'anchor', mark }
-  }
-  let endIdx = nodes.length - 1
-  if (Array.isArray(events)) {
-    const ev = events.find((e) => e !== null && typeof e === 'object' && e.seq === nodes[endIdx])
-    if (ev !== undefined && ev.type === 'assistant/message' && Array.isArray(ev.content)
-      && ev.content.some((b) => b !== null && typeof b === 'object' && b.type === 'tool-call' && b.name === 'task_fold')) {
-      endIdx -= 1 // never fold the message carrying this fold call itself
-    }
-  }
-  if (endIdx < 0 || nodes[endIdx] < mark.seq) {
-    return { action: 'tooSmall', mark }
-  }
-  if (engineAvailable !== true) {
-    return { action: 'unfolded', reason: 'engine', mark }
-  }
-  return { action: 'fold', mark, startSeq: mark.seq, endSeq: nodes[endIdx] }
+  if (endSeq === null || endSeq < p.seq) return { action: 'wait' }
+  return { action: 'fold', startSeq: p.seq, endSeq, name: p.name }
 }
 
 /**
@@ -298,7 +317,7 @@ function taskNameFromText(text, prefix) {
  *    mark { seq, name }; 'Task folded: NAME' pops the MOST RECENT mark whose
  *    normalized name matches. The reducer stays name-keyed so logs recorded
  *    before the LIFO rule (or by future variants) replay unchanged; the
- *    TOOL layer (foldDecision) enforces LIFO on new calls — closing anything
+ *    TOOL layer (closeTarget) enforces LIFO on new calls — closing anything
  *    other than the innermost open task fails before any event is written.
  *    Anything else changes nothing.
  *  - legacy `task/mark` events (v1 whole-value snapshots) are AUTHORITATIVE
@@ -320,7 +339,7 @@ export function applyTaskMarks(state, event) {
     const coerced = marks.map((m) => (typeof m === 'object' && m !== null && Number.isInteger(m.seq))
       ? { seq: m.seq, name: typeof m.name === 'string' ? normalizeName(m.name) : '' }
       : null).filter((m) => m !== null && m.name !== '')
-    return normalizeTaskMarks({ pending: Object.create(null), marks: coerced })
+    return normalizeTaskMarks({ pending: Object.create(null), marks: coerced, pendingArchives: [] })
   }
   if (event.type === 'assistant/message') {
     const message = event.data !== null && typeof event.data === 'object' && event.data.message !== null
@@ -340,6 +359,7 @@ export function applyTaskMarks(state, event) {
     return next === null ? state : next
   }
   if (event.type === 'tool/result') {
+    const seq = Number.isInteger(event.seq) ? event.seq : 0
     const message = event.data !== null && typeof event.data === 'object' && event.data.message !== null
       && typeof event.data.message === 'object' ? event.data.message : null
     const blocks = message !== null && Array.isArray(message.content) ? message.content : []
@@ -363,14 +383,38 @@ export function applyTaskMarks(state, event) {
         const name = taskNameFromText(text, 'Task folded: ')
         // Pop the most recent mark whose normalized name matches. Name-keyed
         // on purpose (old-log replay); the tool layer enforces LIFO before
-        // any of these events can be written. The end-and-fold is ONE call;
-        // there is no pending-fold record to keep.
+        // any of these events can be written. v9 full-deferred: a successful
+        // close ALSO queues the archive {seq, name, foldResultSeq} — the
+        // pre-step handler folds it after the deliverable lands. Old-log
+        // replays (inline folds) queue too, but their spans' compaction/
+        // summary events immediately drop the entries again (shadowedSeqs).
         for (let i = next.marks.length - 1; i >= 0; i -= 1) {
-          if (next.marks[i].name === name) { next.marks.splice(i, 1); break }
+          if (next.marks[i].name === name) {
+            const popped = next.marks[i]
+            next.marks.splice(i, 1)
+            if (next.pendingArchives === undefined) next.pendingArchives = []
+            next.pendingArchives.push({ seq: popped.seq, name: popped.name, foldResultSeq: seq })
+            break
+          }
         }
       }
     }
     return next === null ? state : normalizeTaskMarks(next)
+  }
+  if (event.type === 'compaction/summary') {
+    // Archive-completion closure: a committed fold shadows a seq range; any
+    // pendingArchive whose BEGIN anchor lies inside that range is done —
+    // drop it. Precise for AUTO folds too (a shadowed anchor can never fold
+    // again). Pure and replay-safe.
+    const base = state
+    if (base === null || !Array.isArray(base.pendingArchives) || base.pendingArchives.length === 0) return state
+    const shadowed = event.data !== null && typeof event.data === 'object' && Array.isArray(event.data.shadowedSeqs)
+      ? event.data.shadowedSeqs
+      : null
+    if (shadowed === null) return state
+    const kept = base.pendingArchives.filter((p) => shadowed.indexOf(p.seq) === -1)
+    if (kept.length === base.pendingArchives.length) return state
+    return normalizeTaskMarks({ pending: base.pending, marks: base.marks, pendingArchives: kept })
   }
   return state
 }
@@ -380,7 +424,8 @@ export function applyTaskMarks(state, event) {
  */
 function normalizeTaskMarks(state) {
   const noPending = Object.keys(state.pending).length === 0
-  if (noPending && state.marks.length === 0) return null
+  const archives = state.pendingArchives === undefined ? [] : state.pendingArchives
+  if (noPending && state.marks.length === 0 && archives.length === 0) return null
   return state
 }
 
@@ -390,7 +435,8 @@ function cloneTaskMarks(state) {
   const source = base.pending !== undefined ? base.pending : Object.create(null)
   for (const key of Object.keys(source)) pending[key] = source[key]
   const marks = (base.marks !== undefined ? base.marks : []).map((m) => ({ seq: m.seq, name: m.name }))
-  return { pending, marks }
+  const pendingArchives = (base.pendingArchives !== undefined ? base.pendingArchives : []).map((p) => ({ seq: p.seq, name: p.name, foldResultSeq: p.foldResultSeq }))
+  return { pending, marks, pendingArchives }
 }
 
 /**
@@ -420,16 +466,16 @@ export default {
   inject: ['tools', 'systemPrompt', 'sessionProjections', 'tokenMeter', 'llm'],
   apply(ctx) {
     // Native-event derivation folds into this projection; the registration's
-    // disposer rides the plugin fiber, so it unloads with us. stateVersion 8
-    // discards persisted rows from earlier reducer generations (v7 carried
-    // lastEnded records for the two-phase end→commit split; the merged
-    // end-and-fold design has no such state).
+    // disposer rides the plugin fiber, so it unloads with us. stateVersion 9
+    // discards persisted rows from earlier reducer generations (v8 predates
+    // pendingArchives; the host treats a version mismatch as a full replay,
+    // not a load failure — old logs replay byte-identically through v9).
     ctx.sessionProjections.register({
       key: TASK_MARKS_KEY,
       stateSchema: taskMarksStateSchema,
       init: () => null,
       apply: applyTaskMarks,
-      stateVersion: 8
+      stateVersion: 9
     })
 
     // Current open marks for one session: [{ seq, name }], empty when none.
@@ -438,6 +484,19 @@ export default {
         const state = ctx.sessionProjections.stateOf(session, TASK_MARKS_KEY)
         if (state === undefined || state === null) return []
         return Array.isArray(state.marks) ? state.marks : []
+      } catch (err) {
+        return []
+      }
+    }
+
+    // Queued deferred archives for one session: [{ seq, name, foldResultSeq }],
+    // empty when none. Populated by successful task_fold closes (reducer),
+    // drained by the agent/pre-step auto-folder below.
+    function archivesOf(session) {
+      try {
+        const state = ctx.sessionProjections.stateOf(session, TASK_MARKS_KEY)
+        if (state === undefined || state === null) return []
+        return Array.isArray(state.pendingArchives) ? state.pendingArchives : []
       } catch (err) {
         return []
       }
@@ -653,9 +712,174 @@ export default {
     }
 
 
+    // ── Full-deferred archive machinery (v9) ─────────────────────────────
+    // settledArchives: per-session Set of begin-anchor seqs whose archive is
+    // DONE without a fold (too-small at fold time). Process-local bookkeeping
+    // only — on replay the entries retry once, hit too-small again, settle
+    // again; no persisted state involved.
+    const settledArchives = new Map() // session.id → Set<seq>
+    // autoFoldFailures: per-session Map(name → reason bucket) rendered as a
+    // HOLD warning line while the condition stands (see context callback).
+    const autoFoldFailures = new Map() // session.id → Map<name, bucket>
+
+    function isSettledArchive(session, seq) {
+      const set = settledArchives.get(session.id)
+      return set !== undefined && set.has(seq)
+    }
+
+    function markArchiveSettled(session, seq) {
+      let set = settledArchives.get(session.id)
+      if (set === undefined) { set = new Set(); settledArchives.set(session.id, set) }
+      set.add(seq)
+    }
+
+    function clearArchiveFailure(session, name) {
+      const fails = autoFoldFailures.get(session.id)
+      if (fails !== undefined) fails.delete(name)
+    }
+
+    function recordArchiveFailure(session, name, bucket) {
+      let fails = autoFoldFailures.get(session.id)
+      if (fails === undefined) { fails = new Map(); autoFoldFailures.set(session.id, fails) }
+      fails.set(name, bucket)
+    }
+
+    function failureBucket(category) {
+      if (category === 'busy') return 'compaction lock busy'
+      if (category === 'engine') return 'engine unavailable'
+      if (category === 'changed') return 'surface changed during fold'
+      if (category === 'commit') return 'fold failed to commit'
+      return 'fold failed'
+    }
+
+    function lastSurfaceNode(session) {
+      const nodes = session.surface.nodes
+      return Array.isArray(nodes) && nodes.length > 0 ? nodes[nodes.length - 1] : -1
+    }
+
+    // Turn-signal guard: bound the summarization call so a lost abort signal
+    // can never wedge a pre-step. Degrades to the raw signal when the newer
+    // AbortSignal combinators are unavailable.
+    function guardedSignal(signal) {
+      try {
+        if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.any === 'function' && typeof AbortSignal.timeout === 'function' && signal !== undefined) {
+          return AbortSignal.any([signal, AbortSignal.timeout(120000)])
+        }
+      } catch (err) { /* fall through */ }
+      return signal
+    }
+
+    // Shared fold core: run engine.compactRegion over [startSeq..endSeq] with
+    // the balanced-boundary node-by-node fallback (a rejected compactRegion
+    // commits nothing, so retries are side-effect free). Returns
+    // { tokens, fold, file, preview } on commit, null when nothing foldable
+    // sits in the span (tooSmall semantics). Throws classified errors.
+    // The caller owns the closingTasks declaration.
+    async function foldRegion(session, agent, engine, name, startSeq, endSeq, signal) {
+      let result = null
+      for (let end = endSeq; end >= startSeq; ) {
+        try {
+          result = await engine.compactRegion(startSeq, end, agent, signal)
+          break
+        } catch (err) {
+          if (err !== null && typeof err === 'object' && typeof err.message === 'string'
+            && err.message.includes('balanced boundary')) {
+            let prev = -1
+            for (const s of session.surface.nodes) {
+              if (typeof s === 'number' && s < end && s >= startSeq && s > prev) prev = s
+            }
+            if (prev === -1) break
+            end = prev
+            continue
+          }
+          throw err
+        }
+      }
+      if (result === null) return null
+      const messages = spanMessages(session, result.shadowedSeqs)
+      const file = messages === undefined ? undefined : writeSpanArtifact(messages, name)
+      const preview = messages === undefined ? undefined : renderSpanPreview(messages)
+      let foldNo = 0
+      for (const e of sessionEvents(session)) {
+        if (e !== null && typeof e === 'object' && e.type === 'compaction/summary') foldNo += 1
+      }
+      return { tokens: result.shadowedTokenCount, fold: foldNo, file, preview }
+    }
+
+    let preStepRunning = false
+    // The deliverable-gated auto-folder: at every agent step boundary, drain
+    // queue entries whose deliverable has landed (deferredArchivePlan gate),
+    // innermost (highest seq) first. Serial by construction; the projection
+    // state is re-read before EACH entry because a committed fold rewrites
+    // the surface (the previous entry's summary may shadow the next entry's
+    // anchor — the reducer then drops it and the re-read no longer lists it).
+    async function processDeferredArchives(agent, signal) {
+      if (preStepRunning) return
+      preStepRunning = true
+      try {
+        const session = agent.session
+        for (;;) {
+          const entries = archivesOf(session).filter((p) => !isSettledArchive(session, p.seq))
+          if (entries.length === 0) return
+          entries.sort((a, b) => b.seq - a.seq)
+          const p = entries[0]
+          // Successor anchors: every begin anchor that is still OPEN or still
+          // QUEUED and sits after this entry's close — the region must end
+          // before the first of them.
+          const anchors = marksOf(session).map((m) => m.seq)
+            .concat(archivesOf(session).filter((q) => q.seq !== p.seq).map((q) => q.seq))
+          const plan = deferredArchivePlan(p, session.surface.nodes, sessionEvents(session), anchors)
+          if (plan.action === 'wait' || plan.action === 'defer') return
+          if (plan.action === 'drop') {
+            markArchiveSettled(session, p.seq)
+            clearArchiveFailure(session, p.name)
+            continue
+          }
+          const engine = await engineFor()
+          if (engine === undefined) {
+            recordArchiveFailure(session, p.name, 'engine unavailable')
+            return
+          }
+          try {
+            closingTasks.set(session.id, p.name)
+            const result = await foldRegion(session, agent, engine, p.name, plan.startSeq, plan.endSeq, guardedSignal(signal))
+            if (result === null) markArchiveSettled(session, p.seq)
+            clearArchiveFailure(session, p.name)
+            // A committed fold drops the entry via the reducer's
+            // compaction/summary handler; loop re-reads state.
+          } catch (err) {
+            const classified = classifyCategory(err)
+            if (classified.category === 'summary') {
+              markArchiveSettled(session, p.seq)
+              clearArchiveFailure(session, p.name)
+              continue
+            }
+            recordArchiveFailure(session, p.name, failureBucket(classified.category))
+            return
+          } finally {
+            closingTasks.delete(session.id)
+          }
+        }
+      } finally {
+        preStepRunning = false
+      }
+    }
+
+    try {
+      ctx.on('agent/pre-step', (payload) => {
+        const agent = payload !== null && typeof payload === 'object' ? payload.agent : undefined
+        if (agent === undefined) return
+        const signal = payload !== null && typeof payload === 'object' && payload.signal !== undefined ? payload.signal : undefined
+        void processDeferredArchives(agent, signal).catch(() => { /* retried at the next pre-step */ })
+      })
+    } catch (err) {
+      // Hook unavailable in this host build: queued archives stay unfolded
+      // until a manual task_fold supplement; closes still work.
+    }
+
     const taskBegin = {
       name: 'task_begin',
-      description: 'Begin a NAMED task. The name is the identity; when the work is done, one task_fold({ name }) call closes it AND folds its full span into a summary node titled by the name. A name already open is rejected; names must not contain " —". Tasks can nest: task_begin while a task is open opens a subtask (innermost closes first). Call alone in a step.',
+      description: 'Begin a NAMED task. The name is the identity; when the work is done, one task_fold({ name }) call closes it and queues archival — the span folds automatically at the next step boundary after your deliverable. A name already open is rejected; names must not contain " —". Tasks can nest: task_begin while a task is open opens a subtask (innermost closes first). Call alone in a step.',
       parameters: {
         type: 'object',
         properties: {
@@ -709,7 +933,7 @@ export default {
 
     const taskEnd = {
       name: 'task_fold',
-      description: 'End the INNERMOST open task by name AND fold its full span (begin pair + body) into one summary node titled by the name — one call does both. LIFO: newer open tasks block older ones; a blocked or unknown name fails and changes nothing (close the newer task first). The output carries what remains open, the fold number, a one-line-per-message preview, and a temp file with the span\u0027s full original message content — read/grep it with any file tool; fold_recall({ fold: N }) regenerates it if it was cleaned. Too-small spans close without folding. Failure outcomes are explained in the result; follow it. Call alone in a step.',
+      description: 'End the INNERMOST open task by name: it closes the task and QUEUES archival — the span folds AUTOMATICALLY at the next step boundary after the task\u0027s deliverable/report text lands (possibly mid-turn). So: finish the work, call task_fold, then deliver the report in the same turn with full context — folding never precedes a deliverable. LIFO: newer open tasks block older ones; a blocked or unknown name fails and changes nothing (close the newer task first). Calling task_fold again for a task whose archival is still queued forces the fold immediately. Too-small spans close without folding. Failure outcomes are explained in the result; follow it. Call alone in a step.',
       parameters: {
         type: 'object',
         properties: {
@@ -727,6 +951,12 @@ export default {
             return [{ type: 'text', text: 'task_fold failed (' + category + '): ' + error + hint }]
           }
           const open = value.remainingNames.length > 0 ? value.remainingNames.length + ' open: ' + value.remainingNames.join(', ') : 'all closed'
+          if (value.queued === true) {
+            // Full-deferred close (v9): mark popped, archive queued. The
+            // 'Task folded: ' prefix is LOAD-BEARING — the reducer keys the
+            // mark pop AND the pendingArchive registration on it.
+            return [{ type: 'text', text: 'Task folded: ' + value.name + ' — ' + open + '. Archival queued — the span folds automatically at your next step boundary; deliver your report now with full context.' }]
+          }
           if (value.unfolded !== undefined) {
             const why = value.unfolded === 'engine'
               ? 'Engine unavailable; task closed without folding.'
@@ -750,97 +980,64 @@ export default {
         if (name.length === 0) return { ok: false, category: 'invalid', error: 'task_fold requires a non-empty `name`' }
         const session = agent.session
         const marks = marksOf(session)
-        const engine = await engineFor()
-        const decision = foldDecision(marks, name, session.surface.nodes, engine !== undefined, sessionEvents(session))
-        if (decision.action === 'invalid') {
-          return { ok: false, category: 'invalid', error: decision.error }
+        const openNamesNow = marks.map((m) => m.name)
+        // ── Manual supplement: task closed, archive still queued → fold NOW.
+        // Escape hatch for a stuck auto-fold (engine busy etc.): a forced
+        // fold commits a compaction/summary whose shadowedSeqs drop the
+        // queue entry via the reducer. settledArchives entries (folded as
+        // too-small) are not re-foldable — treated as unknown below.
+        if (!openNamesNow.some((n) => n === name)) {
+          const entries = archivesOf(session)
+          const entry = [...entries].reverse().find((p) => p.name === name && !isSettledArchive(session, p.seq))
+          if (entry !== undefined) {
+            const engine = await engineFor()
+            if (engine === undefined) return { ok: true, name, remainingNames: openNamesNow, unfolded: 'engine' }
+            try {
+              closingTasks.set(session.id, name)
+              const result = await foldRegion(session, agent, engine, name, entry.seq, lastSurfaceNode(session), guardedSignal(exec.signal))
+              if (result === null) {
+                markArchiveSettled(session, entry.seq)
+                return { ok: true, name, remainingNames: openNamesNow, tooSmall: true }
+              }
+              markArchiveSettled(session, entry.seq)
+              return { ok: true, name, remainingNames: openNamesNow, tokens: result.tokens, fold: result.fold, file: result.file, preview: result.preview }
+            } catch (err) {
+              const classified = classifyCategory(err)
+              if (classified.category === 'summary') {
+                markArchiveSettled(session, entry.seq)
+                return { ok: true, name, remainingNames: openNamesNow, tooSmall: true }
+              }
+              return { ok: false, category: classified.category, error: classified.category === 'busy' ? 'compaction lock active — retry task_fold' : classified.message }
+            } finally {
+              closingTasks.delete(session.id)
+            }
+          }
+          const queuedNames = entries.filter((p) => !isSettledArchive(session, p.seq)).map((p) => p.name)
+          const lists = 'open: ' + (openNamesNow.length > 0 ? openNamesNow.join(', ') : '(none)')
+            + (queuedNames.length > 0 ? '; queued for archival: ' + queuedNames.join(', ') : '')
+          return { ok: false, category: 'invalid', error: 'no open task named "' + name + '". ' + lists }
         }
-        if (decision.action === 'unknown') {
-          return { ok: false, category: 'invalid', error: 'no open task named "' + name + '". Open tasks: ' + (decision.open.length > 0 ? decision.open.join(', ') : '(none)') }
+        // ── Standard close: LIFO check, then queue the archive.
+        const target = closeTarget(marks, name)
+        if (target.status === 'lifo') {
+          return { ok: false, category: 'invalid', error: 'task "' + name + '" is not the innermost open task; close the newer task(s) first: ' + target.blocking.join(', ') }
         }
-        if (decision.action === 'lifo') {
-          return { ok: false, category: 'invalid', error: 'task "' + name + '" is not the innermost open task; close the newer task(s) first: ' + decision.blocking.join(', ') }
-        }
-        // remaining = the stack minus the matched mark (most recent
-        // occurrence of this name) — mirrors what the reducer will pop.
+        // remaining = the stack minus the matched mark — mirrors the pop.
         const remainingNames = []
         let skipped = false
         for (let i = marks.length - 1; i >= 0; i -= 1) {
           if (!skipped && marks[i].name === name) { skipped = true; continue }
           remainingNames.unshift(marks[i].name)
         }
-        if (decision.action === 'unfolded') {
-          // Degraded close: the mark stays closable but the span cannot fold
-          // (anchor shadowed by another fold, or no engine). The success text
-          // pops the mark — the task ends either way.
-          return { ok: true, name, remainingNames, unfolded: decision.reason }
+        if (session.surface.nodes.indexOf(target.mark.seq) === -1) {
+          // Degraded close: anchor shadowed (AUTO compaction took the span);
+          // the task ends unfolded and NOTHING is queued (a queued archive
+          // with a shadowed anchor would be dropped by the reducer anyway).
+          return { ok: true, name, remainingNames, unfolded: 'anchor' }
         }
-        if (decision.action === 'tooSmall') {
-          return { ok: true, name, remainingNames, tooSmall: true }
-        }
-        try {
-          closingTasks.set(session.id, name)
-          // The decision's endSeq is the newest surface node, but the engine
-          // only accepts BALANCED boundaries (step ends). If the newest node
-          // sits inside an open/unbalanced step, walk back node by node and
-          // retry — a rejected compactRegion commits nothing, so retries are
-          // side-effect free. Exhausting all candidates means nothing foldable
-          // sits in the span → tooSmall semantics.
-          let result = null
-          for (let endSeq = decision.endSeq; endSeq >= decision.startSeq; ) {
-            try {
-              result = await engine.compactRegion(decision.startSeq, endSeq, agent, exec.signal)
-              break
-            } catch (err) {
-              if (err !== null && typeof err === 'object' && typeof err.message === 'string'
-                && err.message.includes('balanced boundary')) {
-                // Step back to the previous surface node below this seq.
-                let prev = -1
-                for (const s of session.surface.nodes) {
-                  if (typeof s === 'number' && s < endSeq && s >= decision.startSeq && s > prev) prev = s
-                }
-                if (prev === -1) break
-                endSeq = prev
-                continue
-              }
-              throw err
-            }
-          }
-          if (result === null) {
-            // No balanced boundary at or after the anchor — nothing foldable.
-            return { ok: true, name, remainingNames, tooSmall: true }
-          }
-          const messages = spanMessages(session, result.shadowedSeqs)
-          const file = messages === undefined ? undefined : writeSpanArtifact(messages, name)
-          const preview = messages === undefined ? undefined : renderSpanPreview(messages)
-          // Fold number for recall: chronological index of compaction/summary
-          // events. compactRegion commits synchronously before returning, so
-          // the snapshot already contains the event just committed.
-          let foldNo = 0
-          for (const e of sessionEvents(session)) {
-            if (e !== null && typeof e === 'object' && e.type === 'compaction/summary') foldNo += 1
-          }
-          return { ok: true, name, remainingNames, tokens: result.shadowedTokenCount, fold: foldNo, file, preview }
-        } catch (err) {
-          const classified = classifyCategory(err)
-          if (classified.category === 'summary') {
-            // Terminal: too small to summarize. The task still ends; the span
-            // stays on the surface. (Success text pops the mark.)
-            return { ok: true, name, remainingNames, tooSmall: true }
-          }
-          // Non-terminal: nothing happened — the mark stays (the failure text
-          // pops nothing), so the model retries task_fold.
-          const short = classified.category === 'busy'
-            ? 'compaction lock active — retry task_fold'
-            : classified.category === 'changed'
-              ? 'surface changed during fold — retry task_fold'
-              : classified.category === 'commit'
-                ? 'fold failed to commit — retry task_fold'
-                : classified.message
-          return { ok: false, category: classified.category, error: short }
-        } finally {
-          closingTasks.delete(session.id)
-        }
+        // Success: the rendered 'Task folded: ' text is the ONLY event the
+        // reducer needs — it pops the mark and registers the pendingArchive.
+        return { ok: true, name, remainingNames, queued: true }
       }
     }
 
@@ -850,7 +1047,7 @@ export default {
     ctx.systemPrompt.section({
       name: 'task-marker-compaction',
       order: 650,
-      text: 'MANDATORY task lifecycle discipline: every discrete task MUST be wrapped in task marks. A task is work that produces a verifiable outcome (a fix, a module, an analysis, a delegated review); a single read/grep/probe is a step, not a task — never open a mark for a step, and when in doubt, treat the work as a task (a small fold costs one summary node; an unfolded task costs a degraded context). Before a task, call task_begin({ name }) alone in a step; the moment its work is done, call task_fold({ name }) alone in a step — it closes the task AND folds the span into a summary node titled by the name. The mark is a bookmark, not a deadline: while waiting on a background job or user reply, leave it open and do other work; fold when the wait resolves. Multi-part work MUST be split into nested subtasks (innermost folds first); a long detour or dead-end exploration inside a task is one such part — wrap it as a short subtask and fold it. When its work is done, DELIVER FIRST: write the task\u0027s report or deliverable (to the user, or a subagent\u0027s report to its parent) with FULL context, in its own step — then call task_fold({ name }) alone in a step, immediately, as the archival close: it folds the span, deliverable included, into a summary node titled by the name. Deliver and fold in SEPARATE steps (a deliverable in the same message as the task_fold call falls outside the fold). Never fold before the deliverable exists. After an inner subtask folds, continue the surrounding work — its report went out before the fold; the outermost task\u0027s report is likewise written BEFORE its own fold. When a new task depends on an earlier folded task\u0027s details, recall that fold (list_folds → fold_recall → read/grep) before starting. Folded details are never lost: list_folds → fold_recall({ fold }) → read/grep the artifact. Recall on demand — when a summary\u0027s anchors fail to answer a concrete question the work or the report needs; never guess, and never ask the user before recalling; never recall preemptively. Never restate a folded span from memory; never track message positions yourself. Runtime context carries lifecycle nudges — treat them as directives and act on them.'
+      text: 'MANDATORY task lifecycle discipline: every discrete task MUST be wrapped in task marks. A task is work that produces a verifiable outcome (a fix, a module, an analysis, a delegated review); a single read/grep/probe is a step, not a task — never open a mark for a step, and when in doubt, treat the work as a task (a small fold costs one summary node; an unfolded task costs a degraded context). Before a task, call task_begin({ name }) alone in a step. The moment its work is done, call task_fold({ name }) alone in a step: it closes the task and QUEUES archival — then deliver the task\u0027s report or deliverable (to the user, or a subagent\u0027s report to its parent) in the SAME turn, written with FULL context while every detail is still on the surface. The fold itself happens AUTOMATICALLY at the next step boundary after your deliverable lands — possibly mid-turn — so folding never precedes a deliverable and the details you deliver from are never compressed. The mark is a bookmark, not a deadline: while waiting on a background job or user reply, leave it open and do other work; fold when the wait resolves. Multi-part work MUST be split into nested subtasks (innermost closes first); a long detour or dead-end exploration inside a task is one such part — wrap it as a short subtask and close it. When a new task depends on an earlier folded task\u0027s details, recall that fold (list_folds → fold_recall → read/grep) before starting. Folded details are never lost: list_folds → fold_recall({ fold }) → read/grep the artifact. Recall on demand — when a summary\u0027s anchors fail to answer a concrete question the work or the report needs; never guess, and never ask the user before recalling; never recall preemptively. Never restate a folded span from memory; never track message positions yourself. Runtime context carries lifecycle nudges — treat them as directives and act on them.'
     })
 
     const TASK_TOOL_RE = /^(task_begin|task_fold|list_folds|fold_recall|todo_write)$/
@@ -987,6 +1184,17 @@ export default {
           }
           if (oldestAge >= 20) {
             lines.push('Task lifecycle: task "' + oldest.name + '" is 20+ rounds old — if done, call task_fold({ name: "' + oldest.name + '" }); if a newer task blocks it, close that first; if it is genuinely waiting on a job or reply, leave it open.')
+          }
+        }
+
+        // ── Auto-fold failure warning (HOLD) ─────────────────────────────
+        // Renders for as long as a queued archive's auto-fold keeps failing
+        // (engine busy etc.); retracts when the fold finally commits or the
+        // entry settles. Bucket wording is byte-stable per failure cause.
+        const fails = autoFoldFailures.get(session.id)
+        if (fails !== undefined) {
+          for (const [failName, bucket] of fails) {
+            lines.push('Task lifecycle: auto-fold for "' + failName.replace(/"/g, "'") + '" is failing (' + bucket + ') — it retries automatically at every step boundary; to force it now, call task_fold({ name: "' + failName.replace(/"/g, "'") + '" }).')
           }
         }
 

@@ -1,11 +1,11 @@
 // Offline tests for the taskMarks projection pieces exported from
 // compact-region.mjs: the duck-typed state schema, the reducer, and the pure
-// close/fold decision helpers (closeTarget / validTaskName / foldDecision).
+// close/fold decision helpers (closeTarget / validTaskName / deferredArchivePlan).
 // Run in-process (the sandbox blocks node --test child processes):
 //   node test/task-marks.test.mjs
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { applyTaskMarks, taskMarksStateSchema, closeTarget, validTaskName, foldDecision, todoBridgeLine, FOLD_SUMMARY_INSTRUCTION } from '../plugins/compact-region.mjs'
+import { applyTaskMarks, taskMarksStateSchema, closeTarget, validTaskName, todoBridgeLine, deferredArchivePlan, FOLD_SUMMARY_INSTRUCTION } from '../plugins/compact-region.mjs'
 
 /** assistant/message carrying tool-call blocks (shape per dsh-agent-loop). */
 function assistantCall(seq, calls) {
@@ -69,7 +69,7 @@ test('begin/end round trip: named push and pop-by-name', () => {
   // Closing by name, OUT OF order: ends 'alpha' first even though 'beta' is
   // the most recent. The REDUCER stays name-keyed on purpose — old logs
   // (recorded before the LIFO rule) must replay byte-identically; the TOOL
-  // layer (foldDecision, tested below) now rejects such closes before any
+  // layer (closeTarget, tested below) now rejects such closes before any
   // event is written.
   state = applyTaskMarks(state, assistantCall(300, [{ id: 'c3', name: 'task_fold' }]))
   state = applyTaskMarks(state, toolResult('c3', END_OK('alpha'), 301))
@@ -77,7 +77,19 @@ test('begin/end round trip: named push and pop-by-name', () => {
   // closing 'beta' next
   state = applyTaskMarks(state, assistantCall(400, [{ id: 'c4', name: 'task_fold' }]))
   state = applyTaskMarks(state, toolResult('c4', END_OK('beta'), 401))
-  assert.equal(state, null, 'all closed; empty stack with no pending intents normalizes to null')
+  // v9 full-deferred: closes leave queued archives until a compaction event
+  // shadows their anchors.
+  assert.deepEqual(state.marks, [], 'all marks popped')
+  assert.deepEqual(state.pendingArchives, [
+    { seq: 100, name: 'alpha', foldResultSeq: 301 },
+    { seq: 200, name: 'beta', foldResultSeq: 401 }
+  ], 'both closes queued their archives')
+  // Archive closure: the alpha fold shadows seq 100 → that entry drops;
+  // beta's stays.
+  state = applyTaskMarks(state, { seq: 500, type: 'compaction/summary', data: { shadowedSeqs: [100, 250, 300, 301], shadowedTokenCount: 9 } })
+  assert.deepEqual(state.pendingArchives, [{ seq: 200, name: 'beta', foldResultSeq: 401 }], 'shadowed anchor drops its archive entry')
+  state = applyTaskMarks(state, { seq: 600, type: 'compaction/summary', data: { shadowedSeqs: [200, 400, 401], shadowedTokenCount: 9 } })
+  assert.equal(state, null, 'all archives settled; state normalizes to null')
 })
 
 test('closing an unknown name changes nothing', () => {
@@ -179,7 +191,8 @@ test('name normalization: whitespace and multi-name closing', () => {
   assert.deepEqual(state.marks, [{ seq: 100, name: 'fix bug' }], 'whitespace collapses to a single space')
   state = applyTaskMarks(state, assistantCall(200, [{ id: 'c2', name: 'task_fold' }]))
   state = applyTaskMarks(state, toolResult('c2', 'Task folded: fix bug — all closed. …', 201))
-  assert.equal(state, null, 'normalized name matches despite original multiple spaces; empty state is null')
+  assert.deepEqual(state.marks, [], 'normalized name matches despite original multiple spaces')
+  assert.deepEqual(state.pendingArchives, [{ seq: 100, name: 'fix bug', foldResultSeq: 201 }], 'the close queued its archive')
 })
 
 test('validTaskName: rejects empty and delimiter-carrying names', () => {
@@ -216,83 +229,6 @@ test('closeTarget: duplicate names match the most recent occurrence, blocking de
   assert.deepEqual(older.blocking, ['alpha'], 'duplicate newer names appear once')
 })
 
-test('foldDecision: invalid names, legacy escape hatch, empty stack', () => {
-  assert.equal(foldDecision([], 'bad — name', [], true).action, 'invalid', 'delimiter name with no exact mark is invalid')
-  assert.equal(foldDecision([{ seq: 5, name: 'bad — name' }], 'bad — name', [5, 6, 7], true).action, 'fold',
-    'legacy mark whose stored name is exactly the invalid string stays closable (self-heals)')
-  assert.equal(foldDecision([], '', [], true).action, 'invalid')
-  assert.equal(foldDecision([], 'alpha', [], true).action, 'invalid', 'empty stack')
-})
-
-test('foldDecision: unknown and lifo outcomes', () => {
-  const marks = [{ seq: 10, name: 'alpha' }, { seq: 20, name: 'beta' }]
-  const nodes = [10, 11, 12, 20, 21, 22, 23]
-  const unknown = foldDecision(marks, 'nope', nodes, true)
-  assert.equal(unknown.action, 'unknown')
-  assert.deepEqual(unknown.open, ['alpha', 'beta'])
-  const lifo = foldDecision(marks, 'alpha', nodes, true)
-  assert.equal(lifo.action, 'lifo')
-  assert.deepEqual(lifo.blocking, ['beta'])
-})
-
-test('foldDecision: anchor shadowed by compaction degrades to unfolded', () => {
-  const marks = [{ seq: 10, name: 'alpha' }]
-  const decision = foldDecision(marks, 'alpha', [30, 31, 32], true)
-  assert.equal(decision.action, 'unfolded')
-  assert.equal(decision.reason, 'anchor')
-  assert.deepEqual(decision.mark, { seq: 10, name: 'alpha' })
-})
-
-test('foldDecision: tooSmall precedes the engine check', () => {
-  const marks = [{ seq: 10, name: 'alpha' }]
-  // Defensive path: malformed descending nodes put the end before the anchor.
-  assert.equal(foldDecision(marks, 'alpha', [10, 9], false).action, 'tooSmall')
-  // Anchor as the ONLY node still attempts a fold (engineAvailable=false
-  // degrades BEFORE the engine call, proving the fold path was taken); the
-  // engine's not-smaller rejection later turns tiny spans into runtime tooSmall.
-  assert.equal(foldDecision(marks, 'alpha', [10], false).action, 'unfolded')
-  assert.equal(foldDecision(marks, 'alpha', [10, 11], true).action, 'fold')
-})
-
-test('foldDecision: region runs to the LAST node, never past a self-carrying step', () => {
-  const marks = [{ seq: 10, name: 'alpha' }]
-  const nodes = [10, 11, 12, 13, 14, 15]
-  const plain = foldDecision(marks, 'alpha', nodes, true)
-  assert.equal(plain.endSeq, 15, 'task folds run to the live edge — the final body message joins its OWN fold')
-  // A host that commits the in-flight step early: the last node is the
-  // assistant message carrying this very task_fold call — step back past it.
-  const events = [
-    { seq: 14, type: 'assistant/message', content: [{ type: 'text', text: 'body' }] },
-    { seq: 15, type: 'assistant/message', content: [{ type: 'tool-call', name: 'task_fold' }] }
-  ]
-  const defended = foldDecision(marks, 'alpha', nodes, true, events)
-  assert.equal(defended.action, 'fold')
-  assert.equal(defended.endSeq, 14, 'the self-carrying node is excluded from the region')
-  // Other tool calls or plain text in the last node fold normally.
-  const benign = [
-    { seq: 15, type: 'assistant/message', content: [{ type: 'tool-call', name: 'grep' }] }
-  ]
-  assert.equal(foldDecision(marks, 'alpha', nodes, true, benign).endSeq, 15)
-  // Stepping back past the self node must still respect the anchor floor.
-  const tight = foldDecision(marks, 'alpha', [10, 11], true, [
-    { seq: 11, type: 'assistant/message', content: [{ type: 'tool-call', name: 'task_fold' }] }
-  ])
-  assert.equal(tight.action, 'fold')
-  assert.equal(tight.endSeq, 10, 'single-node region [begin..begin] is a legal (tiny) fold')
-})
-
-test('foldDecision: engine unavailable degrades to unfolded; available folds', () => {
-  const marks = [{ seq: 10, name: 'alpha' }]
-  const nodes = [10, 11, 12, 13, 14, 15]
-  const down = foldDecision(marks, 'alpha', nodes, false)
-  assert.equal(down.action, 'unfolded')
-  assert.equal(down.reason, 'engine')
-  const up = foldDecision(marks, 'alpha', nodes, true)
-  assert.equal(up.action, 'fold')
-  assert.equal(up.startSeq, 10)
-  assert.equal(up.endSeq, nodes[nodes.length - 1], 'end is the last surface node')
-})
-
 test('todoBridgeLine: roster rendering with names, none, and quote defense', () => {
   assert.equal(todoBridgeLine(['fix-bridge', 'add-tests']),
     'Todo bridge: todos changed; open tasks: "fix-bridge", "add-tests" — keep marks in sync: task_begin for new tasks, task_fold for finished tasks.')
@@ -303,6 +239,42 @@ test('todoBridgeLine: roster rendering with names, none, and quote defense', () 
   // Defensive: non-array / junk input degrades to the empty roster.
   assert.equal(todoBridgeLine(undefined), todoBridgeLine([]))
   assert.equal(todoBridgeLine([null, 42, '', 'ok']).includes('"ok"'), true)
+})
+
+/** assistant/message helper for the deferred-archive gate tests. */
+function assistantMsg(seq, blocks) {
+  return { seq, type: 'assistant/message', data: { message: { content: blocks } } }
+}
+
+test('deferredArchivePlan: the deliverable gate (wait / fold / defer / drop)', () => {
+  const p = { seq: 10, name: 'alpha', foldResultSeq: 25 }
+  const nodes = [10, 15, 20, 25, 30, 35]
+  // ① No deliverable after the close → never fold (reasoning and tool calls
+  // do NOT count as deliverables).
+  const reasoningOnly = [assistantMsg(30, [{ type: 'reasoning', text: 'thinking…' }, { type: 'tool-call', id: 'c', name: 'read', arguments: '{}' }])]
+  assert.equal(deferredArchivePlan(p, nodes, reasoningOnly, []).action, 'wait', 'reasoning/tool-call steps are not deliverables')
+  // ② Deliverable text landed, no successor anchor → fold to the last node.
+  const delivered = [...reasoningOnly, assistantMsg(35, [{ type: 'text', text: 'final report' }])]
+  const plan = deferredArchivePlan(p, nodes, delivered, [])
+  assert.equal(plan.action, 'fold')
+  assert.equal(plan.startSeq, 10)
+  assert.equal(plan.endSeq, 35, 'no successor: region runs to the last node')
+  // ③ Successor anchor open → deliverable must precede it; END trims to
+  // the last node before the anchor (a deliverable AFTER the anchor is
+  // branch ④ — it belongs to the successor's span).
+  const trimNodes = [10, 15, 20, 25, 28, 30, 35]
+  const earlyDeliverable = [assistantMsg(28, [{ type: 'text', text: 'final report' }])]
+  const withSuccessor = deferredArchivePlan(p, trimNodes, earlyDeliverable, [30])
+  assert.equal(withSuccessor.action, 'fold')
+  assert.equal(withSuccessor.endSeq, 28, 'region ends before the successor anchor')
+  // ④ Deliverable AFTER the successor anchor (out-of-order close) → defer.
+  const lateDeliverable = [assistantMsg(40, [{ type: 'text', text: 'late report' }])]
+  assert.equal(deferredArchivePlan(p, [...trimNodes, 40], lateDeliverable, [30]).action, 'defer')
+  // ⑤ Anchor shadowed (AUTO compaction took seq 10 off the surface) → drop.
+  assert.equal(deferredArchivePlan(p, [15, 20, 25, 30], delivered, []).action, 'drop')
+  // Empty-text deliverables do not count.
+  const blank = [assistantMsg(30, [{ type: 'text', text: '   ' }])]
+  assert.equal(deferredArchivePlan(p, nodes, blank, []).action, 'wait', 'whitespace-only text is not a deliverable')
 })
 
 test('FOLD_SUMMARY_INSTRUCTION: five-section structure with user-inputs and pitfalls sections', () => {

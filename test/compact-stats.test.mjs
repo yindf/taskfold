@@ -114,8 +114,8 @@ function resultEvent(seq, callId) {
   ] } } }
 }
 
-function summaryEvent(seq, shadowed) {
-  return { seq, type: 'compaction/summary', data: { shadowedSeqs: shadowed, shadowedRange: { start: shadowed[0], end: shadowed[shadowed.length - 1] }, shadowedTokenCount: 42, summary: [{ type: 'text', text: '# x\n- body' }] } }
+function summaryEvent(seq, shadowed, summaryText) {
+  return { seq, type: 'compaction/summary', data: { shadowedSeqs: shadowed, shadowedRange: { start: shadowed[0], end: shadowed[shadowed.length - 1] }, shadowedTokenCount: 42, summary: [{ type: 'text', text: summaryText === undefined ? '# x\n- body' : summaryText }] } }
 }
 
 test('a fold is titled by the in-flight task_fold call\u0027s arguments', () => {
@@ -135,13 +135,35 @@ test('a fold is titled by the in-flight task_fold call\u0027s arguments', () => 
 test('failed task_fold calls never mislabel folds', () => {
   // A failed call produces NO summary before its result — the call is
   // retired from the in-flight map, so an auto fold after it stays untitled.
+  // The summary here deliberately carries no '# ' heading (an AUTO fold).
   const events = [
     foldCallEvent(11, 'c1', 'will fail'),
     resultEvent(12, 'c1'),
-    summaryEvent(13, [10, 11]) // auto compaction, no in-flight call
+    summaryEvent(13, [10, 11], '- untitled auto-fold body')
   ]
   const folds = collectFolds(events)
   assert.equal(folds[0].title, undefined, 'failed call does not label the next fold')
+})
+
+test('deferred folds are titled by their summary heading, not the call window', () => {
+  // v9: the fold commits at a step boundary, long after the call/result
+  // window — the in-flight path misses it, and the '# <name>' heading the
+  // scoped summarizer forces is the title source.
+  const events = [
+    foldCallEvent(11, 'c1', 'queued close'),
+    resultEvent(12, 'c1'),
+    { seq: 40, type: 'user/message', data: {} },
+    { seq: 41, type: 'assistant/message', data: { message: { content: [{ type: 'text', text: 'the deliverable' }] } } },
+    summaryEvent(50, [10, 41], '# queued close\n## What happened\n- did the work')
+  ]
+  const folds = collectFolds(events)
+  assert.equal(folds[0].title, 'queued close', 'deferred fold titled by its summary heading')
+})
+
+test('summary headings only match level-1, not section headers', () => {
+  const events = [summaryEvent(10, [1, 9], '## What happened\n- no title here')]
+  const folds = collectFolds(events)
+  assert.equal(folds[0].title, undefined, '## section headers are not fold titles')
 })
 
 test('fold names normalize whitespace from arguments', () => {

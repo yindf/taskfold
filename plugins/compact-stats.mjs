@@ -67,6 +67,12 @@ export function foldOf(event) {
     shadowedTokenCount: tokens,
     preview: firstTextBlock(data.summary)
   }
+  // v9 deferred folds commit OUTSIDE the task_fold call/result window, so
+  // the in-flight-call correlation misses them. Fallback title source: the
+  // summary's own first heading line ('# <task name>') — the scoped
+  // summarizer's closing instruction forces exactly that heading.
+  const heading = firstHeadingLine(data.summary)
+  if (heading !== '') record.titleFallback = heading
   if (typeof data.compactionId === 'string') record.compactionId = data.compactionId
   if (data.shadowedRange !== null && typeof data.shadowedRange === 'object') {
     if (Number.isInteger(data.shadowedRange.start)) record.shadowedStart = data.shadowedRange.start
@@ -80,6 +86,20 @@ export function foldOf(event) {
     if (seqs.length > 0) record.shadowedSeqs = seqs
   }
   return record
+}
+
+/** '# <name>' heading from a summary's first text block, '' when absent. */
+function firstHeadingLine(summary) {
+  if (!Array.isArray(summary)) return ''
+  for (const block of summary) {
+    if (block !== null && typeof block === 'object' && block.type === 'text' && typeof block.text === 'string') {
+      const line = block.text.split('\n').map((l) => l.trim()).find((l) => l.length > 0)
+      if (line === undefined) return ''
+      if (line.startsWith('# ') && !line.startsWith('## ')) return line.slice(2).trim()
+      return ''
+    }
+  }
+  return ''
 }
 
 /** Full stats over a live event log. Single linear pass, O(n). */
@@ -135,13 +155,17 @@ function foldNameOfCall(block) {
 
 /**
  * Attach task_fold titles to their folds, single linear pass. Correlation is
- * temporal and exact: a fold's compaction/summary is ALWAYS appended between
+ * temporal and exact: an INLINE fold's compaction/summary is appended between
  * its task_fold CALL and its RESULT (the engine commits during execute), so
  * the in-flight task_fold call at summary time is that fold's owner — the
  * name comes straight from its `arguments`, no rendered-text parsing. A
  * failed fold never gets a summary while its call is in flight, so it cannot
  * mislabel; auto-compaction folds between steps see no in-flight call and
- * stay untitled. Mutates and returns `folds`.
+ * stay untitled. v9 DEFERRED folds commit at a step boundary, long past the
+ * call/result window — the in-flight path misses them, so after the pass
+ * every untitled fold falls back to its summary's '# <name>' heading line
+ * (titleFallback, forced by the scoped summarizer's closing instruction).
+ * Mutates and returns `folds`.
  */
 export function attachFoldTitles(folds, events) {
   const list = Array.isArray(events) ? events : []
@@ -172,6 +196,12 @@ export function attachFoldTitles(folds, events) {
           pending.delete(block.toolCallId)
         }
       }
+    }
+  }
+  // Deferred-fold fallback: untitled folds take their summary heading.
+  for (const fold of folds) {
+    if (fold.title === undefined && typeof fold.titleFallback === 'string' && fold.titleFallback.length > 0) {
+      fold.title = fold.titleFallback
     }
   }
   return folds
