@@ -3,6 +3,17 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.15.1 — fold notices arrive in the same request as the fold (2026-09-04)
+
+- **Fix**: the host assembles a step's context BEFORE dispatching the
+  pre-step waterfall, so a fold committed inside the hook could only surface
+  its notice at the NEXT assembly — one step late. The listener now appends
+  the notice (fold number, tokens, artifact path, per-message preview) as a
+  user message to the waterfall decision's messages (defensively copied), so
+  the model sees it in the very request the fold committed in. The
+  context-callback queue remains as a fallback when the decision cannot be
+  augmented (e.g., rejected decisions), with no double delivery.
+
 ## 0.15.0 — task_end for the model, system-only folds with old-style output (2026-09-04)
 
 - **Behavior**: the model-facing close tool is renamed `task_fold` →
