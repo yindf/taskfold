@@ -236,7 +236,7 @@ export default {
 
     ctx.tools.register({
       name: 'fold_recall',
-      description: 'Regenerate the artifact FILE for one fold: the span\u0027s full original message content (role + content blocks of every message the model was sent), written as JSONL to the OS temp dir — one message per line, numbered like task_fold\u0027s preview lines. Fold outputs carry the artifact path when the fold commits — this tool exists for when that temp file has been cleaned: pass the fold number, get a fresh file path plus a per-message preview, then read/grep it with any file tool. Use list_folds for the fold index. Read-only against the session; one file write to tmp.',
+      description: 'Regenerate the artifact FILE for one fold: the span\u0027s full original message content (role + content blocks), written as JSONL to the OS temp dir, one message per line, numbered. task_fold outputs carry the artifact path; use this when that temp file has been cleaned — pass the fold number, get a fresh file path plus a per-message preview, then read/grep it with any file tool. Use list_folds for the fold index. Read-only; one file write to tmp.',
       parameters: {
         type: 'object',
         properties: {

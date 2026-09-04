@@ -295,8 +295,8 @@ test('foldDecision: engine unavailable degrades to unfolded; available folds', (
 
 test('todoBridgeLine: roster rendering with names, none, and quote defense', () => {
   assert.equal(todoBridgeLine(['fix-bridge', 'add-tests']),
-    'Todo bridge: todos changed; open tasks: "fix-bridge", "add-tests" — keep task marks in sync: task_begin for new work, task_fold for finished work.')
-  assert.equal(todoBridgeLine([]), 'Todo bridge: todos changed; open tasks: none — keep task marks in sync: task_begin for new work, task_fold for finished work.')
+    'Todo bridge: todos changed; open tasks: "fix-bridge", "add-tests" — keep marks in sync: task_begin for new tasks, task_fold for finished tasks.')
+  assert.equal(todoBridgeLine([]), 'Todo bridge: todos changed; open tasks: none — keep marks in sync: task_begin for new tasks, task_fold for finished tasks.')
   // Quotes in task names are neutralized so the roster stays parseable.
   assert.ok(!todoBridgeLine(['say "hi"']).includes('"say "hi""'))
   assert.ok(todoBridgeLine(['say "hi"']).includes("'"))

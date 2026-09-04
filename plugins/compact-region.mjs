@@ -236,7 +236,7 @@ export function foldDecision(marks, name, surfaceNodes, engineAvailable, events)
 export function todoBridgeLine(openNames) {
   const names = Array.isArray(openNames) ? openNames.filter((n) => typeof n === 'string' && n !== '') : []
   const roster = names.length > 0 ? names.map((n) => '"' + n.replace(/"/g, "'") + '"').join(', ') : 'none'
-  return 'Todo bridge: todos changed; open tasks: ' + roster + ' — keep task marks in sync: task_begin for new work, task_fold for finished work.'
+  return 'Todo bridge: todos changed; open tasks: ' + roster + ' — keep marks in sync: task_begin for new tasks, task_fold for finished tasks.'
 }
 
 /**
@@ -266,12 +266,13 @@ export const FOLD_SUMMARY_INSTRUCTION = [
   '## Outcomes',
   '- [results, verdicts, failures and their meaning; anything a later step must know]',
   'Rules:',
+  '- Boundary: What happened = the span\'s actions and decisions in order; Changes = only durable artifacts that outlive the span (files written, commands run, key values). If it is not grep-able later, it belongs in What happened, not Changes.',
+  '- Budget: 80-150 words for a typical span; for a large span (thousands of shadowed tokens) up to 250, absolute cap 300. What happened <=6 bullets; Changes <=6; Pitfalls <=5; Outcomes <=4; User inputs & decisions is uncapped by design — fidelity beats brevity there; merge per-decision instead of truncating. Never pad; a section ends at "(none)" as soon as it is true.',
   '- Preserve exact file paths, commands, error strings, identifiers, and numbers. When this summary names files, commands, or errors, keep them precise (paths verbatim) — the reader will only recall the original span if these anchors fail to answer its question, and precise anchors double as grep keywords for that recall.',
   '- Capture user feedback and explicit instructions faithfully, especially corrections.',
   '- Pitfalls and their causes are the span\'s most reusable knowledge: never drop why something failed.',
   '- When the user is still owed a closing report, this summary is relayed as its basis: keep every section accurate and human-readable.',
-  '- Do NOT mention summarization or compaction.',
-  '- Output only the summary text: do not call any tool or take any other action.'
+  '- Do NOT mention summarization or compaction. Output only the summary text: no tool calls or other actions.'
 ].join('\n')
 
 /**
@@ -708,7 +709,7 @@ export default {
 
     const taskEnd = {
       name: 'task_fold',
-      description: 'End the INNERMOST open task by name AND fold its full span (begin pair + body) into one summary node titled by the name — one call does both. LIFO: newer open tasks block older ones; closing a blocked or unknown name fails and changes nothing (close the newer task first). A fold that loses a race reports the reason and keeps the mark (retry). If the compaction engine is unavailable, or the mark was already shadowed by another fold, the task still closes — unfolded. The output carries what remains open, the fold number, a one-line-per-message preview of the folded span, and the path of a temp JSONL file holding the span\u0027s full original message content — one message per line, numbered like the preview — read/grep it with any file tool; fold_recall({ fold: N }) regenerates it. Too-small spans end the task but stay unfolded. Call alone in a step.',
+      description: 'End the INNERMOST open task by name AND fold its full span (begin pair + body) into one summary node titled by the name — one call does both. LIFO: newer open tasks block older ones; a blocked or unknown name fails and changes nothing (close the newer task first). The output carries what remains open, the fold number, a one-line-per-message preview, and a temp file with the span\u0027s full original message content — read/grep it with any file tool; fold_recall({ fold: N }) regenerates it if it was cleaned. Too-small spans close without folding. Failure outcomes are explained in the result; follow it. Call alone in a step.',
       parameters: {
         type: 'object',
         properties: {
@@ -738,7 +739,7 @@ export default {
           const foldPart = value.fold === undefined ? '' : ' Folded #' + value.fold + ' (' + value.tokens + ' tokens).'
           const filePart = value.file === undefined ? '' : ' Original context saved (JSONL, one message per line): ' + value.file
           const previewPart = Array.isArray(value.preview) && value.preview.length > 0 ? '\n' + value.preview.join('\n') : ''
-          const reportPart = value.fold === undefined ? '' : '\nThe fold summary node is now in context. If the user is still owed a closing report for this work, write it from that node (adapt the wording, no second summary layer); if the outcome was already reported or other tasks remain open, do not — a subtask fold never gets its own report.'
+          const reportPart = value.fold === undefined ? '' : '\nIf the user is still owed a closing report and no tasks remain open, write it from the fold summaries now in context (adapt the wording; no second summary layer); otherwise — outcome already reported, or tasks still open — do not report; continue the surrounding work.'
           return [{ type: 'text', text: 'Task folded: ' + value.name + ' — ' + open + '.' + foldPart + filePart + previewPart + reportPart }]
         }
       },
@@ -849,7 +850,7 @@ export default {
     ctx.systemPrompt.section({
       name: 'task-marker-compaction',
       order: 650,
-      text: 'MANDATORY task lifecycle discipline: every discrete task MUST be wrapped in task marks. Before starting any discrete task, call task_begin({ name: "…" }) — alone in a step; a name already open is rejected. The moment its work is done, call task_fold({ name }) — alone in a step: it closes the task AND folds the full span into one summary node titled by the name. task_fold is the FIRST closing action — call it BEFORE any closing report to the user; the fold summary IS the summary. After task_fold succeeds, deliver a closing report ONLY if the user is still owed one: write it from the fold summary node now in context (adapt the wording for the user; never add a second summary layer, never restate the span from memory — recall details from the temp artifact instead). Skip the report when the outcome was already reported during the work, or when other tasks remain open — an inner subtask fold never gets its own report; continue the surrounding work instead. Do NOT deliver a report first and fold afterwards: a report belongs after the fold, outside it. Doing tool work on a discrete task with no mark open, or leaving a task open after its work is finished, is a protocol violation — do not do either.\n\nClosing is LIFO: only the innermost open task can be closed; a blocked or unknown name fails and changes nothing (close newer tasks first). A fold that loses a race reports the reason and keeps the task open (retry). If the engine is unavailable, or the mark was shadowed by another fold, the task still closes unfolded. Too-small spans end the task but stay unfolded. Tasks NEST: while a task is open, another task_begin opens a subtask — for multi-module or multi-part work you MUST split it into nested subtasks so each part becomes its own titled fold (innermost folds first, then its parent), and every fold keeps its own recallable original context. Never track message positions yourself.\n\ntask_fold\u0027s output carries the fold number and the path of a temp file holding the span\u0027s full original message content (role + content blocks) (the same messages the model was sent). Folded details are not lost: list_folds indexes every fold (title + fold number); fold_recall({ fold: N }) regenerates that span\u0027s full original messages as a JSONL file — read/grep it. When you need a detail a fold summary lacks, recall it instead of guessing or asking the user.\n\nRuntime context enforces this discipline with a todo bridge and lifecycle nudges: when the todo list changes, a line reports it with the open task roster — keep task marks in sync (task_begin for new work, task_fold for finished work); call task_begin when working with no task open, call task_fold for a task 20+ rounds old. Treat these directives as binding, not advisory.'
+      text: 'MANDATORY task lifecycle discipline: every discrete task MUST be wrapped in task marks. A task is work that produces a verifiable outcome (a fix, a module, an analysis, a delegated review); a single read/grep/probe is a step, not a task — never open a mark for a step, and when in doubt, treat the work as a task (a small fold costs one summary node; an unfolded task costs a degraded context). Before a task, call task_begin({ name }) alone in a step; the moment its work is done, call task_fold({ name }) alone in a step — it closes the task AND folds the span into a summary node titled by the name. The mark is a bookmark, not a deadline: while waiting on a background job or user reply, leave it open and do other work; fold when the wait resolves. Multi-part work MUST be split into nested subtasks (innermost folds first); a long detour or dead-end exploration inside a task is one such part — wrap it as a short subtask and fold it. task_fold is the FIRST closing action: fold BEFORE any closing report — the fold summary IS the summary. After a fold, if tasks remain open, continue the surrounding work, no report; when all close, write the report from the outermost fold summaries in context. When a new task depends on an earlier folded task\u0027s details, recall that fold (list_folds → fold_recall → read/grep) before starting. Folded details are never lost: list_folds → fold_recall({ fold }) → read/grep the artifact. Recall on demand — when a summary\u0027s anchors fail to answer a concrete question the work or the report needs; never guess, and never ask the user before recalling; never recall preemptively. Never restate a folded span from memory; never track message positions yourself. Runtime context carries lifecycle nudges — treat them as directives and act on them.'
     })
 
     const TASK_TOOL_RE = /^(task_begin|task_fold|list_folds|fold_recall|todo_write)$/
@@ -985,7 +986,7 @@ export default {
             if (age > oldestAge) { oldestAge = age; oldest = m }
           }
           if (oldestAge >= 20) {
-            lines.push('Task lifecycle: task "' + oldest.name + '" is 20+ rounds old — if done, call task_fold({ name: "' + oldest.name + '" }); if a newer task blocks it, close that one first.')
+            lines.push('Task lifecycle: task "' + oldest.name + '" is 20+ rounds old — if done, call task_fold({ name: "' + oldest.name + '" }); if a newer task blocks it, close that first; if it is genuinely waiting on a job or reply, leave it open.')
           }
         }
 
