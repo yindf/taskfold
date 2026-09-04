@@ -320,6 +320,7 @@ test('FOLD_SUMMARY_INSTRUCTION: five-section structure with user-inputs and pitf
   assert.ok(FOLD_SUMMARY_INSTRUCTION.includes('especially corrections'), 'user feedback rule present')
   assert.ok(FOLD_SUMMARY_INSTRUCTION.includes('why something failed'), 'pitfall-cause rule present')
   assert.ok(FOLD_SUMMARY_INSTRUCTION.includes('closing report'), 'relay-to-user rule present (fold summary doubles as the user report basis)')
+  assert.ok(FOLD_SUMMARY_INSTRUCTION.includes('paths verbatim'), 'anchor-precision rule present (anchors double as recall grep keywords)')
   // Continuity-checkpoint sections contradict the fold's CLOSED-task contract
   // (they belong to the stock full-context instruction, not to folds).
   for (const banned of ['Pending Jobs', 'Current Work', 'Next Step', 'Primary Request']) {
