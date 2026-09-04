@@ -3,6 +3,23 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.15.0 — task_end for the model, system-only folds with old-style output (2026-09-04)
+
+- **Behavior**: the model-facing close tool is renamed `task_fold` →
+  `task_end` (closes the task, queues archival; success text now reads
+  "Task ended: …"). Folding is executed ONLY by the system at the next step
+  boundary — the manual "call task_fold again to force the fold" escape
+  hatch is removed, and failed auto-folds just retry (nudge wording updated).
+- **Behavior**: the system-executed fold now produces the old-style output
+  the model used to get from task_fold: the JSONL artifact is written, and a
+  ONE-SHOT runtime-context notice reports the fold — fold number, token
+  count, artifact path, and the per-message preview — retracting on the next
+  render.
+- **Compat**: legacy logs with 'Task folded: ' results replay identically
+  (reducer, grace scan, and intent registration accept both prefixes and
+  both tool names); prompts (section, descriptions, todo bridge, nudges)
+  updated to the task_end vocabulary.
+
 ## 0.14.1 — fix host crash: pre-step listener must follow the waterfall contract (2026-09-04)
 
 - **Fix**: v0.14.0's `agent/pre-step` listener returned undefined and never
