@@ -257,7 +257,7 @@ export function deferredArchivePlan(p, surfaceNodes, events, successorAnchors) {
 export function todoBridgeLine(openNames) {
   const names = Array.isArray(openNames) ? openNames.filter((n) => typeof n === 'string' && n !== '') : []
   const roster = names.length > 0 ? names.map((n) => '"' + n.replace(/"/g, "'") + '"').join(', ') : 'none'
-  return 'Todo bridge: todos changed; open tasks: ' + roster + ' — keep marks in sync: task_begin for new tasks, task_end for finished tasks.'
+  return 'Todo bridge: todo_write was called; open tasks: ' + roster + ' — keep marks in sync: task_begin for new tasks, task_end for finished tasks.'
 }
 
 /**
@@ -281,18 +281,18 @@ export const FOLD_SUMMARY_INSTRUCTION = [
   '## User inputs & decisions',
   '- [the user\'s requests, corrections, rejections, answers, and approvals from THIS span, with the decision each produced; quote verbatim where the exact wording matters]',
   '## Changes',
-  '- [exact file paths written or edited, commands run, key values]',
+  '- [exact file paths written or edited, key values, durable identifiers]',
   '## Pitfalls & gotchas',
   '- [failed attempts and WHY they failed, workarounds adopted, environment traps (sandbox denials, platform quirks), and "do not do X again" lessons from this span]',
   '## Outcomes',
   '- [results, verdicts, failures and their meaning; anything a later step must know]',
   'Rules:',
-  '- Boundary: What happened = the span\'s actions and decisions in order; Changes = only durable artifacts that outlive the span (files written, commands run, key values). If it is not grep-able later, it belongs in What happened, not Changes.',
-  '- Budget: 80-150 words for a typical span; for a large span (thousands of shadowed tokens) up to 250, absolute cap 300. What happened <=6 bullets; Changes <=6; Pitfalls <=5; Outcomes <=4; User inputs & decisions is uncapped by design — fidelity beats brevity there; merge per-decision instead of truncating. Never pad; a section ends at "(none)" as soon as it is true.',
+  '- Boundary: What happened = the span\'s actions and decisions in order, including the commands it ran; Changes = only durable artifacts that outlive the span and stay grep-able later (exact file paths written or edited, key values, durable identifiers). If it is not grep-able later, it belongs in What happened, not Changes.',
+  '- Budget: 80-150 words for a typical span; for a large span (thousands of shadowed tokens) up to 250, absolute cap 300 across the four action sections (What happened, Changes, Pitfalls & gotchas, Outcomes). What happened <=6 bullets; Changes <=6; Pitfalls <=5; Outcomes <=4; User inputs & decisions is exempt from these caps by design — fidelity beats brevity there; merge per-decision instead of truncating. Never pad; a section ends at "(none)" as soon as it is true.',
   '- Preserve exact file paths, commands, error strings, identifiers, and numbers. When this summary names files, commands, or errors, keep them precise (paths verbatim) — the reader will only recall the original span if these anchors fail to answer its question, and precise anchors double as grep keywords for that recall.',
   '- Capture user feedback and explicit instructions faithfully, especially corrections.',
   '- Pitfalls and their causes are the span\'s most reusable knowledge: never drop why something failed.',
-  '- If the deliverable was never sent, this summary may be relayed as its basis: keep every section accurate and human-readable. If the span already contains the delivered report, Outcomes should cite its conclusions, not restate them.',
+  '- If the deliverable was never sent, a later turn may relay this summary to the user as the task report\'s basis: keep every section accurate and human-readable. If the span already contains the delivered report, Outcomes should cite its conclusions, not restate them.',
   '- Do NOT mention summarization or compaction. Output only the summary text: no tool calls or other actions.'
 ].join('\n')
 
@@ -618,8 +618,8 @@ export default {
           const closingName = closingTasks.get(agent.session.id)
           const closing = typeof closingName === 'string' && closingName.length > 0
             ? '\nThe task this span belongs to is named "' + closingName + '". Rules for this fold:\n'
-              + '- Begin the summary with the heading line "# ' + closingName + '" — nothing before it.\n'
-              + '- This fold CLOSES the task: the work in this span is COMPLETE. Do not report anything as unfinished or pending because of how the span ends — this very fold is the task\u0027s ending.\n'
+              + '- Begin the summary with the heading line "# ' + closingName + '" — nothing before it. That heading prefixes the structure above: follow it with the five sections exactly as instructed.\n'
+              + '- This fold CLOSES the task: no further work belongs to it, so do not report anything as unfinished or pending merely because of how the span ends — this very fold is the task\u0027s ending. Closed is not the same as succeeded: if the work ended in a genuine failure or dead end, report that honestly in Outcomes.\n'
               + '- Do NOT summarize task_begin / task_end / task_fold calls, their results, or any narration that merely announces starting or finishing the task — that is lifecycle bookkeeping, not content. Summarize the WORK itself.'
             : ''
           const messages = [...input.messages, {
@@ -912,7 +912,7 @@ export default {
 
     const taskBegin = {
       name: 'task_begin',
-      description: 'Begin a NAMED task. The name is the identity; when the work is done, one task_end({ name }) call ends it and queues archival — the span folds automatically at the next step boundary after your deliverable. A name already open is rejected; names must not contain " —". Tasks can nest: task_begin while a task is open opens a subtask (innermost closes first). Call alone in a step.',
+      description: 'Begin a NAMED task. The name is the identity; when the work is done, one task_end({ name }) call ends it and queues archival — the span folds automatically at the next step boundary after your deliverable. A name already open is rejected; names must not contain " —" (a space followed by an em dash). Tasks can nest: task_begin while a task is open opens a subtask (innermost closes first). Call alone in a step.',
       parameters: {
         type: 'object',
         properties: {
@@ -966,7 +966,7 @@ export default {
 
     const taskEnd = {
       name: 'task_end',
-      description: 'End the INNERMOST open task by name: it closes the task and QUEUES archival — the span folds AUTOMATICALLY at the next step boundary after the task\u0027s deliverable/report text lands (possibly mid-turn). So: finish the work, call task_end, then deliver the report in the same turn with full context — folding never precedes a deliverable. Folds are system-executed: the committed summary node ends with a Fold archive section (same format as the summary sections) carrying the fold number, the artifact path (JSONL, one message per line), and the per-message span preview. LIFO: newer open tasks block older ones; a blocked or unknown name fails and changes nothing (close the newer task first). Too-small spans close without folding; failed auto-folds retry at every step boundary. Failure outcomes are explained in the result; follow it. Call alone in a step.',
+      description: 'End the INNERMOST open task by name: it closes the task and QUEUES archival — the span folds AUTOMATICALLY at the next step boundary after the task\u0027s deliverable/report text lands (possibly mid-turn). So: finish the work, call task_end, then deliver the report in the same turn with full context — the report is text that lands AFTER the task_end result (text in the same assistant message as the call does not count as the deliverable); folding never precedes a deliverable. Folds are system-executed: the committed summary node ends with a Fold archive section (same format as the summary sections) carrying the fold number, the artifact path (JSONL, one message per line), and the per-message span preview. LIFO: newer open tasks block older ones; a blocked or unknown name fails and changes nothing (close the newer task first). Too-small spans close without folding; failed auto-folds retry at every step boundary. Failure outcomes are explained in the result; follow it. Call alone in a step.',
       parameters: {
         type: 'object',
         properties: {
@@ -1041,7 +1041,7 @@ export default {
     ctx.systemPrompt.section({
       name: 'task-marker-compaction',
       order: 650,
-      text: 'MANDATORY task lifecycle discipline: every discrete task MUST be wrapped in task marks. A task is work that produces a verifiable outcome (a fix, a module, an analysis, a delegated review); a single read/grep/probe is a step, not a task — never open a mark for a step, and when in doubt, treat the work as a task (a small fold costs one summary node; an unfolded task costs a degraded context). Before a task, call task_begin({ name }) alone in a step. The moment its work is done, call task_end({ name }) alone in a step: it ends the task and QUEUES archival — then deliver the task\u0027s report or deliverable (to the user, or a subagent\u0027s report to its parent) in the SAME turn, written with FULL context while every detail is still on the surface. The fold itself happens AUTOMATICALLY at the next step boundary after your deliverable lands — possibly mid-turn — so folding never precedes a deliverable and the details you deliver from are never compressed. The mark is a bookmark, not a deadline: while waiting on a background job or user reply, leave it open and do other work; fold when the wait resolves. Multi-part work MUST be split into nested subtasks (innermost closes first); a long detour or dead-end exploration inside a task is one such part — wrap it as a short subtask and close it. When a new task depends on an earlier folded task\u0027s details, recall that fold (list_folds → fold_recall → read/grep) before starting. Folded details are never lost: list_folds → fold_recall({ fold }) → read/grep the artifact. Recall on demand — when a summary\u0027s anchors fail to answer a concrete question the work or the report needs; never guess, and never ask the user before recalling; never recall preemptively. Never restate a folded span from memory; never track message positions yourself. Each fold summary node ends with a Fold archive section (fold number, artifact path, per-message preview). Runtime context carries lifecycle nudges — treat them as directives and act on them.'
+      text: 'MANDATORY task lifecycle discipline: every discrete task MUST be wrapped in task marks. A task is work that produces a verifiable outcome (a fix, a module, an analysis, a delegated review); a single read/grep/probe is a step, not a task — never open a mark for a step, and when in doubt, treat the work as a task (a small fold costs one summary node; an unfolded task costs a degraded context). Before a task, call task_begin({ name }) alone in a step. The moment its work is done, call task_end({ name }) alone in a step: it ends the task and QUEUES archival — then deliver the task\u0027s report or deliverable (to the user, or a subagent\u0027s report to its parent) in the SAME turn, as text AFTER the task_end result and written with FULL context while every detail is still on the surface. The fold itself happens AUTOMATICALLY at the next step boundary after your deliverable lands — possibly mid-turn — so folding never precedes a deliverable and the details you deliver from are never compressed. The mark is a bookmark, not a deadline: while waiting on a background job or user reply, leave it open and do other work; fold when the wait resolves. Multi-part work MUST be split into nested subtasks (innermost closes first); a long detour or dead-end exploration inside a task is one such part — wrap it as a short subtask and close it. Folded details are never lost: list_folds → fold_recall({ fold }) → read/grep the artifact. Recall on demand — when a summary\u0027s anchors fail to answer a concrete question the work or the report needs, or when a new task genuinely depends on an earlier folded task\u0027s details (recall that fold, list_folds → fold_recall → read/grep, before starting it); never guess, never ask the user\u0027s permission to recall, never recall without such a need. Never restate a folded span from memory; never track message positions yourself. Each fold summary node ends with a Fold archive section (fold number, artifact path, per-message preview). Runtime context carries lifecycle nudges — treat them as directives and act on them.'
     })
 
     const TASK_TOOL_RE = /^(task_begin|task_end|task_fold|list_folds|fold_recall|todo_write)$/

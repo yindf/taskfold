@@ -247,8 +247,8 @@ test('closeTarget: duplicate names match the most recent occurrence, blocking de
 
 test('todoBridgeLine: roster rendering with names, none, and quote defense', () => {
   assert.equal(todoBridgeLine(['fix-bridge', 'add-tests']),
-    'Todo bridge: todos changed; open tasks: "fix-bridge", "add-tests" — keep marks in sync: task_begin for new tasks, task_end for finished tasks.')
-  assert.equal(todoBridgeLine([]), 'Todo bridge: todos changed; open tasks: none — keep marks in sync: task_begin for new tasks, task_end for finished tasks.')
+    'Todo bridge: todo_write was called; open tasks: "fix-bridge", "add-tests" — keep marks in sync: task_begin for new tasks, task_end for finished tasks.')
+  assert.equal(todoBridgeLine([]), 'Todo bridge: todo_write was called; open tasks: none — keep marks in sync: task_begin for new tasks, task_end for finished tasks.')
   // Quotes in task names are neutralized so the roster stays parseable.
   assert.ok(!todoBridgeLine(['say "hi"']).includes('"say "hi""'))
   assert.ok(todoBridgeLine(['say "hi"']).includes("'"))
@@ -314,6 +314,8 @@ test('FOLD_SUMMARY_INSTRUCTION: five-section structure with user-inputs and pitf
   assert.ok(FOLD_SUMMARY_INSTRUCTION.includes('relay'), 'fallback-relay rule present (summary may back a never-sent deliverable)')
   assert.ok(FOLD_SUMMARY_INSTRUCTION.includes('cite its conclusions, not restate'), 'delivered-report citation rule present (Outcomes cites, never restates)')
   assert.ok(FOLD_SUMMARY_INSTRUCTION.includes('paths verbatim'), 'anchor-precision rule present (anchors double as recall grep keywords)')
+  assert.ok(FOLD_SUMMARY_INSTRUCTION.includes('exempt from these caps'), 'user-inputs section is exempt from the caps, not in conflict with them')
+  assert.ok(FOLD_SUMMARY_INSTRUCTION.includes('stay grep-able later'), 'changes are durable grep-able artifacts; commands belong to What happened')
   // Continuity-checkpoint sections contradict the fold's CLOSED-task contract
   // (they belong to the stock full-context instruction, not to folds).
   for (const banned of ['Pending Jobs', 'Current Work', 'Next Step', 'Primary Request']) {
