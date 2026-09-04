@@ -3,6 +3,12 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.5.2 — relay instruction moved to its own line (2026-09-04)
+
+- **Fix**: in `task_fold`'s success output, the relay instruction was appended
+  to the last span-preview line with only a space, reading as if it were part
+  of the folded message. It now starts on its own line after the preview.
+
 ## 0.5.1 — span preview marks original line breaks with ⏎ (2026-09-04)
 
 - **Fix**: preview lines flattened ALL whitespace, so multi-line tool results
