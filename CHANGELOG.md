@@ -3,6 +3,28 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.19.0 — symmetric fold bookends, per-session artifacts, head+tail previews (2026-09-05)
+
+- **Features**: a fold's archive now spans the "Task begun" result through
+  the "Task ended" result — result bookends on both sides. The begin call
+  and its opening reasoning stay live on the surface as the task's
+  bookmark, so a folded task shows its begin call with no visible result:
+  the fold's summary node stands in for it. If the begin result is missing
+  or already shadowed by auto-compaction, the plan falls back to the 0.18
+  call-anchored span instead of dropping the fold. Every model-facing
+  surface states the new boundary — fold-summary instruction, task_begin /
+  task_end / fold_recall descriptions, the system-prompt section — and the
+  Fold archive metadata line records it explicitly (span: "Task begun"
+  result ... "Task ended" result).
+- **Behavior**: span artifacts are written into a per-session subdirectory
+  (%TEMP%\taskfold-artifacts\<session>\<name>-<stamp>.jsonl), so
+  concurrent sessions never share a directory or leak task names to each
+  other; a missing session key falls back to the flat 0.18 layout.
+- **Previews**: over-cap span previews keep a head+tail window — head 25,
+  an elision pointer, tail 4 with true line numbers — and the budgeted
+  inline preview reserves its tail share first, so a span's close is
+  visible whenever any preview is.
+
 ## 0.18.3 — prompt-text corrections across all four model-facing surfaces (2026-09-04)
 
 - **Fixes**: a full prompt audit tightened every surface the model sees.
