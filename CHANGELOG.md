@@ -3,6 +3,17 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.16.0 — fold region is exactly begin..end, deliverable stays on the surface (2026-09-04)
+
+- **Behavior**: the deferred fold's region is now [begin anchor .. the
+  task_end result's own seq] INCLUSIVE — previously it ran to the last
+  surface node at fold time, sweeping in the deliverable and any post-end
+  steps. Everything written after the end (the report, probes, later turns)
+  stays on the surface untouched; a later task's own [begin..end] region
+  swallows those leftovers in turn. The deliverable gate is unchanged (fold
+  still fires only at the first step boundary after the deliverable lands);
+  if the close result itself was shadowed by AUTO compaction the entry drops.
+
 ## 0.15.2 — fix crash: appended notice messages need a source (2026-09-04)
 
 - **Fix**: v0.15.1's same-request notice appended bare `{role, content}`
