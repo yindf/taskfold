@@ -3,6 +3,16 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.7.0 — JSONL artifacts slim to role + content (2026-09-04)
+
+- **Breaking (artifact shape only)**: each JSONL line is now the message
+  reduced to `{role, content}` — full original content blocks, no host
+  provenance metadata (`source`, `replayState` with provider/model/responseId,
+  message ids). Recall serves content recovery; audit metadata stays in the
+  durable event log. Lines get shorter and easier to read back before the read
+  tool's truncation. Preview/line-number contract unchanged; existing `.jsonl`
+  artifacts with metadata remain valid JSONL and still parse.
+
 ## 0.6.1 — pwsh brief falls back to the command when description is missing (2026-09-04)
 
 - **Fix**: `description` is model-provided and can be absent or empty; the
