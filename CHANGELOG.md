@@ -3,6 +3,15 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.18.2 — Fold archive preview renders as a fenced code block (2026-09-04)
+
+- **Fix**: the archive section used single newlines between preview lines;
+  markdown renderers collapse single line breaks into one paragraph, so the
+  whole preview read as a mashed blob. The metadata bullet now sits after a
+  blank line and the span preview lives in a fenced code block, which
+  preserves the one-message-per-line layout everywhere (GUI, model context,
+  plain text).
+
 ## 0.18.1 — budget-aware Fold archive preview (small spans fold again) (2026-09-04)
 
 - **Fix**: 0.18.0's unconditional 30-line preview made small spans' framed
