@@ -3,6 +3,14 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.11.0 — runtime-context snapshots read harness: in the preview (2026-09-04)
+
+- **Features**: plugin-injected messages (runtime-context snapshots, sandbox
+  and approval policy lines, lifecycle nudges) arrive as user-role messages;
+  the preview now labels them `NN harness: …` via their `source.kind ===
+  'plugin'` provenance. Three-way distinction at a glance: `user:` genuine
+  human input, `tool:` tool results, `harness:` environment snapshots.
+
 ## 0.10.0 — preview distinguishes tool results from user input (2026-09-04)
 
 - **Features**: harness tool results arrive as user-role messages, which made
