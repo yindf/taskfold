@@ -3,6 +3,17 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.15.2 — fix crash: appended notice messages need a source (2026-09-04)
+
+- **Fix**: v0.15.1's same-request notice appended bare `{role, content}`
+  messages to the pre-step decision. The host commits every decision message
+  as a user/message event, and its runtime-context projection then reads
+  `message.source.kind` on each — the missing `source` crashed every step
+  with "Cannot read properties of undefined (reading 'kind')". Notice
+  messages now carry `source: {kind: 'plugin', plugin: 'dsh-taskfold'}`: not
+  the system-prompt snapshots' identity (never suppressed), and the notice —
+  including its artifact path — survives durably in history.
+
 ## 0.15.1 — fold notices arrive in the same request as the fold (2026-09-04)
 
 - **Fix**: the host assembles a step's context BEFORE dispatching the
