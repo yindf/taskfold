@@ -16,9 +16,9 @@ const TEXT_CLIP = 80
 const LINE_CLIP = 200
 
 function clip(text, max) {
-  // Newlines become a visible ⏎ marker: one preview line must stay one line,
+  // Newlines become a visible ↵ marker: one preview line must stay one line,
   // but the model should still see where the original line breaks were.
-  const flat = String(text).replace(/\s*\n+\s*/g, ' ⏎ ').replace(/\s+/g, ' ').trim()
+  const flat = String(text).replace(/\s*\n+\s*/g, ' ↵ ').replace(/\s+/g, ' ').trim()
   return flat.length > max ? flat.slice(0, max - 1) + '…' : flat
 }
 
@@ -117,7 +117,7 @@ export function blockBrief(block, calls) {
     }
     const call = calls !== undefined && typeof block.toolCallId === 'string' ? calls.get(block.toolCallId) : undefined
     const brief = call === undefined ? clip(inner, TEXT_CLIP) : resultBrief(call.name, inner)
-    return '⇐' + (block.isError === true ? 'ERROR: ' : '') + brief
+    return '←' + (block.isError === true ? 'ERROR: ' : '') + brief
   }
   return '[' + String(block.type === undefined ? 'block' : block.type) + ']'
 }

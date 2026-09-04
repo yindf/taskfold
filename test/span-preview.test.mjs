@@ -30,12 +30,12 @@ function span() {
 }
 
 test('blockBrief: one fragment per block type, whitespace flattened, long text clipped', () => {
-  assert.equal(blockBrief({ type: 'text', text: 'a\n  b' }), 'a ⏎ b')
-  assert.equal(blockBrief({ type: 'text', text: 'para one\n\npara two' }), 'para one ⏎ para two', 'original line breaks become a visible marker')
+  assert.equal(blockBrief({ type: 'text', text: 'a\n  b' }), 'a ↵ b')
+  assert.equal(blockBrief({ type: 'text', text: 'para one\n\npara two' }), 'para one ↵ para two', 'original line breaks become a visible marker')
   assert.equal(blockBrief({ type: 'reasoning', text: 'think' }), '[think] think')
   assert.equal(blockBrief({ type: 'tool-call', name: 'grep', arguments: '{"pattern":"x"}' }), '→grep "x"')
-  assert.equal(blockBrief({ type: 'tool-result', content: [{ type: 'text', text: 'Found 2 matches' }] }), '⇐Found 2 matches')
-  assert.equal(blockBrief({ type: 'tool-result', content: [{ type: 'text', text: 'boom' }], isError: true }), '⇐ERROR: boom')
+  assert.equal(blockBrief({ type: 'tool-result', content: [{ type: 'text', text: 'Found 2 matches' }] }), '←Found 2 matches')
+  assert.equal(blockBrief({ type: 'tool-result', content: [{ type: 'text', text: 'boom' }], isError: true }), '←ERROR: boom')
   assert.equal(blockBrief({ type: 'future-block' }), '[future-block]')
   assert.equal(blockBrief(null), '?')
   const long = blockBrief({ type: 'text', text: 'x'.repeat(200) })
@@ -45,7 +45,7 @@ test('blockBrief: one fragment per block type, whitespace flattened, long text c
 test('messagePreviewLine: numbered, role-prefixed, single line, capped length', () => {
   const line = messagePreviewLine(span()[1], 2)
   assert.ok(line.startsWith('  2 assistant: '), '1-based padded number + role')
-  assert.ok(line.includes('[think] Let me analyze the new log: ⏎ multiline'), 'newlines render as ⏎, still one line')
+  assert.ok(line.includes('[think] Let me analyze the new log: ↵ multiline'), 'newlines render as ↵, still one line')
   assert.ok(line.includes('→grep "balanced"'), 'tool-call fragment present')
   assert.ok(!line.includes('\n'), 'never a raw newline')
   assert.ok(messagePreviewLine({ role: 'user', content: [] }, 1).endsWith('(empty)'), 'empty content marked')
@@ -58,7 +58,7 @@ test('renderSpanPreview: header counts messages, cap collapses the tail with a p
   assert.equal(lines.length, 5, 'header + 3 capped lines + overflow')
   assert.equal(lines[4], '… +1 more messages — read the artifact file for the rest.')
   assert.deepEqual(renderSpanPreview([]), ['Span preview: (empty)'])
-  assert.equal(renderSpanPreview(span())[1].startsWith('  1 user: fix the fold boundary ⏎ please'), true, 'default cap 30 keeps all of a small span')
+  assert.equal(renderSpanPreview(span())[1].startsWith('  1 user: fix the fold boundary ↵ please'), true, 'default cap 30 keeps all of a small span')
 })
 
 test('writeSpanArtifact: JSONL file, one message per line, parseable back to the exact span', () => {
@@ -98,8 +98,8 @@ test('collectToolCalls + blockBrief correlation: result briefs match the calling
   ]
   const calls = collectToolCalls(span2)
   assert.equal(calls.get('c9').name, 'grep')
-  assert.equal(blockBrief(span2[1].content[0], calls), '⇐5 matches · 1 file')
-  assert.equal(blockBrief(span2[1].content[0]), '⇐Found 5 matches ⏎ C:\\a\\f.mjs:1: x', 'without the map the generic excerpt stays')
+  assert.equal(blockBrief(span2[1].content[0], calls), '←5 matches · 1 file')
+  assert.equal(blockBrief(span2[1].content[0]), '←Found 5 matches ↵ C:\\a\\f.mjs:1: x', 'without the map the generic excerpt stays')
 })
 
 test('writeSpanArtifact: provenance metadata is stripped, content kept whole', () => {
