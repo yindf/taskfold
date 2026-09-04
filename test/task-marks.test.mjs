@@ -319,7 +319,8 @@ test('FOLD_SUMMARY_INSTRUCTION: five-section structure with user-inputs and pitf
   assert.ok(FOLD_SUMMARY_INSTRUCTION.includes('ONE FOLDED SPAN'))
   assert.ok(FOLD_SUMMARY_INSTRUCTION.includes('especially corrections'), 'user feedback rule present')
   assert.ok(FOLD_SUMMARY_INSTRUCTION.includes('why something failed'), 'pitfall-cause rule present')
-  assert.ok(FOLD_SUMMARY_INSTRUCTION.includes('closing report'), 'relay-to-user rule present (fold summary doubles as the user report basis)')
+  assert.ok(FOLD_SUMMARY_INSTRUCTION.includes('relay'), 'fallback-relay rule present (summary may back a never-sent deliverable)')
+  assert.ok(FOLD_SUMMARY_INSTRUCTION.includes('cite its conclusions, not restate'), 'delivered-report citation rule present (Outcomes cites, never restates)')
   assert.ok(FOLD_SUMMARY_INSTRUCTION.includes('paths verbatim'), 'anchor-precision rule present (anchors double as recall grep keywords)')
   // Continuity-checkpoint sections contradict the fold's CLOSED-task contract
   // (they belong to the stock full-context instruction, not to folds).
