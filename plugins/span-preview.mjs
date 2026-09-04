@@ -154,6 +154,33 @@ export function renderSpanPreview(messages, maxLines) {
   return lines
 }
 
+// Budget-aware preview for the Fold archive section inside a summary node.
+// The engine REJECTS a fold whose framed summary is not smaller than the
+// shadowed span, so the whole appendix (metadata bullet + preview) must stay
+// a small FRACTION of the span: the preview is trimmed to ~15% of the span's
+// estimated chars (minus the metadata line), never exceeding the 30-line
+// cap. Tiny spans may end up with no preview lines at all — just the header
+// pointing at the artifact, which is always complete.
+export function renderArchivePreview(messages) {
+  if (!Array.isArray(messages) || messages.length === 0) return ['Span preview: (empty)']
+  const header = 'Span preview (' + messages.length + ' messages, one per line — same order/numbering as the JSONL artifact):'
+  const estChars = JSON.stringify(messages).length
+  let budget = Math.floor(estChars * 0.15) - 220 - header.length
+  if (budget < 80) return [header, '… span too small to preview inline — read the artifact file.']
+  const calls = collectToolCalls(messages)
+  const lines = [header]
+  let shown = 0
+  for (let i = 0; i < messages.length && i < 30; i += 1) {
+    const line = messagePreviewLine(messages[i], i + 1, calls)
+    if (line.length > budget && shown > 0) break
+    lines.push(line)
+    budget -= line.length
+    shown += 1
+  }
+  if (messages.length > shown) lines.push('… +' + (messages.length - shown) + ' more messages — read the artifact file for the rest.')
+  return lines
+}
+
 // Artifact writer: JSONL, one message per line, in preview order. Each line
 // is the message slimmed to {role, content} — the full original content
 // blocks, without host provenance metadata (source/replayState/id): recall

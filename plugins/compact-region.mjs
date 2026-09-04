@@ -67,7 +67,7 @@ import nodeUrl from 'node:url'
 
 // Shared span-preview/JSONL helpers: preview line N and artifact line N are
 // derived from the same message, so numbering maps both ways.
-import { renderSpanPreview, writeSpanArtifact } from './span-preview.mjs'
+import { renderArchivePreview, writeSpanArtifact } from './span-preview.mjs'
 
 /** Session-projection key under which the open-mark stack is published. */
 export const TASK_MARKS_KEY = 'taskMarks'
@@ -671,7 +671,7 @@ export default {
             const file = writeSpanArtifact(input.messages, name)
             if (file !== undefined) {
               const section = '\n\n## Fold archive\n- fold #' + foldNo + ' · originals (JSONL, one message per line): ' + file + '\n'
-                + renderSpanPreview(input.messages).join('\n')
+                + renderArchivePreview(input.messages).join('\n')
               const last = withFooter[withFooter.length - 1]
               withFooter[withFooter.length - 1] = { ...last, text: last.text.replace(/\s+$/, '') + section }
             }

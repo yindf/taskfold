@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import nodeFs from 'node:fs'
 import nodePath from 'node:path'
 import nodeOs from 'node:os'
-import { blockBrief, messagePreviewLine, renderSpanPreview, writeSpanArtifact, callBrief, resultBrief, collectToolCalls } from '../plugins/span-preview.mjs'
+import { blockBrief, messagePreviewLine, renderSpanPreview, writeSpanArtifact, callBrief, resultBrief, collectToolCalls, renderArchivePreview } from '../plugins/span-preview.mjs'
 
 /** Shape-accurate request messages (the same blocks deriveEventMessage yields). */
 function span() {
@@ -125,4 +125,22 @@ test('writeSpanArtifact: provenance metadata is stripped, content kept whole', (
     { role: 'user', content: [{ type: 'tool-result', toolCallId: 'c1', content: [{ type: 'text', text: 'ok' }] }] }
   ], 'only role + content survive')
   nodeFs.rmSync(file)
+})
+
+test('renderArchivePreview: budget-aware — small spans get no inline lines, large spans get the full capped preview', () => {
+  const tiny = span()
+  const small = renderArchivePreview(tiny)
+  assert.ok(small[0].startsWith('Span preview (4 messages'), 'header present')
+  assert.ok(small.length <= 2 && /too small to preview inline|artifact file/.test(small[1]), 'tiny span preview degrades to a pointer')
+  const big = []
+  for (let i = 0; i < 60; i += 1) {
+    big.push({ role: 'user', content: [{ type: 'text', text: 'request ' + i + ' '.repeat(400) }] })
+    big.push({ role: 'assistant', content: [{ type: 'text', text: 'answer ' + i + ' '.repeat(400) }] })
+  }
+  const large = renderArchivePreview(big)
+  assert.ok(large.length > 5, 'large span keeps substantial preview lines')
+  assert.ok(large[large.length - 1].startsWith('… +'), 'overflow pointer for the rest')
+  const totalChars = large.join('\n').length
+  const estChars = JSON.stringify(big).length
+  assert.ok(totalChars < estChars * 0.15 + 400, 'preview stays a small fraction of the span')
 })
