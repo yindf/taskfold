@@ -3,6 +3,17 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.9.0 — teach the model the recall path (2026-09-04)
+
+- **Prompt**: the lifecycle section now carries the full recall recipe —
+  `list_folds` (title + fold number index) → `fold_recall({ fold: N })`
+  (regenerates the span's original messages as JSONL) → read/grep it; when a
+  fold summary lacks a needed detail, recall instead of guessing or asking
+  the user.
+- **Prompt**: fold summaries keep their anchors (file paths, commands, error
+  strings) precise — paths verbatim — so they answer most questions alone and
+  double as grep keywords when recall is needed.
+
 ## 0.8.0 — common preview glyphs: ← for results, ↵ for line breaks (2026-09-04)
 
 - **Fix**: the preview used rare glyphs that read oddly (hollow double-stroke
