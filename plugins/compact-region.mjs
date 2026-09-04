@@ -67,7 +67,7 @@ import nodeUrl from 'node:url'
 
 // Shared span-preview/JSONL helpers: preview line N and artifact line N are
 // derived from the same message, so numbering maps both ways.
-import { writeSpanArtifact } from './span-preview.mjs'
+import { renderSpanPreview, writeSpanArtifact } from './span-preview.mjs'
 
 /** Session-projection key under which the open-mark stack is published. */
 export const TASK_MARKS_KEY = 'taskMarks'
@@ -646,16 +646,20 @@ export default {
           const rawOutput = assembler.blocks()
           const summary = rawOutput.filter((b) => b !== null && typeof b === 'object' && b.type === 'text' && typeof b.text === 'string')
           if (!summary.some((b) => b.text.trim().length > 0)) throw new Error('summarization produced no text summary content')
-          // FOLD METADATA EMBEDDED IN THE SUMMARY NODE (product ruling): this
-          // hook is the last stop before the engine commits the node, and it
-          // owns the summary text — so the fold number (existing summaries in
-          // THIS session + 1; per-session counters, the event-log lock makes
-          // the fold serial) and the artifact path (input.messages IS the
-          // exact span) are computed HERE and appended as a footer line. The
-          // committed node then carries its own recall handles; no separate
-          // notice message is injected at all. If the engine later rejects
-          // the commit, the pre-written artifact becomes an orphan temp
-          // file — harmless.
+          // FOLD ARCHIVE SECTION EMBEDDED IN THE SUMMARY NODE (product
+          // ruling): this hook is the last stop before the engine commits,
+          // and it owns the summary text — so the fold number (existing
+          // summaries in THIS session + 1; per-session counters, the
+          // event-log lock makes the fold serial) and the artifact
+          // (input.messages IS the exact span) are computed HERE and
+          // appended as a section formatted like the summary's own five:
+          //   ## Fold archive
+          //   - fold #N · originals (JSONL, one message per line): <path>
+          //   + the per-message span preview (preview line N = artifact
+          //     line N). The committed node then carries its own recall
+          //     handles; no separate notice message is injected at all. If
+          //     the engine later rejects the commit, the pre-written
+          //     artifact becomes an orphan temp file — harmless.
           const withFooter = [...summary]
           if (withFooter.length > 0) {
             let foldNo = 0
@@ -663,10 +667,13 @@ export default {
               if (e !== null && typeof e === 'object' && e.type === 'compaction/summary') foldNo += 1
             }
             foldNo += 1
-            const file = writeSpanArtifact(input.messages, typeof closingName === 'string' && closingName.length > 0 ? closingName : 'fold')
+            const name = typeof closingName === 'string' && closingName.length > 0 ? closingName : 'fold'
+            const file = writeSpanArtifact(input.messages, name)
             if (file !== undefined) {
+              const section = '\n\n## Fold archive\n- fold #' + foldNo + ' · originals (JSONL, one message per line): ' + file + '\n'
+                + renderSpanPreview(input.messages).join('\n')
               const last = withFooter[withFooter.length - 1]
-              withFooter[withFooter.length - 1] = { ...last, text: last.text.replace(/\s+$/, '') + '\n\n[fold #' + foldNo + ' · originals (JSONL, one message per line): ' + file + ']' }
+              withFooter[withFooter.length - 1] = { ...last, text: last.text.replace(/\s+$/, '') + section }
             }
           }
           return {
@@ -955,7 +962,7 @@ export default {
 
     const taskEnd = {
       name: 'task_end',
-      description: 'End the INNERMOST open task by name: it closes the task and QUEUES archival — the span folds AUTOMATICALLY at the next step boundary after the task\u0027s deliverable/report text lands (possibly mid-turn). So: finish the work, call task_end, then deliver the report in the same turn with full context — folding never precedes a deliverable. Folds are system-executed: the committed summary node itself ends with a footer line carrying the fold number and the artifact path (JSONL, one message per line) — read/grep it to recall the originals. LIFO: newer open tasks block older ones; a blocked or unknown name fails and changes nothing (close the newer task first). Too-small spans close without folding; failed auto-folds retry at every step boundary. Failure outcomes are explained in the result; follow it. Call alone in a step.',
+      description: 'End the INNERMOST open task by name: it closes the task and QUEUES archival — the span folds AUTOMATICALLY at the next step boundary after the task\u0027s deliverable/report text lands (possibly mid-turn). So: finish the work, call task_end, then deliver the report in the same turn with full context — folding never precedes a deliverable. Folds are system-executed: the committed summary node ends with a Fold archive section (same format as the summary sections) carrying the fold number, the artifact path (JSONL, one message per line), and the per-message span preview. LIFO: newer open tasks block older ones; a blocked or unknown name fails and changes nothing (close the newer task first). Too-small spans close without folding; failed auto-folds retry at every step boundary. Failure outcomes are explained in the result; follow it. Call alone in a step.',
       parameters: {
         type: 'object',
         properties: {
@@ -1030,7 +1037,7 @@ export default {
     ctx.systemPrompt.section({
       name: 'task-marker-compaction',
       order: 650,
-      text: 'MANDATORY task lifecycle discipline: every discrete task MUST be wrapped in task marks. A task is work that produces a verifiable outcome (a fix, a module, an analysis, a delegated review); a single read/grep/probe is a step, not a task — never open a mark for a step, and when in doubt, treat the work as a task (a small fold costs one summary node; an unfolded task costs a degraded context). Before a task, call task_begin({ name }) alone in a step. The moment its work is done, call task_end({ name }) alone in a step: it ends the task and QUEUES archival — then deliver the task\u0027s report or deliverable (to the user, or a subagent\u0027s report to its parent) in the SAME turn, written with FULL context while every detail is still on the surface. The fold itself happens AUTOMATICALLY at the next step boundary after your deliverable lands — possibly mid-turn — so folding never precedes a deliverable and the details you deliver from are never compressed. The mark is a bookmark, not a deadline: while waiting on a background job or user reply, leave it open and do other work; fold when the wait resolves. Multi-part work MUST be split into nested subtasks (innermost closes first); a long detour or dead-end exploration inside a task is one such part — wrap it as a short subtask and close it. When a new task depends on an earlier folded task\u0027s details, recall that fold (list_folds → fold_recall → read/grep) before starting. Folded details are never lost: list_folds → fold_recall({ fold }) → read/grep the artifact. Recall on demand — when a summary\u0027s anchors fail to answer a concrete question the work or the report needs; never guess, and never ask the user before recalling; never recall preemptively. Never restate a folded span from memory; never track message positions yourself. Each fold summary node ends with a footer line carrying its fold number and artifact path. Runtime context carries lifecycle nudges — treat them as directives and act on them.'
+      text: 'MANDATORY task lifecycle discipline: every discrete task MUST be wrapped in task marks. A task is work that produces a verifiable outcome (a fix, a module, an analysis, a delegated review); a single read/grep/probe is a step, not a task — never open a mark for a step, and when in doubt, treat the work as a task (a small fold costs one summary node; an unfolded task costs a degraded context). Before a task, call task_begin({ name }) alone in a step. The moment its work is done, call task_end({ name }) alone in a step: it ends the task and QUEUES archival — then deliver the task\u0027s report or deliverable (to the user, or a subagent\u0027s report to its parent) in the SAME turn, written with FULL context while every detail is still on the surface. The fold itself happens AUTOMATICALLY at the next step boundary after your deliverable lands — possibly mid-turn — so folding never precedes a deliverable and the details you deliver from are never compressed. The mark is a bookmark, not a deadline: while waiting on a background job or user reply, leave it open and do other work; fold when the wait resolves. Multi-part work MUST be split into nested subtasks (innermost closes first); a long detour or dead-end exploration inside a task is one such part — wrap it as a short subtask and close it. When a new task depends on an earlier folded task\u0027s details, recall that fold (list_folds → fold_recall → read/grep) before starting. Folded details are never lost: list_folds → fold_recall({ fold }) → read/grep the artifact. Recall on demand — when a summary\u0027s anchors fail to answer a concrete question the work or the report needs; never guess, and never ask the user before recalling; never recall preemptively. Never restate a folded span from memory; never track message positions yourself. Each fold summary node ends with a Fold archive section (fold number, artifact path, per-message preview). Runtime context carries lifecycle nudges — treat them as directives and act on them.'
     })
 
     const TASK_TOOL_RE = /^(task_begin|task_end|task_fold|list_folds|fold_recall|todo_write)$/
