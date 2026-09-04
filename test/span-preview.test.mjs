@@ -59,6 +59,8 @@ test('messagePreviewLine: all-tool-result messages label as tool, user text stay
   assert.ok(userLine.startsWith('  3 user: Current runtime context'), 'genuine user text keeps user:')
   const mixed = messagePreviewLine({ role: 'user', content: [{ type: 'text', text: 'note' }, { type: 'tool-result', toolCallId: 'c1', content: [{ type: 'text', text: 'r' }] }] }, 4)
   assert.ok(mixed.startsWith('  4 user: '), 'mixed blocks keep the original role label')
+  const snap = messagePreviewLine({ role: 'user', content: [{ type: 'text', text: 'Current runtime context. This snapshot supersedes…' }], source: { kind: 'plugin' } }, 3)
+  assert.ok(snap.startsWith('  3 harness: Current runtime context'), 'plugin-injected snapshots read harness:')
 })
 
 test('renderSpanPreview: header counts messages, cap collapses the tail with a pointer', () => {

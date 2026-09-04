@@ -125,15 +125,17 @@ export function blockBrief(block, calls) {
 // One preview line per message: `NN role: fragments`. The line number matches
 // the message's 1-based position in the span — and its line in the JSONL
 // artifact written by writeSpanArtifact.
-// Role label: harness tool results arrive as user-role messages, but the
-// preview distinguishes them — a message whose blocks are ALL tool-results
-// reads `tool:`, so genuine user input (and runtime-context snapshots) keeps
-// a visibly different `user:` label.
+// Role label: harness tool results arrive as user-role messages, and so do
+// plugin-injected runtime-context snapshots — the preview distinguishes both
+// from genuine user input. All-tool-result messages read `tool:`; messages
+// whose source.kind is 'plugin' (runtime-context snapshots and the like) read
+// `harness:`; everything else keeps its wire role.
 export function messagePreviewLine(message, index, calls) {
   const role = message !== null && typeof message === 'object' && typeof message.role === 'string' ? message.role : '?'
   const blocks = message !== null && typeof message === 'object' && Array.isArray(message.content) ? message.content : []
   const allToolResults = blocks.length > 0 && blocks.every((b) => b !== null && typeof b === 'object' && b.type === 'tool-result')
-  const label = allToolResults ? 'tool' : role
+  const fromPlugin = message !== null && typeof message === 'object' && message.source !== null && typeof message.source === 'object' && message.source.kind === 'plugin'
+  const label = allToolResults ? 'tool' : fromPlugin ? 'harness' : role
   const joined = blocks.map((b) => blockBrief(b, calls)).join(' ')
   const body = joined.length > 0 ? joined : '(empty)'
   const numbered = String(index).padStart(3, ' ') + ' ' + label + ': ' + body
