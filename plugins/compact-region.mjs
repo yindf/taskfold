@@ -40,9 +40,11 @@
  * taskNameFromText splits on, keeping the name render→parse round trip
  * lossless.
  *
- * The SYSTEM folds [begin assistant message .. last surface node before its
- * own step] INLINE from its execute context — the session loop is naturally
- * paused there. The span cannot contain its own ending, so the scoped
+ * The SYSTEM folds [begin assistant message .. close result] INCLUSIVE —
+ * begin..end exactly, nothing after the end. The deliverable (written after
+ * the close, with full context) and anything else after the end stay on the
+ * surface untouched; a later task's own [begin..end] swallows those
+ * leftovers in turn. The span cannot contain its own ending, so the scoped
  * summarizer instruction DECLARES completion ("this fold CLOSES the task
  * <name>") instead of showing it — owning the instruction removed the
  * constraint that once forced the two-phase end→commit split. The closing
@@ -207,9 +209,10 @@ function hasDeliverableText(event) {
  *   { action:'drop' }                begin anchor no longer on the surface
  *                                     (AUTO compaction shadowed it) — the
  *                                     task is already closed; discard
- *   { action:'fold', startSeq, endSeq, name }  gate open; region runs to the
- *                                     node before the successor anchor (or
- *                                     the last node), never below startSeq
+ *   { action:'fold', startSeq, endSeq, name }  gate open; region is
+ *                                     begin..end INCLUSIVE (endSeq = the
+ *                                     close result's own seq) — everything
+ *                                     after the end stays on the surface
  *
  * successorAnchors = seqs of begin anchors opened AFTER this entry's
  * foldResultSeq that are STILL open or pending (caller derives from
@@ -234,16 +237,15 @@ export function deferredArchivePlan(p, surfaceNodes, events, successorAnchors) {
   if (deliverableSeq === null) return { action: 'wait' }
   if (successor !== null && deliverableSeq > successor) return { action: 'defer' }
   if (nodes.indexOf(p.seq) === -1) return { action: 'drop' }
-  // END: last node strictly before the successor anchor, else the last node.
-  let endSeq = nodes[nodes.length - 1]
-  if (successor !== null) {
-    endSeq = null
-    for (const s of nodes) {
-      if (typeof s === 'number' && s < successor && s >= p.seq && s > (endSeq === null ? -1 : endSeq)) endSeq = s
-    }
-  }
-  if (endSeq === null || endSeq < p.seq) return { action: 'wait' }
-  return { action: 'fold', startSeq: p.seq, endSeq, name: p.name }
+  // END: the close result itself — the region is begin..end INCLUSIVE
+  // (product ruling). Everything written AFTER the end — the deliverable,
+  // probes, later turns — stays on the surface untouched; a LATER task's
+  // fold swallows those leftovers when its own [begin..end] spans them.
+  // If the close result is no longer on the surface, the span is gone
+  // (AUTO compaction shadowed it): drop, exactly like a shadowed anchor.
+  if (!Number.isInteger(foldResultSeq) || foldResultSeq < p.seq) return { action: 'wait' }
+  if (nodes.indexOf(foldResultSeq) === -1) return { action: 'drop' }
+  return { action: 'fold', startSeq: p.seq, endSeq: foldResultSeq, name: p.name }
 }
 
 /**

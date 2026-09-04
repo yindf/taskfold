@@ -269,25 +269,29 @@ test('deferredArchivePlan: the deliverable gate (wait / fold / defer / drop)', (
   // do NOT count as deliverables).
   const reasoningOnly = [assistantMsg(30, [{ type: 'reasoning', text: 'thinking…' }, { type: 'tool-call', id: 'c', name: 'read', arguments: '{}' }])]
   assert.equal(deferredArchivePlan(p, nodes, reasoningOnly, []).action, 'wait', 'reasoning/tool-call steps are not deliverables')
-  // ② Deliverable text landed, no successor anchor → fold to the last node.
+  // ② Deliverable text landed, no successor anchor → fold begin..end
+  // INCLUSIVE: endSeq is the close result's own seq; the deliverable and
+  // anything after it stay on the surface.
   const delivered = [...reasoningOnly, assistantMsg(35, [{ type: 'text', text: 'final report' }])]
   const plan = deferredArchivePlan(p, nodes, delivered, [])
   assert.equal(plan.action, 'fold')
   assert.equal(plan.startSeq, 10)
-  assert.equal(plan.endSeq, 35, 'no successor: region runs to the last node')
-  // ③ Successor anchor open → deliverable must precede it; END trims to
-  // the last node before the anchor (a deliverable AFTER the anchor is
-  // branch ④ — it belongs to the successor's span).
+  assert.equal(plan.endSeq, 25, 'region is begin..end inclusive — never the deliverable')
+  // ③ Successor anchor open with deliverable before it → same begin..end
+  // region (successors sit after the end by construction).
   const trimNodes = [10, 15, 20, 25, 28, 30, 35]
   const earlyDeliverable = [assistantMsg(28, [{ type: 'text', text: 'final report' }])]
   const withSuccessor = deferredArchivePlan(p, trimNodes, earlyDeliverable, [30])
   assert.equal(withSuccessor.action, 'fold')
-  assert.equal(withSuccessor.endSeq, 28, 'region ends before the successor anchor')
+  assert.equal(withSuccessor.endSeq, 25, 'region still ends at the close result')
   // ④ Deliverable AFTER the successor anchor (out-of-order close) → defer.
   const lateDeliverable = [assistantMsg(40, [{ type: 'text', text: 'late report' }])]
   assert.equal(deferredArchivePlan(p, [...trimNodes, 40], lateDeliverable, [30]).action, 'defer')
   // ⑤ Anchor shadowed (AUTO compaction took seq 10 off the surface) → drop.
   assert.equal(deferredArchivePlan(p, [15, 20, 25, 30], delivered, []).action, 'drop')
+  // ⑥ Close result shadowed (AUTO compaction took seq 25 off the surface) →
+  // the span's end is gone; drop rather than fold a truncated region.
+  assert.equal(deferredArchivePlan(p, [10, 15, 20, 30, 35], delivered, []).action, 'drop')
   // Empty-text deliverables do not count.
   const blank = [assistantMsg(30, [{ type: 'text', text: '   ' }])]
   assert.equal(deferredArchivePlan(p, nodes, blank, []).action, 'wait', 'whitespace-only text is not a deliverable')
