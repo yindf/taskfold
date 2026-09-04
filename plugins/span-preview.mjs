@@ -146,16 +146,19 @@ export function renderSpanPreview(messages, maxLines) {
   return lines
 }
 
-// Artifact writer: JSONL, one message per line, in preview order. Returns the
-// file path, or undefined when writing fails (the fold itself must not fail
-// because a diagnostic file could not be written).
+// Artifact writer: JSONL, one message per line, in preview order. Each line
+// is the message slimmed to {role, content} — the full original content
+// blocks, without host provenance metadata (source/replayState/id): recall
+// serves content recovery; audit metadata stays in the durable event log.
+// Returns the file path, or undefined when writing fails (the fold itself
+// must not fail because a diagnostic file could not be written).
 export function writeSpanArtifact(messages, nameKey) {
   try {
     const dir = nodePath.join(nodeOs.tmpdir(), 'taskfold-artifacts')
     nodeFs.mkdirSync(dir, { recursive: true })
     const slug = String(nameKey).replace(/[^\p{L}\p{N}_-]+/gu, '-').replace(/^-+|-+$/g, '').slice(0, 60)
     const file = nodePath.join(dir, (slug.length > 0 ? slug : 'artifact') + '-' + Date.now().toString(36) + '.jsonl')
-    const body = messages.map((m) => JSON.stringify(m)).join('\n') + '\n'
+    const body = messages.map((m) => JSON.stringify(m !== null && typeof m === 'object' ? { role: m.role, content: m.content } : m)).join('\n') + '\n'
     nodeFs.writeFileSync(file, body, 'utf8')
     return file
   } catch (err) {

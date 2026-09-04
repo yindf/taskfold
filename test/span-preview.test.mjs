@@ -101,3 +101,17 @@ test('collectToolCalls + blockBrief correlation: result briefs match the calling
   assert.equal(blockBrief(span2[1].content[0], calls), '⇐5 matches · 1 file')
   assert.equal(blockBrief(span2[1].content[0]), '⇐Found 5 matches ⏎ C:\\a\\f.mjs:1: x', 'without the map the generic excerpt stays')
 })
+
+test('writeSpanArtifact: provenance metadata is stripped, content kept whole', () => {
+  const messages = [
+    { role: 'assistant', content: [{ type: 'text', text: 'hi' }], source: { kind: 'model', replayState: { response: { id: 'r1' } } }, id: 'm1' },
+    { role: 'user', content: [{ type: 'tool-result', toolCallId: 'c1', content: [{ type: 'text', text: 'ok' }] }], source: { kind: 'tool', callId: 'c1' }, id: 'm2' }
+  ]
+  const file = writeSpanArtifact(messages, 'meta-strip-test')
+  const parsed = nodeFs.readFileSync(file, 'utf8').split('\n').filter((l) => l.length > 0).map((l) => JSON.parse(l))
+  assert.deepEqual(parsed, [
+    { role: 'assistant', content: [{ type: 'text', text: 'hi' }] },
+    { role: 'user', content: [{ type: 'tool-result', toolCallId: 'c1', content: [{ type: 'text', text: 'ok' }] }] }
+  ], 'only role + content survive')
+  nodeFs.rmSync(file)
+})
