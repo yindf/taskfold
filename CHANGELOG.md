@@ -3,6 +3,29 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.14.0 — full-deferred folds: queue on close, auto-fold after the deliverable (2026-09-04)
+
+- **Behavior (design `docs/design/deferred-report-fold.md` v5)**: `task_fold`
+  now closes the task and QUEUES archival; the span folds AUTOMATICALLY at
+  the next agent step boundary after the task's deliverable text lands
+  (possibly mid-turn). Every deliverable — user report or subagent report —
+  is written with full uncompressed context; folding never precedes it.
+- **Mechanism**: `taskMarks` state v9 adds `pendingArchives` (registered on
+  close, dropped when a compaction event shadows the anchor); the
+  `deferredArchivePlan` pure function implements the deliverable gate
+  (reasoning/tool-calls are not deliverables; out-of-order deliverables defer
+  behind the successor anchor; region ends before any still-open/pending
+  successor); an `agent/pre-step` handler folds gated entries innermost
+  first, re-reading state before each, with a 120s summarization signal guard.
+- **Escape hatch & safety**: calling task_fold again for a queued task forces
+  the fold immediately; a HOLD runtime-context warning appears while an
+  auto-fold keeps failing (engine busy etc.); too-small spans settle without
+  folding. `list_folds` titles deferred folds via the summary's `# <name>`
+  heading (in-flight-call correlation kept as the primary path).
+- **Cleanup**: `foldDecision` (superseded by closeTarget + deferredArchivePlan)
+  removed with its tests; tool and system-prompt copy rewritten for the new
+  contract. State v8 → v9 (mismatch = full replay, old logs byte-stable).
+
 ## 0.13.0 — deliver-then-fold contract (2026-09-04)
 
 - **Behavior**: the closing order is inverted and unified. When a task's work
