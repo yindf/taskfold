@@ -3,6 +3,13 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.5.1 — span preview marks original line breaks with ⏎ (2026-09-04)
+
+- **Fix**: preview lines flattened ALL whitespace, so multi-line tool results
+  read as if a line break were missing. Newlines inside a block now render as a
+  visible `⏎` marker — the preview stays one line per message, but the model
+  can see where the original line breaks were.
+
 ## 0.5.0 — span preview in fold output, JSONL artifacts (2026-09-04)
 
 - **Behavior**: `task_fold`'s result now carries a one-line-per-message
