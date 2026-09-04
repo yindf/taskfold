@@ -670,8 +670,12 @@ export default {
             const name = typeof closingName === 'string' && closingName.length > 0 ? closingName : 'fold'
             const file = writeSpanArtifact(input.messages, name)
             if (file !== undefined) {
-              const section = '\n\n## Fold archive\n- fold #' + foldNo + ' · originals (JSONL, one message per line): ' + file + '\n'
-                + renderArchivePreview(input.messages).join('\n')
+              // Markdown-safe formatting: single newlines collapse into one
+              // paragraph in every markdown renderer, which mashed the
+              // preview into a blob. A fenced code block preserves the
+              // per-line layout; a blank line separates the metadata bullet.
+              const section = '\n\n## Fold archive\n\n- fold #' + foldNo + ' · originals (JSONL, one message per line): ' + file + '\n\n```\n'
+                + renderArchivePreview(input.messages).join('\n') + '\n```'
               const last = withFooter[withFooter.length - 1]
               withFooter[withFooter.length - 1] = { ...last, text: last.text.replace(/\s+$/, '') + section }
             }
