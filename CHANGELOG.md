@@ -3,6 +3,23 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.17.0 — fold metadata lives inside the summary node; no notice messages (2026-09-04)
+
+- **Behavior**: the scoped summarize override — the last stop before the
+  engine commits — now computes the fold number (per-session summary count
+  + 1) and writes the JSONL artifact from `input.messages` (the engine's own
+  span derivation), then appends a footer line to the summary text:
+  `[fold #N · originals (JSONL, one message per line): <path>]`. The
+  committed summary node carries its own recall handles.
+- **Removed**: the separate one-shot fold-notice message and all its
+  machinery (pre-step message append, context-callback drain queue, plugin
+  source/id shaping) — the ordering, injection-timing, and message-shape
+  problems disappear with it. `foldRegion` reports tokens only; the
+  spanMessages helper is gone (the artifact is written inside summarize).
+- Prompts (task_end description, lifecycle section) updated to describe the
+  embedded footer. If the engine rejects a commit after summarize, the
+  pre-written artifact becomes an orphan temp file — harmless.
+
 ## 0.16.1 — fix corrupt session: notice messages need an id (2026-09-04)
 
 - **Fix**: the host commits every pre-step decision message as a
