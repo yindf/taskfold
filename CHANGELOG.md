@@ -3,6 +3,12 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.8.0 — common preview glyphs: ← for results, ↵ for line breaks (2026-09-04)
+
+- **Fix**: the preview used rare glyphs that read oddly (hollow double-stroke
+  `⇐`, and `⏎`). Tool results now use the common left arrow `←`, and original
+  line breaks render as `↵` (the return-key symbol). Tool calls keep `→`.
+
 ## 0.7.0 — JSONL artifacts slim to role + content (2026-09-04)
 
 - **Breaking (artifact shape only)**: each JSONL line is now the message
