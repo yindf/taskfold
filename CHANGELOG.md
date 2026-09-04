@@ -3,6 +3,27 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.13.0 — deliver-then-fold contract (2026-09-04)
+
+- **Behavior**: the closing order is inverted and unified. When a task's work
+  is done, the report or deliverable (to the user, or a subagent's report to
+  its parent) is written FIRST, with full context, in its own step — then
+  task_fold is called immediately, alone in a step, folding the span with the
+  deliverable included. This removes the fold-first/relay ordering that made
+  deliverables derive from compressed summaries (the subagent quality issue),
+  keeps done-state dwell at zero (no context interleaving, minimal KV-cache
+  invalidation), and absorbs the v0.12.0 delegation exemption into one rule.
+  Deliver and fold must be SEPARATE steps (a deliverable sharing the
+  task_fold message falls outside the fold).
+- `task_fold`'s result now carries a deviation check instead of a relay
+  instruction: only if the deliverable was never sent in an earlier step (and
+  no tasks remain open) does it direct writing one from the fold summaries.
+- Fold summaries: delivered reports inside the span are cited, not restated;
+  the relay rule stays as fallback for never-sent deliverables.
+- Mechanism unchanged (foldDecision/execute/boundary fallback identical to
+  0.12.0); design converged over a four-round adversarial review
+  (docs/design/lazy-fold.md).
+
 ## 0.12.0 — five-round prompt overhaul + delegation deliverable carve-out (2026-09-04)
 
 - **Prompt (five-round adversarial review, fully landed)**: granularity rule
