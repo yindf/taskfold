@@ -3,7 +3,7 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
-## 0.16.1 — fix corrupt session: notice messages need an id (unreleased draft 2026-09-04)
+## 0.16.1 — fix corrupt session: notice messages need an id (2026-09-04)
 
 - **Fix**: the host commits every pre-step decision message as a
   `user/message` session event VERBATIM, and load-time validation rejects a
