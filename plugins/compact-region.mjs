@@ -866,11 +866,22 @@ export default {
     }
 
     try {
-      ctx.on('agent/pre-step', (payload) => {
-        const agent = payload !== null && typeof payload === 'object' ? payload.agent : undefined
-        if (agent === undefined) return
-        const signal = payload !== null && typeof payload === 'object' && payload.signal !== undefined ? payload.signal : undefined
-        void processDeferredArchives(agent, signal).catch(() => { /* retried at the next pre-step */ })
+      // WATERFALL contract: a pre-step listener receives ({ agent, signal },
+      // next) and MUST return next() — returning undefined makes the host
+      // crash reading decision.kind, and skipping next() wedges the step.
+      // The engine's own AUTO compaction registers the same way and awaits
+      // its work inside the hook; guardedSignal bounds our fold attempts.
+      ctx.on('agent/pre-step', async (payload, next) => {
+        const pass = typeof next === 'function' ? () => next() : () => undefined
+        try {
+          const agent = payload !== null && typeof payload === 'object' ? payload.agent : undefined
+          if (agent === undefined) return pass()
+          const signal = payload !== null && typeof payload === 'object' && payload.signal !== undefined ? payload.signal : undefined
+          await processDeferredArchives(agent, signal)
+        } catch (err) {
+          // retried at the next pre-step; never wedge the step
+        }
+        return pass()
       })
     } catch (err) {
       // Hook unavailable in this host build: queued archives stay unfolded
