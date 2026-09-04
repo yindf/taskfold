@@ -3,6 +3,17 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.18.1 — budget-aware Fold archive preview (small spans fold again) (2026-09-04)
+
+- **Fix**: 0.18.0's unconditional 30-line preview made small spans' framed
+  summary exceed the shadowed content — the engine's "summary is not smaller"
+  check rejected the fold, which the plugin classified as a summary failure
+  and silently settled (observed live: a 497-token task never folded, no
+  warning). The archive preview now scales with the span: metadata +
+  preview stay under ~15% of the span's estimated size (30-line cap
+  unchanged); tiny spans get the metadata bullet plus a pointer to the
+  artifact instead of inline lines, and fold normally.
+
 ## 0.18.0 — Fold archive: a proper summary section with the span preview (2026-09-04)
 
 - **Features**: the metadata appended inside each committed summary node is
