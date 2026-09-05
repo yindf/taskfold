@@ -330,8 +330,13 @@ export function todoBridgeLine(openNames) {
  * pitfalls preserved as first-class sections (v2). Exported pure so tests
  * can pin the structure contract offline.
  */
-export const FOLD_SUMMARY_INSTRUCTION = [
-  'You are summarizing ONE FOLDED SPAN of a longer session. The messages above are exactly that span; your summary replaces them for the model that continues this session. The span opens just after the \'Task begun\' result and closes with the \'Task ended\' result — the begin call, its opening reasoning, and the \'Task begun\' result itself stay outside the span by design; do not treat their absence as missing work.',
+// Boundary semantics shared by BOTH envelopes below: what the span covers
+// and what deliberately stays outside it.
+const FOLD_BOUNDARY_RULE = 'The span opens just after the \'Task begun\' result and closes with the \'Task ended\' result — the begin call, its opening reasoning, and the \'Task begun\' result itself stay outside the span by design; do not treat their absence as missing work.'
+
+// The sections, structure, and rules every fold summary follows regardless of
+// envelope.
+export const FOLD_SUMMARY_CORE = [
   'Summarize ONLY what the span contains — what was done, tried, decided, and produced. Do NOT restate project background, architecture, goals, or context the messages merely assume: the continuing model already has all of that from outside the span.',
   'Output EXACTLY this structure, terse bullets, "(none)" for empty sections:',
   '## What happened',
@@ -353,6 +358,32 @@ export const FOLD_SUMMARY_INSTRUCTION = [
   '- If the deliverable was never sent, a later turn may relay this summary to the user as the task report\'s basis: keep every section accurate and human-readable. If the span already contains the delivered report, Outcomes should cite its conclusions, not restate them.',
   '- Do NOT mention summarization or compaction. Output only the summary text: no tool calls or other actions.'
 ].join('\n')
+
+/**
+ * Build the fold summarization instruction for one of TWO envelopes:
+ *  - prefix: false (span-only, the original envelope) — the request carries
+ *    ONLY the span messages, so the opening says exactly that.
+ *  - prefix: true (prefix-anchored envelope) — the request carries the whole
+ *    surface up to the span's end, so the opening must SCOPING the region by
+ *    its explicit lifecycle markers: from just after the "Task begun: NAME"
+ *    result through the "Task ended: NAME" result. The earlier conversation
+ *    is declared CONTEXT ONLY. This envelope makes the request a strict
+ *    prefix of the main conversation request → provider prefix-cache reuse
+ *    (experiment-measured ~97% cache hit vs 0% for span-only) and supplies
+ *    correct full paths (measured 0 path fabrications vs some for span-only).
+ */
+export function buildFoldInstruction(opts) {
+  const o = opts !== null && typeof opts === 'object' ? opts : {}
+  const name = typeof o.name === 'string' && o.name.length > 0 ? o.name : '<the task name>'
+  if (o.prefix === true) {
+    return 'You are summarizing ONE FOLDED SPAN of a longer session; your summary replaces that span for the model that continues this session. The messages above consist of two parts: EARLIER CONVERSATION, then THE TASK SPAN to fold. The boundary between them is explicit — the task span begins immediately after the result message \'Task begun: ' + name + '\' and ends with the result message \'Task ended: ' + name + '\' (the final lifecycle markers in the input). Summarize ONLY that final span. ' + FOLD_BOUNDARY_RULE + ' The earlier conversation before the \'Task begun\' result is CONTEXT ONLY: you may use it to resolve references and confirm full paths, but never summarize it, restate it, or fold any of it into a section — every section below describes the task span alone.'
+      + '\n' + FOLD_SUMMARY_CORE
+  }
+  return 'You are summarizing ONE FOLDED SPAN of a longer session. The messages above are exactly that span; your summary replaces them for the model that continues this session. ' + FOLD_BOUNDARY_RULE
+    + '\n' + FOLD_SUMMARY_CORE
+}
+
+export const FOLD_SUMMARY_INSTRUCTION = buildFoldInstruction({})
 
 // Stock (non-fold) compaction normally runs the host's terse checkpoint
 // instruction. Product ruling: checkpoints carry NO prompt-side caps and
@@ -716,9 +747,12 @@ export default {
     // Scoped summarizer engine: subclasses BasicCompactionEngine so that
     // regionDependencies()' dynamic dispatch reaches OUR summarize(), while
     // compactRegion's locking, validation, stability checks, and commit path
-    // stay stock. The LLM call replicates summarizeWithLlm's envelope (same
-    // replayed prefix → provider prefix-cache reuse; only the appended final
-    // instruction differs).
+    // stay stock. The LLM call uses the PREFIX-ANCHORED envelope when the
+    // closing declaration and surface allow it (surface prefix + span +
+    // scoping instruction → strict prefix of the main conversation request →
+    // provider prefix-cache reuse), falling back to the span-only envelope.
+    // A scope-adherence guard rejects any summary titled other than the
+    // closing task.
     async function buildScopedEngine() {
       const engineMod = await importHostPackage('@deepseek-ai/dsh-compaction-basic')
       const Base = engineMod.default !== undefined ? engineMod.default : engineMod.BasicCompactionEngine
@@ -744,15 +778,15 @@ export default {
             : undefined
           const target = configured ?? latest ?? agentTarget
           if (target === undefined) throw new Error('no provider/model available for scoped summarization')
-          // The fold caller (task_fold) stashed the task name it is closing
-          // in the per-session closingTasks map: the span's own tail cannot
-          // contain its ending (the executor's result event does not exist
-          // yet), so the instruction DECLARES the completion instead. It also
-          // sets the TITLE (the task name) and excludes lifecycle
-          // bookkeeping from the summary: task_begin / task_fold calls and
-          // results are the span's frame, not its content.
-          const closingName = closingTasks.get(agent.session.id)
-          const closing = typeof closingName === 'string' && closingName.length > 0
+          // The fold caller (task_end drain) stashed the closing declaration
+          // in the per-session closingTasks map: { name, startSeq, endSeq }.
+          // The name DECLARES the completion (the span's own tail cannot
+          // contain its ending yet), sets the TITLE, and scopes the
+          // prefix-anchored envelope; startSeq locates the span on the
+          // surface for the prefix slice.
+          const closingInfo = closingTasks.get(agent.session.id)
+          const closingName = closingInfo !== null && typeof closingInfo === 'object' && typeof closingInfo.name === 'string' ? closingInfo.name : ''
+          const closing = closingName.length > 0
             ? '\nThe task this span belongs to is named "' + closingName + '". Rules for this fold:\n'
               + '- Begin the summary with the heading line "# ' + closingName + '" — nothing before it. That heading prefixes the structure above: follow it with the five sections exactly as instructed.\n'
               + '- This fold CLOSES the task: no further work belongs to it, so do not report anything as unfinished or pending merely because of how the span ends — this very fold is the task\u0027s ending. Closed is not the same as succeeded: if the work ended in a genuine failure or dead end, report that honestly in Outcomes.\n'
@@ -761,12 +795,37 @@ export default {
           // Concrete per-fold budget: ~10% of the span's estimated tokens
           // (chars/4 heuristic), floored so tiny spans still get a usable
           // summary, ceilinged to stay inside the summarizer's maxTokens.
+          // Budget is computed from the SPAN alone — prefix context never
+          // inflates it.
           const estTokens = Math.max(1, Math.floor(JSON.stringify(input.messages).length / 4))
           const wordBudget = Math.min(4000, Math.max(150, Math.floor((estTokens * 0.1) / 1.35)))
           const budgetLine = '\nWord budget for THIS fold: at most ~' + wordBudget + ' words (≈10% of ~' + estTokens + ' estimated span tokens).'
-          const messages = [...input.messages, {
+          // PREFIX-ANCHORED ENVELOPE: prepend every surface node before the
+          // span so the request is a strict prefix of the main conversation
+          // request → provider prefix-cache reuse (~97% hit measured; the
+          // span-only envelope can never hit). Falls back to span-only on
+          // ANY anomaly: missing declaration, span not on the surface,
+          // derivation failure, or a pathological prefix size (a trimmed
+          // prefix would forfeit the cache anyway, so it is all-or-nothing).
+          let prefixMessages = []
+          if (closingInfo !== null && typeof closingInfo === 'object' && Number.isInteger(closingInfo.startSeq)
+            && typeof agent.session.deriveEventMessage === 'function' && typeof agent.session.eventAt === 'function') {
+            try {
+              const nodes = agent.session.surface.nodes
+              const startIdx = nodes.indexOf(closingInfo.startSeq)
+              if (startIdx > 0) {
+                const picked = []
+                for (let i = 0; i < startIdx; i += 1) {
+                  const m = agent.session.deriveEventMessage(agent.session.eventAt(nodes[i]))
+                  if (m !== null && m !== undefined) picked.push(m)
+                }
+                if (picked.length > 0 && JSON.stringify(picked).length <= 4000000) prefixMessages = picked
+              }
+            } catch (err) { prefixMessages = [] }
+          }
+          const messages = [...prefixMessages, ...input.messages, {
             role: 'user',
-            content: [{ type: 'text', text: FOLD_SUMMARY_INSTRUCTION + budgetLine + closing }]
+            content: [{ type: 'text', text: buildFoldInstruction({ prefix: prefixMessages.length > 0, name: closingName }) + budgetLine + closing }]
           }]
           const options = {
             provider: target.provider,
@@ -788,6 +847,17 @@ export default {
           const rawOutput = assembler.blocks()
           const summary = rawOutput.filter((b) => b !== null && typeof b === 'object' && b.type === 'text' && typeof b.text === 'string')
           if (!summary.some((b) => b.text.trim().length > 0)) throw new Error('summarization produced no text summary content')
+          // SCOPE ADHERENCE GUARD (prefix envelope): the instruction demands
+          // the heading '# <closingName>'; a summary titled anything else
+          // means the model folded the wrong region (or drifted into the
+          // earlier conversation). Fail loud → failure bucket → retried on a
+          // later boundary; never commit a mis-scoped summary.
+          if (closingName.length > 0) {
+            const firstText = summary.find((b) => b.text.trim().length > 0)
+            if (firstText !== undefined && firstText.text.trim().indexOf('# ' + closingName) !== 0) {
+              throw new Error('summary scope failure: expected the heading \'# ' + closingName + '\', got: ' + firstText.text.trim().slice(0, 80))
+            }
+          }
           // FOLD ARCHIVE SECTION EMBEDDED IN THE SUMMARY NODE (product
           // ruling): this hook is the last stop before the engine commits,
           // and it owns the summary text — so the fold number (existing
@@ -1007,7 +1077,7 @@ export default {
             return
           }
           try {
-            closingTasks.set(session.id, p.name)
+            closingTasks.set(session.id, { name: p.name, startSeq: plan.startSeq, endSeq: plan.endSeq })
             const result = await foldRegion(session, agent, engine, p.name, plan.startSeq, plan.endSeq, guardedSignal(signal))
             if (result === null) markArchiveSettled(session, p.seq)
             // No notice message is injected: the committed summary node

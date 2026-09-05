@@ -5,7 +5,7 @@
 //   node test/task-marks.test.mjs
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { applyTaskMarks, taskMarksStateSchema, closeTarget, validTaskName, todoBridgeLine, deferredArchivePlan, FOLD_SUMMARY_INSTRUCTION, DETAILED_CHECKPOINT_INSTRUCTION } from '../plugins/compact-region.mjs'
+import { applyTaskMarks, taskMarksStateSchema, closeTarget, validTaskName, todoBridgeLine, deferredArchivePlan, FOLD_SUMMARY_INSTRUCTION, DETAILED_CHECKPOINT_INSTRUCTION, buildFoldInstruction } from '../plugins/compact-region.mjs'
 
 /** assistant/message carrying tool-call blocks (shape per dsh-agent-loop). */
 function assistantCall(seq, calls) {
@@ -347,6 +347,28 @@ test('FOLD_SUMMARY_INSTRUCTION: five-section structure with user-inputs and pitf
   for (const banned of ['Pending Jobs', 'Current Work', 'Next Step', 'Primary Request']) {
     assert.ok(!FOLD_SUMMARY_INSTRUCTION.includes(banned), 'banned checkpoint section present: ' + banned)
   }
+})
+
+test('buildFoldInstruction: prefix envelope scopes the begin→end region explicitly', () => {
+  // The span-only variant IS the exported instruction (byte-identical).
+  assert.equal(buildFoldInstruction({}), FOLD_SUMMARY_INSTRUCTION)
+  assert.equal(buildFoldInstruction({ prefix: false, name: 'X' }), FOLD_SUMMARY_INSTRUCTION)
+  // The prefix variant declares the region by its explicit lifecycle markers.
+  const scoped = buildFoldInstruction({ prefix: true, name: '发布 v0' })
+  assert.ok(scoped.includes('EARLIER CONVERSATION'), 'two-part input declared')
+  assert.ok(scoped.includes('begins immediately after the result message \'Task begun: 发布 v0\''), 'begin marker named')
+  assert.ok(scoped.includes('ends with the result message \'Task ended: 发布 v0\''), 'end marker named')
+  assert.ok(scoped.includes('Summarize ONLY that final span'), 'only-the-span rule present')
+  assert.ok(scoped.includes('CONTEXT ONLY'), 'earlier conversation declared context-only')
+  assert.ok(scoped.includes('never summarize it, restate it, or fold any of it'), 'no-drift rule present')
+  // Both variants share the boundary rule, the five sections, and the rules.
+  for (const shared of ['stay outside the span by design', '## What happened', '## Outcomes', 'paths verbatim']) {
+    assert.ok(scoped.includes(shared), 'shared core present: ' + shared)
+    assert.ok(FOLD_SUMMARY_INSTRUCTION.includes(shared), 'shared core present in span-only: ' + shared)
+  }
+  // A missing name degrades to a placeholder, never to a broken sentence.
+  const anon = buildFoldInstruction({ prefix: true })
+  assert.ok(anon.includes('Task begun: <the task name>'), 'anonymous placeholder present')
 })
 
 test('DETAILED_CHECKPOINT_INSTRUCTION: uncapped, exhaustive, structure-preserving stock replacement', () => {
