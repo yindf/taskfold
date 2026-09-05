@@ -3,6 +3,38 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.23.0 — lenient scope guard, labeled span previews, slim fold_recall lines (2026-09-05)
+
+- **Fixes**: the scope-adherence guard now scores the summary's first
+  heading against the closing task name with a lenient similarity
+  (NFKC + typographic quote/dash folding, case/whitespace-insensitive,
+  best of sequence ratio and order-insensitive token overlap, threshold
+  0.6) instead of demanding a byte-exact `# NAME` prefix. The byte-exact
+  form turned cosmetic model behaviors — curly quotes for ASCII ones, a
+  translated heading in a non-English conversation — into scope failures,
+  and every scope failure re-summarizes the whole span on the next step
+  boundary (one live session burned 12 consecutive full-span fold calls
+  before an attempt happened to comply). The closing instruction now also
+  prints the required first line verbatim (`# NAME`, on its own line) with a
+  one-line copy rule — copy it, do not translate or reformat it, the summary
+  body may use any language — so the residual failures the retry exists for
+  are genuinely foreign headings — real drift into the earlier conversation.
+  New offline tests pin the comparison contract (test/fold-engine.test.mjs).
+- **Enhancement**: span-preview call fragments now prefer a human-authored
+  label carried in ANY tool call's arguments — `description` first (pwsh
+  already did this; subagent delegations get it too), then `name` (task
+  marks read `→task_begin(Fix fold guard)`, skills read `→skill(x)`) —
+  before falling back to clipped raw JSON. Reasoning blocks carry no label
+  field (`{type, text}` only), so `[think] …` excerpts stay as they are.
+- **Fixes**: fold_recall's line overload now slims the returned message to
+  `{role, content}` — the exact form the JSONL artifact writer uses — and
+  renders it as single-line JSON. The line result used to be the raw
+  derived event message, dragging host provenance (`source.provider`,
+  `source.model`, and a full `replayState.response` replay envelope) plus
+  pretty-print inflation into the tool result, even though the artifact
+  export path had been slimmed deliberately long ago. The file overload was
+  never affected; only the in-result line lookup bled metadata.
+
 ## 0.22.1 — code-review remediation: schema hardening, module split, dedup (2026-09-05)
 
 - **Fixes**: the taskMarks state schema now validates
