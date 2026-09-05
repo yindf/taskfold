@@ -1,6 +1,6 @@
 {
   "name": "dsh-taskfold",
-  "version": "0.23.0",
+  "version": "0.24.0",
   "description": "Keeps long coding-agent sessions lean: wrap work in named tasks and, when one is done, fold its whole span into a short titled summary. The conversation stays readable, context costs stay low, and every fold's original content can be read back on demand. For DeepSeek Harness.",
   "type": "module",
   "license": "MIT",

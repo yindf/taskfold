@@ -3,6 +3,35 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.24.0 — engine-built fold headings, nested-task-mark incentives (2026-09-05)
+
+- **Breaking-ish fix — heading construction replaces heading compliance**: the
+  fold engine now PREPENDS the exact `# <task name>` title line to the
+  summarizer's output itself (`prependFoldHeading`), and the closing
+  instruction tells the model to write NO title — open directly with the
+  `## What happened` section (a structural receipt: `opensWithSectionHeading`
+  rejects anything else). Live 0.23.0 data proved the similarity guard's core
+  assumption wrong: in Chinese conversations the summarizer translated the
+  heading 9+ times STRAIGHT THROUGH the printed verbatim-copy instruction
+  (each rejection re-summarizing the whole span for 30–70 s), because no cheap
+  string metric can rate a translation similar to its source. Construction
+  makes the heading byte-exact by definition and deletes the entire failure
+  class; fold titles in list_folds are now always the exact task names.
+  test/fold-engine.test.mjs rewritten for the construction contract.
+- **Enhancement — nested task marks get runtime incentives** (field finding:
+  even large jobs run as ONE flat mark — a 14-minute 4-PR review folded as a
+  single blob, because after the first task_begin the only live lifecycle
+  signal was the 20-round close-nag): (1) Nudge 3 `shouldSuggestDecomposition`
+  — while an open mark is 8–19 rounds old with ≥3 recent work calls, a HOLD
+  hint suggests wrapping the remaining distinct parts as nested subtasks
+  (innermost closes first, each part folds at its own close); it hands off
+  cleanly to the 20+ close-nag and never co-renders with it. (2) task_begin's
+  result text gains a nested-mark hint when the begin makes depth ≥ 2.
+  (3) The system prompt's nesting rule is promoted to its own passage with a
+  concrete review-shaped example. (4) The todo-bridge line now maps todo items
+  to nested marks explicitly. Tests for the new predicates in
+  task-marks.test.mjs.
+
 ## 0.23.0 — lenient scope guard, labeled span previews, slim fold_recall lines (2026-09-05)
 
 - **Fixes**: the scope-adherence guard now scores the summary's first
