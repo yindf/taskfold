@@ -341,17 +341,36 @@ function cmdRelease() {
   console.log('Release v' + version + ' fully pushed.')
 }
 
+// The remote branch release pushes must reconcile against: HEAD's upstream
+// when set, else the first of origin/master / origin/main that exists, else
+// '' (no divergence check possible — push HEAD and let the server judge).
+function remoteBranch() {
+  try {
+    const up = git(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'], { okNonZero: true })
+    const name = (up.stdout || '').trim()
+    if (up.status === 0 && name !== '' && name !== '@{u}') return name
+  } catch (err) { /* no upstream configured */ }
+  for (const cand of ['origin/master', 'origin/main']) {
+    try {
+      if (git(['rev-parse', '--verify', '--quiet', cand], { okNonZero: true }).status === 0) return cand
+    } catch (err) { /* keep probing */ }
+  }
+  return ''
+}
+
 function pushRelease(version) {
   // Refuse non-fast-forward pushes up front instead of half-pushing.
   git(['fetch', 'origin'])
-  const head = git(['rev-parse', 'HEAD']).stdout.trim()
-  const remote = git(['rev-parse', 'origin/master']).stdout.trim()
-  if (remote !== '') {
-    const anc = git(['merge-base', '--is-ancestor', 'origin/master', 'HEAD'], { okNonZero: true })
-    if (anc.status !== 0) {
-      console.error('origin/master has diverged from HEAD. The local tag/commit were NOT pushed.')
-      console.error('Recover by hand: git tag -d v' + version + ' && git reset --hard origin/master, then re-run draft (CHANGELOG edits are lost to the reset — re-apply or use git stash).')
-      process.exit(1)
+  const upstream = remoteBranch()
+  if (upstream !== '') {
+    const remote = git(['rev-parse', upstream]).stdout.trim()
+    if (remote !== '') {
+      const anc = git(['merge-base', '--is-ancestor', upstream, 'HEAD'], { okNonZero: true })
+      if (anc.status !== 0) {
+        console.error(upstream + ' has diverged from HEAD. The local tag/commit were NOT pushed.')
+        console.error('Recover by hand: git tag -d v' + version + ' && git reset --hard ' + upstream + ', then re-run draft (CHANGELOG edits are lost to the reset — re-apply or use git stash).')
+        process.exit(1)
+      }
     }
   }
   const fail = (which) => {
@@ -361,7 +380,7 @@ function pushRelease(version) {
     process.exit(1)
   }
   if (git(['push', 'origin', 'v' + version], { okNonZero: true }).status !== 0) fail('tag')
-  if (git(['push', 'origin', 'HEAD'], { okNonZero: true }).status !== 0) fail('master')
+  if (git(['push', 'origin', 'HEAD'], { okNonZero: true }).status !== 0) fail(upstream !== '' ? upstream : 'branch')
 }
 
 function cmdStatus() {

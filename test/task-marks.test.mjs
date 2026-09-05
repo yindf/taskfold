@@ -1,11 +1,15 @@
 // Offline tests for the taskMarks projection pieces exported from
-// compact-region.mjs: the duck-typed state schema, the reducer, and the pure
-// close/fold decision helpers (closeTarget / validTaskName / deferredArchivePlan).
+// plugins/task-marks.mjs: the duck-typed state schema, the reducer, and the
+// pure close/fold decision helpers (closeTarget / validTaskName /
+// deferredArchivePlan). Instruction contracts live in fold-instruction.mjs,
+// the todo-bridge line in lifecycle-nudges.mjs.
 // Run in-process (the sandbox blocks node --test child processes):
 //   node test/task-marks.test.mjs
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { applyTaskMarks, taskMarksStateSchema, closeTarget, validTaskName, todoBridgeLine, deferredArchivePlan, FOLD_SUMMARY_INSTRUCTION, DETAILED_CHECKPOINT_INSTRUCTION, buildFoldInstruction } from '../plugins/compact-region.mjs'
+import { applyTaskMarks, taskMarksStateSchema, closeTarget, validTaskName, deferredArchivePlan } from '../plugins/task-marks.mjs'
+import { todoBridgeLine } from '../plugins/lifecycle-nudges.mjs'
+import { FOLD_SUMMARY_INSTRUCTION, DETAILED_CHECKPOINT_INSTRUCTION, buildFoldInstruction } from '../plugins/fold-instruction.mjs'
 
 /** assistant/message carrying tool-call blocks (shape per dsh-agent-loop). */
 function assistantCall(seq, calls) {
@@ -54,6 +58,23 @@ test('schema rejects malformed persisted state', () => {
   assert.throws(() => taskMarksStateSchema.parse({ pending: {}, marks: [{ seq: 5 }] }), 'mark needs a name')
   assert.throws(() => taskMarksStateSchema.parse({ pending: { c: { kind: 'bogus', anchorSeq: 1 } }, marks: [] }))
   assert.throws(() => taskMarksStateSchema.parse({ pending: { c: { kind: 'begin', anchorSeq: -1 } }, marks: [] }))
+})
+
+test('schema validates pendingArchives entries FOR REAL — foldResultSeq included', () => {
+  // The error message always claimed '{ seq, name, foldResultSeq } objects';
+  // a row missing foldResultSeq used to pass load and then wedge the
+  // deferred drain in a permanent 'wait'. It must throw, loudly, at parse.
+  const good = { pending: {}, marks: [], pendingArchives: [{ seq: 10, name: 'alpha', foldResultSeq: 25 }] }
+  assert.equal(taskMarksStateSchema.parse(good), good)
+  assert.throws(() => taskMarksStateSchema.parse({ pending: {}, marks: [], pendingArchives: [{ seq: 10, name: 'alpha' }] }),
+    /pendingArchives/, 'missing foldResultSeq is malformed state')
+  assert.throws(() => taskMarksStateSchema.parse({ pending: {}, marks: [], pendingArchives: [{ seq: 10, name: 'alpha', foldResultSeq: 0 }] }),
+    /pendingArchives/, 'foldResultSeq must be positive, like every other seq')
+  assert.throws(() => taskMarksStateSchema.parse({ pending: {}, marks: [], pendingArchives: [{ seq: 10, name: 'alpha', foldResultSeq: '25' }] }),
+    /pendingArchives/, 'string seqs are malformed')
+  // v8-and-earlier rows without the field at all still replay fine.
+  const legacy = { pending: {}, marks: [] }
+  assert.equal(taskMarksStateSchema.parse(legacy), legacy)
 })
 
 test('begin/end round trip: named push and pop-by-name', () => {
@@ -318,6 +339,13 @@ test('deferredArchivePlan: the deliverable gate (wait / fold / defer / drop)', (
   // Empty-text deliverables do not count.
   const blank = [begun, assistantMsg(30, [{ type: 'text', text: '   ' }])]
   assert.equal(deferredArchivePlan(p, nodes, blank, []).action, 'wait', 'whitespace-only text is not a deliverable')
+  // ⑩ Inconsistent persisted row (close seq not locatable after the
+  // anchor): waiting would be permanent — the plan drops instead, so the
+  // drain settles the entry and moves on.
+  const corrupt = { seq: 10, name: 'alpha' }
+  assert.equal(deferredArchivePlan(corrupt, nodes, delivered, []).action, 'drop', 'missing foldResultSeq drops, never waits')
+  assert.equal(deferredArchivePlan({ seq: 10, name: 'alpha', foldResultSeq: 5 }, nodes, delivered, []).action, 'drop',
+    'close seq before the begin anchor is inconsistent — drop')
 })
 
 test('FOLD_SUMMARY_INSTRUCTION: five-section structure with user-inputs and pitfalls sections', () => {

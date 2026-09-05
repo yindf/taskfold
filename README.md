@@ -59,7 +59,7 @@ Restart dsh — every session on that profile gets the tools.
 
 ## For maintainers
 
-- Layout: `plugins/` (the two plugin files), `scripts/release.mjs`, `test/` (`node test/*.test.mjs`), `CHANGELOG.md`.
+- Layout: `plugins/` (the two mounted rows `compact-region.mjs` and `compact-stats.mjs`, plus the shared plain modules they import — `events.mjs`, `task-marks.mjs`, `fold-instruction.mjs`, `fold-engine.mjs`, `fold-drain.mjs`, `lifecycle-nudges.mjs`, `span-preview.mjs`), `scripts/release.mjs`, `test/` (`npm test`), `CHANGELOG.md`.
 - Releasing: `node scripts/release.mjs draft` → review the CHANGELOG entry → `node scripts/release.mjs release` (CHANGELOG is the single source of truth for versions). If this release changes which dsh versions are supported, update the "Supported dsh versions" section in **both** READMEs before releasing — the release script reminds you.
 - Design decisions and history live in `CHANGELOG.md` and the design notes in the source repo.
 

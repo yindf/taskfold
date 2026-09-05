@@ -116,6 +116,22 @@ test('resultBrief: grep stats, file-tool content excerpts, generic fallback', ()
   assert.equal(resultBrief('pwsh', 'probe output'), 'probe output')
 })
 
+test('resultBrief: grep file counting understands POSIX, workspace-relative, and mixed-extension paths', () => {
+  // POSIX absolute paths — the historic Windows-only regex mis-counted
+  // these as "1 file" no matter how many matched.
+  assert.equal(resultBrief('grep', 'Found 4 matches\n\n/home/u/repo/a.ts:1: x\n/home/u/repo/a.ts:2: y\n/home/u/repo/b.ts:3: z\n/home/u/repo/c.py:4: w'),
+    '4 matches · 3 files', 'POSIX paths, non-.js extensions, distinct files counted')
+  // Workspace-relative paths (both separators), as the grep tool prints
+  // them when run against a subdirectory.
+  assert.equal(resultBrief('grep', 'Found 2 matches\n\nsrc\\plugins\\events.mjs:5: a\nsrc/plugins/task-marks.mjs:7: b'),
+    '2 matches · 2 files', 'relative paths with mixed separators counted per file')
+  assert.equal(resultBrief('grep', 'Found 2 matches\n\ntaskfold\\a.mjs:1: x\ntaskfold\\a.mjs:2: y'), '2 matches · 1 file',
+    'same file across lines counts once')
+  // Zero-match and prose-ish outputs keep the historic fallbacks.
+  assert.equal(resultBrief('grep', 'Found 0 matches'), '0 matches · 0 files')
+  assert.equal(resultBrief('grep', 'Found 1 match\n\nsomething odd'), '1 match · 1 file', 'no recognizable path degrades to one file')
+})
+
 test('collectToolCalls + blockBrief correlation: result briefs match the calling tool', () => {
   const span2 = [
     { role: 'assistant', content: [{ type: 'tool-call', id: 'c9', name: 'grep', arguments: '{"pattern":"x"}' }] },

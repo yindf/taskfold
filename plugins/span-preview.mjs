@@ -67,15 +67,35 @@ export function callBrief(name, argsStr) {
   return '→' + tool + '(' + clip(argsStr === undefined ? '' : argsStr, TEXT_CLIP) + ')'
 }
 
+// Distinct file paths in grep-tool output lines. Output lines look like
+// "path:line: text" (or "path:line-text"): the path is everything before
+// the first colon that follows it. Windows absolute paths carry one colon
+// after the drive letter, so a leading drive prefix is stripped first; a
+// path must contain a separator to count (prose that merely resembles a
+// filename does not). Covers absolute POSIX (/a/b.mjs), workspace-relative
+// (src\a.mjs), and drive-absolute (C:\a\b.mjs) forms alike.
+const GREP_FILE_LINE = /^(?:[A-Za-z]:)?([^\s:][^:]*[\\/][^\s:]*):\d/
+
+function grepFilePaths(text) {
+  const files = new Set()
+  for (const line of String(text).split('\n')) {
+    const m = line.match(GREP_FILE_LINE)
+    if (m !== null) files.add(m[1])
+  }
+  return files
+}
+
 // The RESULT side (user message fragment): what came back, summarized per
 // tool. Falls back to a generic excerpt for every other tool.
 export function resultBrief(tool, inner) {
   const text = typeof inner === 'string' ? inner : ''
   if (tool === 'grep') {
-    const found = text.match(/Found (\d+) matches?/)
+    // Singular ("Found 1 match") and plural ("Found 2 matches") both parse —
+    // `matches?` matched only "matche(s)" and silently degraded the singular
+    // count line to a raw excerpt.
+    const found = text.match(/Found (\d+) match(?:es)?/)
     if (found !== null) {
-      const files = new Set()
-      for (const m of text.matchAll(/\n([A-Za-z]:\\[^:\n]+\.m?js):/g)) files.add(m[1])
+      const files = grepFilePaths(text)
       const nf = files.size > 0 ? files.size : (found[1] === '0' ? 0 : 1)
       return found[1] + (found[1] === '1' ? ' match' : ' matches') + ' · ' + nf + (nf === 1 ? ' file' : ' files')
     }
@@ -165,19 +185,16 @@ export function renderSpanPreview(messages) {
 // a small fraction of the span it indexes. The one defensive guard: a
 // degenerate span (many near-empty messages) could break that assumption, so
 // if the whole listing would rival the span itself, degrade to a header plus
-// pointer rather than risk the engine rejecting the fold.
+// pointer rather than risk the engine rejecting the fold. Composition: the
+// per-line rendering IS renderSpanPreview — this wrapper only adds the size
+// guard, so the two previews can never drift apart.
 export function renderArchivePreview(messages) {
   if (!Array.isArray(messages) || messages.length === 0) return ['Span preview: (empty)']
   const header = 'Span preview (' + messages.length + ' messages, one per line — same order/numbering as the JSONL artifact):'
   const estChars = JSON.stringify(messages).length
-  const calls = collectToolCalls(messages)
-  const lines = [header]
-  let previewChars = header.length
-  for (let i = 0; i < messages.length; i += 1) {
-    const line = messagePreviewLine(messages[i], i + 1, calls)
-    lines.push(line)
-    previewChars += line.length
-  }
+  const lines = renderSpanPreview(messages)
+  let previewChars = 0
+  for (const line of lines) previewChars += line.length
   if (previewChars > estChars * 0.6) {
     return [header, '… full listing would rival the span itself — read the artifact file.']
   }

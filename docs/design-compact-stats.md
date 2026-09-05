@@ -1,108 +1,115 @@
-# Design: `compact_stats` — session compaction observability tool
+# Design: fold observability — `list_folds` / `fold_recall`
 
-Status: draft (awaiting adversarial review + user approval)
+Status: shipped. This note records the design AS BUILT (0.22.x) and replaces
+the original `compact_stats` draft, which described a single `compact_stats`
+tool with an `unknownEventTypes` output field — that field was dropped in
+review (see Degradation policy) and the tool shipped as two.
 
 ## Goal & success criteria
 
-The preset can compress the surface but cannot answer "what did compaction do for me?"
-`compact_stats` is a read-only model tool that reports, for the CURRENT session:
+The preset can compress the surface but cannot answer "what did compaction do
+for me?" Two read-only model tools answer it for the CURRENT session:
 
-- current surface length (live nodes) and total event count;
-- every fold committed this session: position seq of the summary node, estimated
-  shadowed tokens, and a short preview of its summary;
-- totals: folds count, cumulative shadowed tokens.
+- `list_folds` — current surface length (live nodes) and total event count;
+  every fold committed this session: chronological fold number, position seq
+  of the summary node, estimated shadowed tokens, title or summary preview;
+  totals (folds, cumulative shadowed tokens).
+- `fold_recall` — regenerate (or single out, via the `line` overload) the
+  ORIGINAL content of any folded span on demand.
 
-Success = calling it right after a `compact`/`task_end` reports that fold with
-matching numbers; calling it on a fresh session reports zeros, not an error.
+Success = calling `list_folds` right after a fold commits reports that fold
+with matching numbers; calling it on a fresh session reports zeros, not an
+error; `fold_recall({ fold: N })` round-trips the exact original messages.
 
 ## Non-goals
 
-- No writes, no state, no new services; the tool never triggers compaction.
-- No cross-session aggregation (per-session only, like the rest of the preset).
+- No writes, no state, no new services; neither tool ever triggers
+  compaction. (`fold_recall` writes ONE diagnostic JSONL artifact file —
+  session-local or OS-tmp fallback — and nothing else.)
+- No cross-session aggregation (per-session only, like the rest of the
+  bundle).
 
 ## Modules & files
 
-| Module | File | Change |
+| Module | File | Role |
 | --- | --- | --- |
-| Tool plugin | `plugins/compact-stats.mjs` | NEW. Plain Cordis plugin, `inject: ['tools']` only. |
-| Composition row | `agent.cordis.yml` | NEW row inside the existing `compaction` realm. The tool has no service dependency; the realm is purely a placement convention (tools registered from realm rows reach the agent's catalog, as compact-region's do), and the row would work unchanged at any layer. |
-| Docs | `README.md` | Tool table + collision list += `compact_stats`. |
-| Tests | `test/compact-stats.test.mjs` | NEW. Offline fixture test; no harness needed. |
+| Tool plugin | `plugins/compact-stats.mjs` | Ships both tools. Plain Cordis plugin, `inject: ['tools']` only. |
+| Shared helpers | `plugins/span-preview.mjs`, `plugins/events.mjs` | Preview rendering + artifact writing; cross-version event-log access. Plain modules, not bundle rows. |
+| Mount | `cordis.patch.yml` | Host-plane rows (`cmpct-stats`; sibling `cmpct-region`). |
+| Tests | `test/compact-stats.test.mjs` | Offline fixtures; no harness needed (`npm test`). |
 
 ## Interface contract
 
-Tool `compact_stats`, parameters `{}` (nothing). Result (rendered to text by
-`output.render`, machine shape returned by `execute`):
+`list_folds`, parameters `{}`. Machine shape returned by `execute`, rendered
+to text by `output.render`:
 
 ```jsonc
 {
   "ok": true,
   "surfaceLength": 42,        // session.surface.nodes.length
-  "eventCount": 137,          // session.events.length (live event log)
-  "folds": [                  // oldest → newest
-    { "seq": 113, "shadowedTokenCount": 2845, "preview": "## Primary Request..." }
+  "eventCount": 137,          // sessionEvents(session).length (live log)
+  "folds": [                  // oldest → newest; index+1 IS the fold number
+    { "seq": 113, "shadowedTokenCount": 2845, "preview": "- investigated…",
+      "title": "fix the login bug" /* …range/provider/model when present */ }
   ],
-  "totals": { "folds": 1, "shadowedTokens": 2845 },
-  "unknownEventTypes": []     // see degradation policy below
+  "totals": { "folds": 1, "shadowedTokens": 2845 }
 }
 ```
 
-Preview limit: 60 chars, aligned with compact-region's `PREVIEW_LIMIT`.
+`fold_recall`, parameters `{ fold, line? }`. Without `line`: writes the
+span's messages (role + content blocks, provenance stripped) as JSONL into
+the session's own artifact directory and returns the file path plus the
+complete span preview. With `line`: returns ONLY that 1-based message, no
+file written — line numbers match the span preview and the artifact.
 
 Failure mode: only `agent` context missing or unreadable session →
 `{ ok: false, error }`; an empty history is NOT an error (zeros).
 
+## Fold numbering
+
+Chronological, 1-based, derived from event order: the number `list_folds`
+prints is exactly the number `fold_recall({ fold: N })` validates and exactly
+what the fold archive section counts. The event-log seq is a secondary
+annotation only — never pass it to `fold_recall`. Titles come from the
+in-flight `task_fold` call's arguments (inline folds, temporal correlation)
+or, for deferred folds that commit at a later step boundary, from the
+summary's own forced `# <name>` heading.
+
 ## Degradation policy (distinguishable, never silent)
 
-The fold event shape is an internal contract of `dsh-compaction-basic`. If the
-event stream contains types outside the known set (enumerated beside the
-predicate), `unknownEventTypes` lists them and the rendered output carries a
-warning: fold accounting may be incomplete. "No folds" and "could not look for
-folds" are therefore distinguishable. Silence is never used as a fallback.
+Fold accounting keys on the single native `compaction/summary` event type
+only — no exhaustive known-type list. The draft's `unknownEventTypes`
+enumeration coupled the plugin to every harness event type and drifted on
+every upgrade, so it was removed deliberately: unknown event types are simply
+invisible to fold accounting, and "no folds" stays distinguishable from
+"errors" because malformed fold events degrade field-by-field (missing token
+count → 0 plus a `shadowedTokenCountMissing` flag rendered in the list)
+rather than throwing.
 
-## Data source & discovery plan
+## Data source
 
-Authoritative source: the LIVE session event log, `exec.agent.session.events` —
-the same source compact-region's `readSurface` already indexes. Events survive
-folds (the surface is a projection), so history needs no disk reads and no
-second internal contract with dsh-session-persistence's file layout; memory is
-the authority (the "persistence" error class exists precisely because disk
-checkpoints may lag).
-
-Fold-shape discovery: read the `dsh-compaction-basic` source in the DSH
-installation to pin the exact commit event type/fields for THIS version; the
-predicate encodes that shape with the observed fields documented beside it.
-
-Resume semantics: stats derive from whatever event log the session currently
-holds. After a host restart + resume, counts include exactly the events the
-session reloaded — if persistence dropped events, stats drop with them (no
-attempt to reconcile against disk).
+Authoritative source: the LIVE event log via the cross-version
+`sessionEvents()` accessor (`session.events` array on dsh ≤0.1.2-alpha.3,
+`session.snapshotEvents()` after). Events survive folds — the surface is a
+projection — so history needs no disk reads and no second internal contract
+with the persistence layer's file layout. Resume semantics: stats derive from
+whatever event log the session currently holds; if persistence dropped
+events, stats drop with them (no reconciliation against disk).
 
 ## Dependency direction
 
 `compact-stats.mjs` → `ctx.tools` (registration only) + `exec.agent.session`
-(runtime argument of execute). It does NOT inject `compaction`, does not read
-`markers`, and shares no state with compact-region — the two plugins stay
-independently removable. Test module imports the predicate/parsing helpers from
-the plugin file via named exports (the default export remains the Cordis
-plugin; named exports are pure functions).
-
-## Implementation order
-
-1. Probe: read `dsh-compaction-basic` source in the DSH installation; pin the
-   fold/commit event type and fields (plus the known-benign event-type set).
-2. `plugins/compact-stats.mjs`: pure helpers (fold detection + preview) as named
-   exports; tool object; `ctx.tools.register`.
-3. `agent.cordis.yml` row + README.
-4. `test/compact-stats.test.mjs`: fixture events (real shapes from step 1) →
-   assert detection, totals, empty-history zeros, unknown-type warning; `node --test`.
-5. Live verification deferred until next host restart (preset rows mount at
-   process start); offline tests + syntax gate the merge.
+(runtime argument of execute). It does NOT inject `compaction`, and shares no
+state with compact-region — the two mounted plugins stay independently
+removable; the pure helpers they both use (span-preview.mjs, events.mjs) are
+plain modules that add no bundle rows. Test modules import the pure helpers
+via named exports (the default export remains the Cordis plugin).
 
 ## Edge cases
 
-- Session with folds whose summary nodes were themselves compacted later
-  (nested folds): every committed fold event still counts, even if its node is
-  no longer on the surface.
-- Very large event lists: single linear pass, no nested scans (O(n)).
-- `shadowedTokenCount` missing on old events → counted as 0, flagged in preview.
+- Nested folds (a summary node later compacted itself): every committed
+  fold event still counts, even if its node is no longer on the surface.
+- Very large event lists: single linear pass per collect, no nested scans
+  (O(n)).
+- `shadowedTokenCount` missing on old events → counted as 0, flagged in the
+  rendered line.

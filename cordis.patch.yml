@@ -1,6 +1,11 @@
-# dsh-cmpct bundle patch: registers the cmpct tool family at the host plane
-# (profile bundle layer). Tools land in the global tools registry — every
-# session of every preset sees them.
+# taskfold bundle patch: registers the taskfold tool family (task_begin /
+# task_end / list_folds / fold_recall) at the host plane (profile bundle
+# layer). Tools land in the global tools registry — every session of every
+# preset sees them.
+#
+# Row ids (cmpct-region / cmpct-stats) are legacy-stable on purpose:
+# renaming a mounted id orphans installed copies on upgrade, so they keep
+# their historical names even though the files are the taskfold sources.
 #
 # The compaction engine resolves LAZILY inside the plugin and is ALWAYS the
 # plugin's own ScopedEngine (span-scoped summarizer; auto:false; imported on
@@ -9,8 +14,9 @@
 # compaction. No compaction row is required here.
 #
 # COLLISION WARNING: never mount this bundle alongside a preset that already
-# carries its own cmpct rows (e.g. the cmpct agent preset) — tool names live
-# in a shared registry and duplicate registration fails.
+# carries its own taskfold-era rows (registered under the legacy cmpct ids,
+# e.g. the cmpct agent preset) — tool names live in a shared registry and
+# duplicate registration fails.
 - insert:
     - id: cmpct-region
       name: './plugins/compact-region.mjs'

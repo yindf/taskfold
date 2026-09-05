@@ -59,7 +59,7 @@ dsh plugin --profile <你的profile> add github:yindf/taskfold
 
 ## 维护者须知
 
-- 目录：`plugins/`（两个插件文件）、`scripts/release.mjs`、`test/`（`node test/*.test.mjs`）、`CHANGELOG.md`。
+- 目录：`plugins/`（两个挂载行 `compact-region.mjs` 与 `compact-stats.mjs`，及其共享纯模块 `events.mjs`、`task-marks.mjs`、`fold-instruction.mjs`、`fold-engine.mjs`、`fold-drain.mjs`、`lifecycle-nudges.mjs`、`span-preview.mjs`）、`scripts/release.mjs`、`test/`（`npm test`）、`CHANGELOG.md`。
 - 发版：`node scripts/release.mjs draft` → 审阅 CHANGELOG 条目 → `node scripts/release.mjs release`（CHANGELOG 是版本唯一事实源）。若本次发版改变了支持的 dsh 版本范围，发版前先更新**两份** README 的“支持的 dsh 版本”一节——release 脚本会提醒。
 - 设计决策与历史见 `CHANGELOG.md` 及源仓库中的设计笔记。
 

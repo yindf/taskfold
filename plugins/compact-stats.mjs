@@ -14,9 +14,10 @@
  * seq is shown as a secondary annotation only — never pass it to fold_recall.
  */
 // Shared span-preview/JSONL helpers: regenerated artifacts keep the exact
-// format (JSONL, one message per line) and numbering that task_fold's
-// preview lines use.
+// format (JSONL, one message per line) and numbering that task folds'
+// preview lines use. events.mjs carries the shared event-log accessor.
 import { renderSpanPreview, writeSpanArtifact, sessionArtifactDir, artifactLineAt } from './span-preview.mjs'
+import { sessionEvents, messageOf, blocksOf } from './events.mjs'
 
 /**
  * Fold shape (pinned against dsh-compaction-basic's commitCompactionBody):
@@ -103,21 +104,6 @@ function firstHeadingLine(summary) {
 }
 
 /** Full stats over a live event log. Single linear pass, O(n). */
-/**
- * Cross-version event-log accessor: dsh ≤0.1.2-alpha.3 exposed the whole log
- * as session.events (array); alpha.4 replaced it with on-demand APIs —
- * session.snapshotEvents() returns a full array snapshot. Support both.
- * (Local copy: this plugin stays dependency-free of its sibling.)
- */
-function sessionEvents(session) {
-  if (session === undefined || session === null) return []
-  if (Array.isArray(session.events)) return session.events
-  if (typeof session.snapshotEvents === 'function') {
-    try { return session.snapshotEvents() } catch (err) { return [] }
-  }
-  return []
-}
-
 export function collectStats(events, surfaceLength) {
   const folds = collectFolds(events)
   const shadowedTokens = folds.reduce((sum, f) => sum + f.shadowedTokenCount, 0)
@@ -180,9 +166,8 @@ export function attachFoldTitles(folds, events) {
       foldIdx += 1
       continue
     }
-    const data = event.data !== null && typeof event.data === 'object' ? event.data : {}
-    const message = data.message !== null && typeof data.message === 'object' ? data.message : null
-    const content = message !== null && Array.isArray(message.content) ? message.content : []
+    const message = messageOf(event)
+    const content = blocksOf(message)
     if (event.type === 'assistant/message') {
       for (const block of content) {
         if (block !== null && typeof block === 'object' && block.type === 'tool-call' && block.name === 'task_fold' && typeof block.id === 'string') {
@@ -230,7 +215,8 @@ export function renderFoldList(stats) {
 }
 
 export default {
-  name: 'compact-stats',  inject: ['tools'],
+  name: 'compact-stats',
+  inject: ['tools'],
   apply(ctx) {
     ctx.tools.register({
       name: 'list_folds',

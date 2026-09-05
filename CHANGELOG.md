@@ -3,6 +3,59 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.22.1 — code-review remediation: schema hardening, module split, dedup (unreleased draft 2026-09-05)
+
+- **Fixes**: the taskMarks state schema now validates
+  `pendingArchives[].foldResultSeq` for real (positive integer, like every
+  other seq). The error message always claimed it; a corrupted row missing
+  the field used to pass load and then wedge the deferred drain in a
+  permanent 'wait' (its default 0 always sorts before the entry's own
+  anchor). Corrupted rows now fail loudly at parse, and deferredArchivePlan
+  drops — never waits on — entries whose close seq cannot sit after their
+  begin anchor, so the drain settles them instead of stalling forever.
+- **Fixes**: grep result-brief file counting now understands POSIX absolute,
+  workspace-relative, and drive-absolute paths with any extension — the old
+  Windows-drive-.js-only regex under-counted everything else as "1 file" —
+  and the singular form "Found 1 match" now parses at all (`matches?` only
+  matched "matche(s)", so singular count lines silently degraded to raw
+  excerpts).
+- **Fixes**: pushRelease reconciles against HEAD's actual upstream (falling
+  back to origin/master, then origin/main) instead of hardcoding
+  origin/master, so releases from non-master branches no longer diverge-check
+  against the wrong ref.
+- **Performance**: the todo-bridge context callback takes ONE sessionEvents
+  snapshot per render and feeds every nudge predicate from it (was up to four
+  full-log snapshots per render — on exactly the long sessions taskfold
+  targets); task_begin's anchor check walks the surface from the end via
+  eventAt instead of materializing a full event map; the dead `head` rev-parse
+  in pushRelease is gone.
+- **Refactoring**: compact-region.mjs (1428 lines, 7 concerns in one apply)
+  is now a thin composition root over focused plain modules — events.mjs
+  (shared defensive event extractions: sessionEvents/messageOf/
+  toolResultText), task-marks.mjs (the taskMarks projection + pure
+  close/fold decisions), fold-instruction.mjs (the two swapped-in
+  instructions), fold-engine.mjs (self-hosted ScopedEngine + lazy
+  resolution), fold-drain.mjs (the deliverable-gated pre-step auto-folder),
+  lifecycle-nudges.mjs (pure nudge predicates over an events snapshot).
+  Duplicates removed: sessionEvents existed verbatim in two plugins; the
+  `event.data.message.content` defensive extraction appeared 8×; tool-result
+  text joining had three variants; renderArchivePreview re-implemented
+  renderSpanPreview's loop (now composes it). Dead code removed:
+  lastSurfaceNode, the unused markSeq/void in task_begin.
+- **Docs**: both design notes refreshed to the as-built reality (the
+  compact_stats draft described a removed `unknownEventTypes` field; the
+  scoped-summary note referenced long-gone `task_commit`/`compact` tools);
+  cordis.patch.yml's header no longer calls the bundle "dsh-cmpct" (row ids
+  stay legacy-stable by design, now documented as such); READMEs describe
+  the real plugin layout and `npm test`; a `test` script was added to
+  package.json.
+- **Chores**: the ctx.llm.stream instruction swap logs one line on its
+  first matching call per process, so a host-side rename of the
+  dsh-compaction-basic discriminator becomes visible drift instead of a
+  silent fail-open; the drain's settled-entry comment now describes the
+  actual cleanup path (next-round 'drop' + in-memory settled set, not a
+  reducer drop).
+
 ## 0.22.0 — prefix-anchored summarizer envelope — explicit begin→end scope, ~5x cheaper fold calls (2026-09-05)
 
 - **Features**: the fold summarizer now sends the whole surface up to the
