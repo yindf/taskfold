@@ -3,6 +3,44 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.21.0 — proportional summaries, complete previews, line-level recall (2026-09-05)
+
+- **Fix**: the 0.19.0 anchor regression. Fold regions started AT the
+  "Task begun" result seq, but a tool result's leading cut always splits
+  its own call/result pair, so the engine rejected every region as an
+  unbalanced boundary within milliseconds — and the drain settled every
+  queued fold SILENTLY: no compaction events, no failure warnings, just
+  entries shadowed by an in-memory settled set. Regions now start at the
+  first surface node strictly AFTER that result (falling back to the
+  0.18 call-anchored region when the result is missing, shadowed, or
+  has nothing after it), and foldRegion rethrows start-boundary errors
+  loudly instead of grinding the end-shrink loop into a silent settle.
+  Diagnosed by instrumenting the installed copy after offline replay of
+  the real session log proved the gate, queue, and engine were all fine.
+- **Features**: fold summaries are now proportional and exhaustive. The
+  word budget is ~10% of the span's estimated tokens, injected as a
+  concrete per-fold number (floor 150 words, cap 4000 to stay under the
+  summarizer's maxTokens); the absolute 300-word cap and the 6/6/5/4
+  bullet caps are retired. Sections get differentiated treatment: What
+  happened keeps one bullet per meaningful step (compress phrasing, not
+  facts), Changes is exhaustive — every path written and every key value,
+  no selection — Pitfalls keep every failure and its cause, and triage
+  drops narrative connective tissue first while anchors, decisions, and
+  failure causes are never dropped. Span previews list EVERY message
+  line — the head+tail window is gone, with a defensive degrade for
+  degenerate near-empty spans that would approach the span's own size.
+  fold_recall gains a line overload: fold_recall({fold, line}) returns
+  that exact artifact line — the full original message content — without
+  writing a file, making preview line numbers retrieval coordinates.
+- **Features**: stock checkpoints get the same treatment. A ctx.llm.stream
+  wrapper swaps the host's compaction instruction (terse bullets) for an
+  uncapped detail-first variant, matched by purpose='compaction' plus the
+  dsh-compaction-basic instruction source so the fold path is immune;
+  the wrap is idempotent and fails open. Prompt surfaces across the
+  board (system prompt, task tool descriptions, fold_recall, closing
+  block, metadata lines) state the new boundaries and budgets, and the
+  legacy task_fold mention is dropped from the closing block.
+
 ## 0.20.0 — fold artifacts live in the session's own directory (2026-09-05)
 
 - **Features**: span artifacts are written into the session's own durable
