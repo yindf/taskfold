@@ -146,85 +146,53 @@ export function messagePreviewLine(message, index, calls) {
   return numbered.length > LINE_CLIP ? numbered.slice(0, LINE_CLIP - 1) + '…' : numbered
 }
 
-// The full preview block: a header plus one line per message, capped. When
-// the span exceeds the cap the window is HEAD+TAIL: the opening lines and
-// the closing lines are kept (the span's ending — final verification, the
-// close — is exactly what a head-only window would cut) and the middle
-// collapses into one elision pointer at the artifact file.
-const TAIL_LINES = 4
-
-function headTailSplit(total, cap) {
-  if (total <= cap) return { head: total, tail: 0, elided: 0 }
-  const tail = Math.max(1, Math.min(TAIL_LINES, cap - 2))
-  const head = cap - tail - 1 // one line of the cap is spent on the pointer
-  return { head, tail, elided: total - head - tail }
-}
-
-export function renderSpanPreview(messages, maxLines) {
-  const cap = Number.isInteger(maxLines) && maxLines > 0 ? maxLines : 30
+// The full preview block: a header plus one line per message — EVERY message,
+// no elision window. Preview line N = the N-th message of the span = line N of
+// the JSONL artifact = the message fold_recall({ fold, line: N }) returns.
+export function renderSpanPreview(messages) {
   if (!Array.isArray(messages) || messages.length === 0) return ['Span preview: (empty)']
   const lines = ['Span preview (' + messages.length + ' messages, one per line — same order/numbering as the JSONL artifact):']
   const calls = collectToolCalls(messages)
-  const win = headTailSplit(messages.length, cap)
-  for (let i = 0; i < win.head; i += 1) lines.push(messagePreviewLine(messages[i], i + 1, calls))
-  if (win.elided > 0) {
-    lines.push('… +' + win.elided + ' messages between head and tail elided — read the artifact file for the middle.')
-    for (let i = messages.length - win.tail; i < messages.length; i += 1) lines.push(messagePreviewLine(messages[i], i + 1, calls))
-  }
+  for (let i = 0; i < messages.length; i += 1) lines.push(messagePreviewLine(messages[i], i + 1, calls))
   return lines
 }
 
-// Budget-aware preview for the Fold archive section inside a summary node.
-// The engine REJECTS a fold whose framed summary is not smaller than the
-// shadowed span, so the whole appendix (metadata bullet + preview) must stay
-// a small FRACTION of the span: the preview is trimmed to ~15% of the span's
-// estimated chars (minus the metadata line), never exceeding the 30-line
-// cap. Within that budget the window is HEAD+TAIL (see renderSpanPreview):
-// the closing lines are reserved FIRST — up to a quarter of the budget — so
-// the span's ending survives whenever any preview is shown at all. Tiny
-// spans may end up with no preview lines — just the header pointing at the
-// artifact, which is always complete.
+// Complete preview for the Fold archive section inside a summary node: every
+// message line, no elision — the preview is the span's own index, and its line
+// numbers are the recall coordinates (fold_recall line overload). The engine
+// REJECTS a fold whose framed summary is not smaller than the shadowed span;
+// each preview line is clipped to LINE_CLIP, so a full listing normally costs
+// a small fraction of the span it indexes. The one defensive guard: a
+// degenerate span (many near-empty messages) could break that assumption, so
+// if the whole listing would rival the span itself, degrade to a header plus
+// pointer rather than risk the engine rejecting the fold.
 export function renderArchivePreview(messages) {
   if (!Array.isArray(messages) || messages.length === 0) return ['Span preview: (empty)']
   const header = 'Span preview (' + messages.length + ' messages, one per line — same order/numbering as the JSONL artifact):'
   const estChars = JSON.stringify(messages).length
-  const budget = Math.floor(estChars * 0.15) - 220 - header.length
-  if (budget < 80) return [header, '… span too small to preview inline — read the artifact file.']
   const calls = collectToolCalls(messages)
   const lines = [header]
-  const win = headTailSplit(messages.length, 30)
-  // Reserve the tail first, kept from the span's LAST message backwards for
-  // as long as the tail budget (at most a quarter of the total) allows.
-  const tailAll = []
-  for (let i = messages.length - win.tail; i < messages.length; i += 1) {
-    tailAll.push(messagePreviewLine(messages[i], i + 1, calls))
-  }
-  let tailBudget = Math.min(tailAll.reduce((sum, l) => sum + l.length, 0), Math.floor(budget / 4))
-  const keptTail = []
-  for (let k = tailAll.length - 1; k >= 0; k -= 1) {
-    if (tailBudget < tailAll[k].length) break
-    tailBudget -= tailAll[k].length
-    keptTail.unshift(tailAll[k])
-  }
-  let headBudget = budget - keptTail.reduce((sum, l) => sum + l.length, 0)
-  let shown = 0
-  for (let i = 0; i < win.head && i < messages.length; i += 1) {
+  let previewChars = header.length
+  for (let i = 0; i < messages.length; i += 1) {
     const line = messagePreviewLine(messages[i], i + 1, calls)
-    if (shown > 0 && line.length > headBudget) break
     lines.push(line)
-    headBudget -= line.length
-    shown += 1
+    previewChars += line.length
   }
-  const shownTotal = shown + keptTail.length
-  if (messages.length > shownTotal && shownTotal > 0) {
-    if (keptTail.length > 0) {
-      lines.push('… +' + (messages.length - shownTotal) + ' messages between head and tail elided — read the artifact file for the middle.')
-      lines.push(...keptTail)
-    } else {
-      lines.push('… +' + (messages.length - shownTotal) + ' more messages — read the artifact file for the rest.')
-    }
+  if (previewChars > estChars * 0.6) {
+    return [header, '… full listing would rival the span itself — read the artifact file.']
   }
   return lines
+}
+
+// fold_recall's line overload: the exact original message at a 1-based span
+// position — the same position a span-preview line and the JSONL artifact
+// line carry, so a preview line number is directly recallable.
+export function artifactLineAt(messages, line) {
+  if (!Array.isArray(messages)) return { ok: false, error: 'no messages' }
+  if (!Number.isInteger(line) || line < 1 || line > messages.length) {
+    return { ok: false, error: 'line must be an integer in 1..' + Math.max(messages.length, 1) }
+  }
+  return { ok: true, message: messages[line - 1] }
 }
 
 // Artifact writer: JSONL, one message per line, in preview order. Each line

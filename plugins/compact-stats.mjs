@@ -16,7 +16,7 @@
 // Shared span-preview/JSONL helpers: regenerated artifacts keep the exact
 // format (JSONL, one message per line) and numbering that task_fold's
 // preview lines use.
-import { renderSpanPreview, writeSpanArtifact, sessionArtifactDir } from './span-preview.mjs'
+import { renderSpanPreview, writeSpanArtifact, sessionArtifactDir, artifactLineAt } from './span-preview.mjs'
 
 /**
  * Fold shape (pinned against dsh-compaction-basic's commitCompactionBody):
@@ -266,11 +266,12 @@ export default {
 
     ctx.tools.register({
       name: 'fold_recall',
-      description: 'Regenerate the artifact FILE for one fold: every span message from the \u0027Task begun\u0027 result through the \u0027Task ended\u0027 result — full original content (role + content blocks) — written as JSONL into this session\u0027s own artifact directory (the session\u0027s durable directory; OS tmp as fallback), one message per line, numbered. Each committed fold summary\u0027s trailing Fold archive section carries the artifact path; use this tool when that file has since been removed — pass the fold number, get a fresh file path plus a per-message preview, then read/grep it with any file tool. Use list_folds for the fold index. Changes no session state; the only write is the fresh JSONL file itself.',
+      description: 'Regenerate the artifact FILE for one fold: every span message from just after the \u0027Task begun\u0027 result through the \u0027Task ended\u0027 result — full original content (role + content blocks) — written as JSONL into this session\u0027s own artifact directory (the session\u0027s durable directory; OS tmp as fallback), one message per line, numbered. Each committed fold summary\u0027s trailing Fold archive section carries the artifact path; use this tool when that file has since been removed — pass the fold number, get a fresh file path plus the complete span preview (every message, one line each), then read/grep it with any file tool. Line overload: pass the optional second parameter line (a preview line number) to return ONLY that numbered message — its exact original content — directly in the result, with no file written; line numbers match the span preview and the JSONL artifact. Use list_folds for the fold index. Changes no session state; without line, the only write is the fresh JSONL file itself.',
       parameters: {
         type: 'object',
         properties: {
-          fold: { type: 'integer', description: 'Fold number (1-based, chronological) from list_folds.' }
+          fold: { type: 'integer', description: 'Fold number (1-based, chronological) from list_folds.' },
+          line: { type: 'integer', description: 'Optional: return ONLY this line — the exact original message at this 1-based position, matching the span preview numbering and the JSONL artifact line. No file is written.' }
         },
         required: ['fold']
       },
@@ -279,6 +280,10 @@ export default {
         render(args, value) {
           if (value.ok !== true) {
             return [{ type: 'text', text: 'fold_recall failed: ' + String(value.error === undefined ? 'unknown error' : value.error) }]
+          }
+          if (value.line !== undefined) {
+            const role = value.message !== null && typeof value.message === 'object' && typeof value.message.role === 'string' ? value.message.role : '?'
+            return [{ type: 'text', text: 'Fold #' + value.fold + ' line ' + value.line + ' of ' + value.entries + ' (role: ' + role + '):\n' + JSON.stringify(value.message, null, 2) }]
           }
           return [{ type: 'text', text: 'Artifact regenerated (' + value.entries + ' messages): ' + value.file + (Array.isArray(value.preview) && value.preview.length > 0 ? '\n' + value.preview.join('\n') : '') + '\nRead or grep it with any file tool.' }]
         }
@@ -307,6 +312,14 @@ export default {
           for (const seq of f.shadowedSeqs) {
             const message = session.deriveEventMessage(session.eventAt(seq))
             if (message !== null && message !== undefined) messages.push(message)
+          }
+          // Line overload: return the exact original message at one preview
+          // line position — no artifact file is written for this lookup.
+          const wanted = args !== null && typeof args === 'object' ? args.line : undefined
+          if (wanted !== undefined) {
+            const picked = artifactLineAt(messages, wanted)
+            if (picked.ok !== true) return { ok: false, error: 'fold #' + foldNo + ' (' + messages.length + ' lines): ' + picked.error }
+            return { ok: true, fold: foldNo, line: wanted, entries: messages.length, message: picked.message }
           }
           const nameKey = f.title !== undefined ? f.title : 'fold-' + foldNo
           const file = writeSpanArtifact(messages, nameKey, { sessionDir: sessionArtifactDir(ctx, session), sessionKey: session.id })

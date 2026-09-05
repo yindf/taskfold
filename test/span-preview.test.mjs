@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import nodeFs from 'node:fs'
 import nodePath from 'node:path'
 import nodeOs from 'node:os'
-import { blockBrief, messagePreviewLine, renderSpanPreview, writeSpanArtifact, callBrief, resultBrief, collectToolCalls, renderArchivePreview, sessionArtifactDir } from '../plugins/span-preview.mjs'
+import { blockBrief, messagePreviewLine, renderSpanPreview, writeSpanArtifact, callBrief, resultBrief, collectToolCalls, renderArchivePreview, sessionArtifactDir, artifactLineAt } from '../plugins/span-preview.mjs'
 
 /** Shape-accurate request messages (the same blocks deriveEventMessage yields). */
 function span() {
@@ -63,15 +63,27 @@ test('messagePreviewLine: all-tool-result messages label as tool, user text stay
   assert.ok(snap.startsWith('  3 harness: Current runtime context'), 'plugin-injected snapshots read harness:')
 })
 
-test('renderSpanPreview: over-cap spans keep head AND tail with true numbering', () => {
-  const lines = renderSpanPreview(span(), 3)
+test('renderSpanPreview: every message line, no elision, true numbering', () => {
+  const lines = renderSpanPreview(span())
   assert.equal(lines[0], 'Span preview (4 messages, one per line — same order/numbering as the JSONL artifact):')
-  assert.equal(lines.length, 4, 'header + 1 head line + elision pointer + 1 tail line')
-  assert.ok(lines[1].startsWith('  1 user: fix the fold boundary ↵ please'), 'head keeps the span\'s first line')
-  assert.equal(lines[2], '… +2 messages between head and tail elided — read the artifact file for the middle.')
-  assert.ok(lines[3].startsWith('  4 assistant: Fixed and tested.'), 'tail keeps the span\'s last line with its TRUE number')
+  assert.equal(lines.length, 5, 'header + one line per message, nothing elided')
+  assert.ok(lines[1].startsWith('  1 user: fix the fold boundary ↵ please'), 'first message on line 1')
+  assert.ok(lines[4].startsWith('  4 assistant: Fixed and tested.'), 'last message keeps its TRUE number')
+  assert.ok(!lines.some((l) => l.includes('elided')), 'no elision pointer anywhere')
   assert.deepEqual(renderSpanPreview([]), ['Span preview: (empty)'])
-  assert.equal(renderSpanPreview(span())[1].startsWith('  1 user: fix the fold boundary ↵ please'), true, 'default cap 30 keeps all of a small span')
+})
+
+test('artifactLineAt: the fold_recall line overload picks the exact message', () => {
+  const messages = span()
+  const first = artifactLineAt(messages, 1)
+  assert.equal(first.ok, true)
+  assert.equal(first.message, messages[0], 'line N returns exactly message N')
+  const last = artifactLineAt(messages, messages.length)
+  assert.equal(last.ok === true && last.message, messages[messages.length - 1], 'last line is the last message')
+  assert.equal(artifactLineAt(messages, 0).ok, false, 'line 0 is rejected')
+  assert.equal(artifactLineAt(messages, messages.length + 1).ok, false, 'beyond-the-end is rejected')
+  assert.equal(artifactLineAt(messages, 2.5).ok, false, 'non-integer lines are rejected')
+  assert.equal(artifactLineAt(null, 1).ok, false, 'non-array input is rejected')
 })
 
 test('writeSpanArtifact: JSONL file, one message per line, parseable back to the exact span', () => {
@@ -178,24 +190,25 @@ test('writeSpanArtifact: missing or non-string session keys fall back to the fla
   }
 })
 
-test('renderArchivePreview: budget-aware — small spans get no inline lines, large spans keep head AND tail', () => {
-  const tiny = span()
-  const small = renderArchivePreview(tiny)
+test('renderArchivePreview: every message line inline; degenerate spans degrade defensively', () => {
+  const small = renderArchivePreview(span())
   assert.ok(small[0].startsWith('Span preview (4 messages'), 'header present')
-  assert.ok(small.length <= 2 && /too small to preview inline|artifact file/.test(small[1]), 'tiny span preview degrades to a pointer')
+  assert.equal(small.length, 5, 'small span lists every message line inline')
   const big = []
   for (let i = 0; i < 60; i += 1) {
     big.push({ role: 'user', content: [{ type: 'text', text: 'request ' + i + ' '.repeat(400) }] })
     big.push({ role: 'assistant', content: [{ type: 'text', text: 'answer ' + i + ' '.repeat(400) }] })
   }
   const large = renderArchivePreview(big)
-  assert.ok(large.length > 5, 'large span keeps substantial preview lines')
-  const pointerIdx = large.findIndex((l) => l.startsWith('… +'))
-  assert.ok(pointerIdx > 0 && pointerIdx < large.length - 1, 'elision pointer sits between the head and the tail')
+  assert.equal(large.length, 121, 'large span lists ALL 120 message lines — no elision, no window')
+  assert.ok(!large.some((l) => l.startsWith('… +')), 'no elision pointer')
   assert.ok(large[large.length - 1].startsWith('120 '), 'the span\'s final message is the last preview line (true number kept)')
-  const tailShown = large.length - pointerIdx - 1
-  assert.ok(tailShown >= 1 && tailShown <= 4, 'reserved tail lines follow the pointer')
   const totalChars = large.join('\n').length
   const estChars = JSON.stringify(big).length
-  assert.ok(totalChars < estChars * 0.15 + 400, 'preview stays a small fraction of the span')
+  assert.ok(totalChars < estChars * 0.6, 'full listing still costs a fraction of the span it indexes')
+  const degenerate = []
+  for (let i = 0; i < 80; i += 1) degenerate.push({ role: 'user', content: [] })
+  const guard = renderArchivePreview(degenerate)
+  assert.equal(guard.length, 2, 'near-empty spans degrade to header + pointer instead of rivaling the span')
+  assert.ok(/artifact file/.test(guard[1]), 'pointer directs at the artifact file')
 })

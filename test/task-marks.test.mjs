@@ -5,7 +5,7 @@
 //   node test/task-marks.test.mjs
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { applyTaskMarks, taskMarksStateSchema, closeTarget, validTaskName, todoBridgeLine, deferredArchivePlan, FOLD_SUMMARY_INSTRUCTION } from '../plugins/compact-region.mjs'
+import { applyTaskMarks, taskMarksStateSchema, closeTarget, validTaskName, todoBridgeLine, deferredArchivePlan, FOLD_SUMMARY_INSTRUCTION, DETAILED_CHECKPOINT_INSTRUCTION } from '../plugins/compact-region.mjs'
 
 /** assistant/message carrying tool-call blocks (shape per dsh-agent-loop). */
 function assistantCall(seq, calls) {
@@ -275,14 +275,16 @@ test('deferredArchivePlan: the deliverable gate (wait / fold / defer / drop)', (
   // do NOT count as deliverables).
   const reasoningOnly = [begun, assistantMsg(30, [{ type: 'reasoning', text: 'thinking…' }, { type: 'tool-call', id: 'c', name: 'read', arguments: '{}' }])]
   assert.equal(deferredArchivePlan(p, nodes, reasoningOnly, []).action, 'wait', 'reasoning/tool-call steps are not deliverables')
-  // ② Deliverable text landed, no successor anchor → fold, bracketed by the
-  // two lifecycle RESULTS: startSeq is the "Task begun" result's seq, endSeq
-  // is the close result's own seq; the begin CALL (seq 10) stays on the
-  // surface, and so does everything after the end.
+  // ② Deliverable text landed, no successor anchor → fold. The span opens
+  // at the first surface node AFTER the "Task begun" result (a region
+  // starting AT the result would split the begin call/result pair — the
+  // engine rejects unbalanced leading cuts) and closes at the close
+  // result's own seq; the begin CALL (seq 10) and the begun result (11)
+  // both stay on the surface, and so does everything after the end.
   const delivered = [...reasoningOnly, assistantMsg(35, [{ type: 'text', text: 'final report' }])]
   const plan = deferredArchivePlan(p, nodes, delivered, [])
   assert.equal(plan.action, 'fold')
-  assert.equal(plan.startSeq, 11, 'span opens at the "Task begun" result, not the call')
+  assert.equal(plan.startSeq, 15, 'span opens just after the "Task begun" result — never at it (unbalanced cut)')
   assert.equal(plan.endSeq, 25, 'span closes at the close result — never the deliverable')
   // ③ Successor anchor open with deliverable before it → same
   // result..result region (successors sit after the end by construction).
@@ -308,6 +310,11 @@ test('deferredArchivePlan: the deliverable gate (wait / fold / defer / drop)', (
   const legacy = deferredArchivePlan(p, nodes, delivered.filter((e) => e !== begun), [])
   assert.equal(legacy.action, 'fold')
   assert.equal(legacy.startSeq, 10, 'legacy spans fold from the call, exactly like v0.18')
+  // ⑨ Nothing between the begun result and the close → the after-result
+  // region would be empty; fall back to the call-anchored region.
+  const tight = deferredArchivePlan(p, [10, 11, 25, 30, 35], delivered, [])
+  assert.equal(tight.action, 'fold')
+  assert.equal(tight.startSeq, 10, 'no node after the begun result folds from the call')
   // Empty-text deliverables do not count.
   const blank = [begun, assistantMsg(30, [{ type: 'text', text: '   ' }])]
   assert.equal(deferredArchivePlan(p, nodes, blank, []).action, 'wait', 'whitespace-only text is not a deliverable')
@@ -325,18 +332,36 @@ test('FOLD_SUMMARY_INSTRUCTION: five-section structure with user-inputs and pitf
   }
   // The span-scoped philosophy and the new first-class rules survive.
   assert.ok(FOLD_SUMMARY_INSTRUCTION.includes('ONE FOLDED SPAN'))
-  assert.ok(FOLD_SUMMARY_INSTRUCTION.includes('\'Task begun\' result'), 'span bracket declared: opens at the Task begun result, closes at the Task ended result')
+  assert.ok(FOLD_SUMMARY_INSTRUCTION.includes('\'Task begun\' result'), 'span bracket declared: opens just after the Task begun result, closes at the Task ended result')
   assert.ok(FOLD_SUMMARY_INSTRUCTION.includes('especially corrections'), 'user feedback rule present')
   assert.ok(FOLD_SUMMARY_INSTRUCTION.includes('why something failed'), 'pitfall-cause rule present')
   assert.ok(FOLD_SUMMARY_INSTRUCTION.includes('relay'), 'fallback-relay rule present (summary may back a never-sent deliverable)')
   assert.ok(FOLD_SUMMARY_INSTRUCTION.includes('cite its conclusions, not restate'), 'delivered-report citation rule present (Outcomes cites, never restates)')
   assert.ok(FOLD_SUMMARY_INSTRUCTION.includes('paths verbatim'), 'anchor-precision rule present (anchors double as recall grep keywords)')
-  assert.ok(FOLD_SUMMARY_INSTRUCTION.includes('exempt from these caps'), 'user-inputs section is exempt from the caps, not in conflict with them')
+  assert.ok(FOLD_SUMMARY_INSTRUCTION.includes('≈10% of the span\u0027s estimated tokens'), 'budget is proportional to the span (10%), not a flat cap')
+  assert.ok(FOLD_SUMMARY_INSTRUCTION.includes('Changes is exhaustive — every file path written or edited'), 'changes are exhaustive, never culled to a bullet count')
+  assert.ok(FOLD_SUMMARY_INSTRUCTION.includes('keeps every request, correction, and approval'), 'user inputs are kept in full')
   assert.ok(FOLD_SUMMARY_INSTRUCTION.includes('stay grep-able later'), 'changes are durable grep-able artifacts; commands belong to What happened')
   // Continuity-checkpoint sections contradict the fold's CLOSED-task contract
   // (they belong to the stock full-context instruction, not to folds).
   for (const banned of ['Pending Jobs', 'Current Work', 'Next Step', 'Primary Request']) {
     assert.ok(!FOLD_SUMMARY_INSTRUCTION.includes(banned), 'banned checkpoint section present: ' + banned)
   }
+})
+
+test('DETAILED_CHECKPOINT_INSTRUCTION: uncapped, exhaustive, structure-preserving stock replacement', () => {
+  // The stock checkpoint's eight sections survive (host consumers and the
+  // continuing model keep a familiar shape)...
+  for (const heading of ['## Primary Request and Intent', '## Key Technical Concepts', '## Files and Code', '## Errors and Fixes', '## Pending Jobs', '## Current Work', '## Next Step', '## Critical Context']) {
+    assert.ok(DETAILED_CHECKPOINT_INSTRUCTION.includes(heading), 'missing heading: ' + heading)
+  }
+  // ...but every cap is gone and detail is mandated.
+  assert.ok(DETAILED_CHECKPOINT_INSTRUCTION.includes('NO length cap and NO bullet-count cap'), 'no caps rule present')
+  assert.ok(DETAILED_CHECKPOINT_INSTRUCTION.includes('compress phrasing, never facts'), 'facts are never the thing compressed')
+  assert.ok(DETAILED_CHECKPOINT_INSTRUCTION.includes('exhaustive, no selection'), 'Files and Code is exhaustive')
+  assert.ok(DETAILED_CHECKPOINT_INSTRUCTION.includes('keep every failure cause'), 'every failure cause survives')
+  assert.ok(DETAILED_CHECKPOINT_INSTRUCTION.includes('prior checkpoint block'), 'prior-checkpoint merge rule present')
+  assert.ok(!DETAILED_CHECKPOINT_INSTRUCTION.includes('terse'), 'the stock terse-bullets directive is gone')
+  assert.notEqual(DETAILED_CHECKPOINT_INSTRUCTION, FOLD_SUMMARY_INSTRUCTION, 'fold and checkpoint instructions stay distinct artifacts')
 })
 

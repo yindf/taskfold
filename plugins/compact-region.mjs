@@ -243,28 +243,45 @@ export function deferredArchivePlan(p, surfaceNodes, events, successorAnchors) {
   if (deliverableSeq === null) return { action: 'wait' }
   if (successor !== null && deliverableSeq > successor) return { action: 'defer' }
   if (nodes.indexOf(p.seq) === -1) return { action: 'drop' }
-  // END: the close result itself; START: the "Task begun" result — the
-  // region is bracketed by the two lifecycle results, both INCLUSIVE
-  // (product ruling). The begin CALL (with its opening reasoning) stays on
-  // the surface as the task's live bookmark, which is why a folded task
-  // shows its task_begin call with no visible result: the summary node
-  // takes that result's place. Everything written AFTER the end — the
-  // deliverable, probes, later turns — stays on the surface untouched; a
-  // LATER task's fold swallows those leftovers when its own span covers
-  // them. If the close result is no longer on the surface, the span is
-  // gone (AUTO compaction shadowed it): drop, exactly like a shadowed
-  // anchor. Legacy/defensive fallback: no "Task begun" result between the
-  // anchor and the close (or it left the surface) → fold from the call
-  // itself, the v0.18 region.
+  // END: the close result itself (the cut AFTER a completed call/result
+  // pair is balanced). START: the first surface node AFTER the "Task begun"
+  // result. The engine's validateSurfaceRegion requires a tool-pairing-
+  // balanced leading cut, and the cut BEFORE the begin result always has
+  // its own unanswered call — a region opening AT the result is structur-
+  // ally uncompactable (0.19.0's anchor did exactly that: every queued
+  // fold was rejected in microseconds and silently settled). The cut
+  // immediately AFTER the completed begin pair is balanced, so the archive
+  // opens with the first node following the result: the begin call, its
+  // opening reasoning, AND the "Task begun" result all stay live on the
+  // surface. Everything written AFTER the end — the deliverable, probes,
+  // later turns — stays on the surface untouched; a LATER task's fold
+  // swallows those leftovers when its own span covers them. If the close
+  // result is no longer on the surface, the span is gone (AUTO compaction
+  // shadowed it): drop, exactly like a shadowed anchor. Fallbacks (begin
+  // result missing or shadowed, or no node between it and the close): fold
+  // from the begin call itself — the v0.18 region, whose leading cut is
+  // balanced by construction.
   if (!Number.isInteger(foldResultSeq) || foldResultSeq < p.seq) return { action: 'wait' }
   if (nodes.indexOf(foldResultSeq) === -1) return { action: 'drop' }
-  let startSeq = p.seq
+  let beginResultSeq = null
   for (const e of list) {
     if (e === null || typeof e !== 'object' || !Number.isInteger(e.seq)) continue
     if (e.seq <= p.seq || e.seq >= foldResultSeq) continue
     if (taskResultEventText(e).indexOf('Task begun: ') !== 0) continue
-    if (nodes.indexOf(e.seq) !== -1) startSeq = e.seq
+    if (nodes.indexOf(e.seq) !== -1) beginResultSeq = e.seq
     break
+  }
+  let startSeq = p.seq
+  if (beginResultSeq !== null) {
+    let next = null
+    for (const s of nodes) {
+      // Strictly between the begun result and the close result: the close
+      // result itself can never open a region (same unbalanced-cut shape),
+      // so the upper bound is exclusive.
+      if (typeof s !== 'number' || s <= beginResultSeq || s >= foldResultSeq) continue
+      if (next === null || s < next) next = s
+    }
+    if (next !== null) startSeq = next
   }
   return { action: 'fold', startSeq, endSeq: foldResultSeq, name: p.name }
 }
@@ -314,11 +331,11 @@ export function todoBridgeLine(openNames) {
  * can pin the structure contract offline.
  */
 export const FOLD_SUMMARY_INSTRUCTION = [
-  'You are summarizing ONE FOLDED SPAN of a longer session. The messages above are exactly that span; your summary replaces them for the model that continues this session. The span opens with the \'Task begun\' result and closes with the \'Task ended\' result — the begin call\'s opening reasoning stays outside the span by design; do not treat its absence as missing work.',
+  'You are summarizing ONE FOLDED SPAN of a longer session. The messages above are exactly that span; your summary replaces them for the model that continues this session. The span opens just after the \'Task begun\' result and closes with the \'Task ended\' result — the begin call, its opening reasoning, and the \'Task begun\' result itself stay outside the span by design; do not treat their absence as missing work.',
   'Summarize ONLY what the span contains — what was done, tried, decided, and produced. Do NOT restate project background, architecture, goals, or context the messages merely assume: the continuing model already has all of that from outside the span.',
   'Output EXACTLY this structure, terse bullets, "(none)" for empty sections:',
   '## What happened',
-  '- [the work performed in this span, in order]',
+  '- [the work performed in this span, in order, one bullet per meaningful step]',
   '## User inputs & decisions',
   '- [the user\'s requests, corrections, rejections, answers, and approvals from THIS span, with the decision each produced; quote verbatim where the exact wording matters]',
   '## Changes',
@@ -329,12 +346,57 @@ export const FOLD_SUMMARY_INSTRUCTION = [
   '- [results, verdicts, failures and their meaning; anything a later step must know]',
   'Rules:',
   '- Boundary: What happened = the span\'s actions and decisions in order, including the commands it ran; Changes = only durable artifacts that outlive the span and stay grep-able later (exact file paths written or edited, key values, durable identifiers). If it is not grep-able later, it belongs in What happened, not Changes.',
-  '- Budget: 80-150 words for a typical span; for a large span (thousands of shadowed tokens) up to 250, absolute cap 300 across the four action sections (What happened, Changes, Pitfalls & gotchas, Outcomes). What happened <=6 bullets; Changes <=6; Pitfalls <=5; Outcomes <=4; User inputs & decisions is exempt from these caps by design — fidelity beats brevity there; merge per-decision instead of truncating. Never pad; a section ends at "(none)" as soon as it is true.',
+  '- Budget: the closing rules state THIS fold\u0027s concrete word budget (≈10% of the span\u0027s estimated tokens). Spend it on fidelity, never on padding; a section ends at "(none)" as soon as it is true. Sections get different treatment: What happened keeps every meaningful step as its own bullet (compress phrasing, not facts; merge only same-action repeats); Changes is exhaustive — every file path written or edited, every key value, no selection; Pitfalls & gotchas keeps every failure and its cause; Outcomes keeps every result and verdict; User inputs & decisions keeps every request, correction, and approval. When the budget forces triage, drop narrative connective tissue and restated context first — never anchors, decisions, or failure causes.',
   '- Preserve exact file paths, commands, error strings, identifiers, and numbers. When this summary names files, commands, or errors, keep them precise (paths verbatim) — the reader will only recall the original span if these anchors fail to answer its question, and precise anchors double as grep keywords for that recall.',
   '- Capture user feedback and explicit instructions faithfully, especially corrections.',
   '- Pitfalls and their causes are the span\'s most reusable knowledge: never drop why something failed.',
   '- If the deliverable was never sent, a later turn may relay this summary to the user as the task report\'s basis: keep every section accurate and human-readable. If the span already contains the delivered report, Outcomes should cite its conclusions, not restate them.',
   '- Do NOT mention summarization or compaction. Output only the summary text: no tool calls or other actions.'
+].join('\n')
+
+// Stock (non-fold) compaction normally runs the host's terse checkpoint
+// instruction. Product ruling: checkpoints carry NO prompt-side caps and
+// demand maximal detail — a long context must not lose its facts to terse
+// bullets. The sanctioned customization hook (summarize()) is bound to the
+// host's own AUTO engine instance, which a plugin cannot replace, so this
+// instruction is swapped in at the one neutral seam every compaction call
+// crosses: ctx.llm.stream (see apply()).
+export const DETAILED_CHECKPOINT_INSTRUCTION = [
+  'You are now acting as a compaction engine for this AI coding assistant. Condense the conversation ABOVE into a structured checkpoint that lets another model resume the work with no loss of context.',
+  '',
+  'Output EXACTLY the Markdown structure below: keep every section, in order. Use information-dense bullets. Write "(none)" for an empty section — never drop a section.',
+  '',
+  '## Primary Request and Intent',
+  '- [the user\'s original and evolving goals, quoted verbatim where the exact wording matters; every request, correction, and approval]',
+  '',
+  '## Key Technical Concepts',
+  '- [technologies, frameworks, patterns, and conventions in play, each with the detail a resuming model needs to act on it]',
+  '',
+  '## Files and Code',
+  '- [every exact path touched: why it matters, key changes, key values, and critical snippets — exhaustive, no selection]',
+  '',
+  '## Errors and Fixes',
+  '- [every error: its exact text, how it was resolved or worked around, plus any related user feedback; keep every failure cause]',
+  '',
+  '## Pending Jobs',
+  '- [explicitly requested work not yet completed]',
+  '',
+  '## Current Work',
+  '- [precisely what was in progress at this checkpoint]',
+  '',
+  '## Next Step',
+  '- [the single next action, directly in line with the most recent request, or "(none)"]',
+  '',
+  '## Critical Context',
+  '- [decisions and their rationale, constraints, user preferences, open questions, data needed to continue — keep every distinct fact as its own bullet]',
+  '',
+  'Rules:',
+  '- There is NO length cap and NO bullet-count cap: be as detailed as the source material supports; compress phrasing, never facts. Distinct facts never share a bullet; drop narrative connective tissue before dropping any fact.',
+  '- Write precise English engineering prose. Preserve exact file paths, commands, error strings, identifiers, numeric values, function signatures, and syntax fragments.',
+  '- Capture user feedback and explicit instructions faithfully, especially corrections.',
+  '- Do NOT mention this summarization request or that the context was compacted.',
+  '- Output only the checkpoint text: do not call any tool or take any other action.',
+  '- If the conversation already contains a prior checkpoint block, it is a PRIOR condensation. Do not copy it forward verbatim: preserve still-true facts, drop stale ones, and merge newer information into a single consolidated summary under the same structure.'
 ].join('\n')
 
 /**
@@ -508,6 +570,39 @@ export default {
   // engine's own ctx use — tokenMeter/llm) are host-plane services.
   inject: ['tools', 'systemPrompt', 'sessionProjections', 'tokenMeter', 'llm'],
   apply(ctx) {
+    // Detailed stock checkpoints: swap the host's terse instruction for
+    // DETAILED_CHECKPOINT_INSTRUCTION at the one seam every compaction call
+    // crosses. Discriminator (from the host's summarizeWithLlm): purpose
+    // 'compaction' + the final instruction message carries
+    // source.plugin === 'dsh-compaction-basic'. Our own fold calls use the
+    // same purpose but their instruction message has NO source, so folds are
+    // untouched. Idempotent via marker; any failure leaves the call original.
+    try {
+      const llm = ctx.llm
+      if (llm !== null && typeof llm === 'object' && typeof llm.stream === 'function' && llm.__taskfoldDetailedCheckpoints !== true) {
+        const origStream = llm.stream.bind(llm)
+        llm.__taskfoldDetailedCheckpoints = true
+        llm.stream = (options) => {
+          let rewritten = options
+          try {
+            if (options !== null && typeof options === 'object' && options.purpose === 'compaction' && Array.isArray(options.messages) && options.messages.length > 0) {
+              const last = options.messages[options.messages.length - 1]
+              const src = last !== null && typeof last === 'object' && last.source !== null && typeof last.source === 'object' ? last.source : undefined
+              if (src !== undefined && src.kind === 'plugin' && src.plugin === 'dsh-compaction-basic') {
+                rewritten = {
+                  ...options,
+                  messages: [...options.messages.slice(0, -1), {
+                    ...last,
+                    content: [{ type: 'text', text: DETAILED_CHECKPOINT_INSTRUCTION }]
+                  }]
+                }
+              }
+            }
+          } catch (err) { /* stream the original call untouched */ }
+          return origStream(rewritten)
+        }
+      }
+    } catch (err) { /* llm service absent: nothing to detail */ }
     // Native-event derivation folds into this projection; the registration's
     // disposer rides the plugin fiber, so it unloads with us. stateVersion 9
     // discards persisted rows from earlier reducer generations (v8 predates
@@ -661,11 +756,17 @@ export default {
             ? '\nThe task this span belongs to is named "' + closingName + '". Rules for this fold:\n'
               + '- Begin the summary with the heading line "# ' + closingName + '" — nothing before it. That heading prefixes the structure above: follow it with the five sections exactly as instructed.\n'
               + '- This fold CLOSES the task: no further work belongs to it, so do not report anything as unfinished or pending merely because of how the span ends — this very fold is the task\u0027s ending. Closed is not the same as succeeded: if the work ended in a genuine failure or dead end, report that honestly in Outcomes.\n'
-              + '- Do NOT summarize task_begin / task_end / task_fold calls, their results, or any narration that merely announces starting or finishing the task — that is lifecycle bookkeeping, not content. Summarize the WORK itself.'
+              + '- Do NOT summarize task_begin / task_end calls, their results, or any narration that merely announces starting or finishing the task — that is lifecycle bookkeeping, not content. Summarize the WORK itself.'
             : ''
+          // Concrete per-fold budget: ~10% of the span's estimated tokens
+          // (chars/4 heuristic), floored so tiny spans still get a usable
+          // summary, ceilinged to stay inside the summarizer's maxTokens.
+          const estTokens = Math.max(1, Math.floor(JSON.stringify(input.messages).length / 4))
+          const wordBudget = Math.min(4000, Math.max(150, Math.floor((estTokens * 0.1) / 1.35)))
+          const budgetLine = '\nWord budget for THIS fold: at most ~' + wordBudget + ' words (≈10% of ~' + estTokens + ' estimated span tokens).'
           const messages = [...input.messages, {
             role: 'user',
-            content: [{ type: 'text', text: FOLD_SUMMARY_INSTRUCTION + closing }]
+            content: [{ type: 'text', text: FOLD_SUMMARY_INSTRUCTION + budgetLine + closing }]
           }]
           const options = {
             provider: target.provider,
@@ -697,7 +798,7 @@ export default {
           //   ## Fold archive
           //   - fold #N · originals (JSONL, one message per line — span
           //     "Task begun" result … "Task ended" result): <path>
-          //   + the per-message span preview (preview line N = artifact
+          //   + the complete span preview (preview line N = artifact
           //     line N). The committed node then carries its own recall
           //     handles; no separate notice message is injected at all. If
           //     the engine later rejects the commit, the pre-written
@@ -716,7 +817,7 @@ export default {
               // paragraph in every markdown renderer, which mashed the
               // preview into a blob. A fenced code block preserves the
               // per-line layout; a blank line separates the metadata bullet.
-              const section = '\n\n## Fold archive\n\n- fold #' + foldNo + ' · originals (JSONL, one message per line — span: "Task begun" result … "Task ended" result): ' + file + '\n\n```\n'
+              const section = '\n\n## Fold archive\n\n- fold #' + foldNo + ' · originals (JSONL, one message per line — span: just after the "Task begun" result … "Task ended" result): ' + file + '\n\n```\n'
                 + renderArchivePreview(input.messages).join('\n') + '\n```'
               const last = withFooter[withFooter.length - 1]
               withFooter[withFooter.length - 1] = { ...last, text: last.text.replace(/\s+$/, '') + section }
@@ -847,6 +948,11 @@ export default {
         } catch (err) {
           if (err !== null && typeof err === 'object' && typeof err.message === 'string'
             && err.message.includes('balanced boundary')) {
+            // Shrinking the END can never fix an unbalanced START boundary —
+            // retrying would walk the whole span pointlessly and end in the
+            // silent null-settle path. Fail loud instead: the drain records
+            // a failure bucket and the runtime context surfaces it.
+            if (err.message.includes('start seq')) throw err
             let prev = -1
             for (const s of session.surface.nodes) {
               if (typeof s === 'number' && s < end && s >= startSeq && s > prev) prev = s
@@ -954,7 +1060,7 @@ export default {
 
     const taskBegin = {
       name: 'task_begin',
-      description: 'Begin a NAMED task. The name is the identity; when the work is done, one task_end({ name }) call ends it and queues archival — the span folds automatically at the next step boundary after your deliverable. A name already open is rejected; names must not contain " —" (a space followed by an em dash). Tasks can nest: task_begin while a task is open opens a subtask (innermost closes first). The call message (with its opening reasoning) stays live in the transcript as the task\'s bookmark; the eventual fold\'s archive starts at the \'Task begun\' result — the fold\'s summary node stands in for it. Call alone in a step.',
+      description: 'Begin a NAMED task. The name is the identity; when the work is done, one task_end({ name }) call ends it and queues archival — the span folds automatically at the next step boundary after your deliverable. A name already open is rejected; names must not contain " —" (a space followed by an em dash). Tasks can nest: task_begin while a task is open opens a subtask (innermost closes first). The call message (with its opening reasoning) stays live in the transcript as the task\'s bookmark; the eventual fold\'s archive starts just after the \'Task begun\' result — the result itself stays live beside the call. Call alone in a step.',
       parameters: {
         type: 'object',
         properties: {
@@ -1008,7 +1114,7 @@ export default {
 
     const taskEnd = {
       name: 'task_end',
-      description: 'End the INNERMOST open task by name: it closes the task and QUEUES archival — the span folds AUTOMATICALLY at the next step boundary after the task\u0027s deliverable/report text lands (possibly mid-turn). So: finish the work, call task_end, then deliver the report in the same turn with full context — the report is text that lands AFTER the task_end result (text in the same assistant message as the call does not count as the deliverable); folding never precedes a deliverable. Folds are system-executed: the committed summary node ends with a Fold archive section (same format as the summary sections) carrying the fold number, the artifact path (JSONL, one message per line — the span runs from the \u0027Task begun\u0027 result through the \u0027Task ended\u0027 result, so the task_begin call and its opening reasoning stay live in the transcript), and the per-message span preview. LIFO: newer open tasks block older ones; a blocked or unknown name fails and changes nothing (close the newer task first). Too-small spans close without folding; failed auto-folds retry at every step boundary. Failure outcomes are explained in the result; follow it. Call alone in a step.',
+      description: 'End the INNERMOST open task by name: it closes the task and QUEUES archival — the span folds AUTOMATICALLY at the next step boundary after the task\u0027s deliverable/report text lands (possibly mid-turn). So: finish the work, call task_end, then deliver the report in the same turn with full context — the report is text that lands AFTER the task_end result (text in the same assistant message as the call does not count as the deliverable); folding never precedes a deliverable. Folds are system-executed: the committed summary node ends with a Fold archive section (same format as the summary sections) carrying the fold number, the artifact path (JSONL, one message per line — the span runs from just after the \u0027Task begun\u0027 result through the \u0027Task ended\u0027 result, so the task_begin call, its opening reasoning, and the \u0027Task begun\u0027 result itself stay live in the transcript), and a complete span preview of the archived messages — one line per message, no elision (inline when the summary budget allows). LIFO: newer open tasks block older ones; a blocked or unknown name fails and changes nothing (close the newer task first). Too-small spans close without folding; failed auto-folds retry at every step boundary. Failure outcomes are explained in the result; follow it. Call alone in a step.',
       parameters: {
         type: 'object',
         properties: {
@@ -1083,7 +1189,7 @@ export default {
     ctx.systemPrompt.section({
       name: 'task-marker-compaction',
       order: 650,
-      text: 'MANDATORY task lifecycle discipline: every discrete task MUST be wrapped in task marks. A task is work that produces a verifiable outcome (a fix, a module, an analysis, a delegated review); a single read/grep/probe is a step, not a task — never open a mark for a step, and when in doubt, treat the work as a task (a small fold costs one summary node; an unfolded task costs a degraded context). Before a task, call task_begin({ name }) alone in a step. The moment its work is done, call task_end({ name }) alone in a step: it ends the task and QUEUES archival — then deliver the task\u0027s report or deliverable (to the user, or a subagent\u0027s report to its parent) in the SAME turn, as text AFTER the task_end result and written with FULL context while every detail is still on the surface. The fold itself happens AUTOMATICALLY at the next step boundary after your deliverable lands — possibly mid-turn — so folding never precedes a deliverable and the details you deliver from are never compressed. The mark is a bookmark, not a deadline: while waiting on a background job or user reply, leave it open and do other work; fold when the wait resolves. Multi-part work MUST be split into nested subtasks (innermost closes first); a long detour or dead-end exploration inside a task is one such part — wrap it as a short subtask and close it. Folded details are never lost: list_folds → fold_recall({ fold }) → read/grep the artifact. Recall on demand — when a summary\u0027s anchors fail to answer a concrete question the work or the report needs, or when a new task genuinely depends on an earlier folded task\u0027s details (recall that fold, list_folds → fold_recall → read/grep, before starting it); never guess, never ask the user\u0027s permission to recall, never recall without such a need. Never restate a folded span from memory; never track message positions yourself. Each fold summary node ends with a Fold archive section (fold number, artifact path, per-message preview). A fold\u0027s archive spans the \u0027Task begun\u0027 result through the \u0027Task ended\u0027 result, so the task_begin call and its opening reasoning stay live: a folded task shows its begin call with no visible result — the fold\u0027s summary node stands in for it. Runtime context carries lifecycle nudges — treat them as directives and act on them.'
+      text: 'MANDATORY task lifecycle discipline: every discrete task MUST be wrapped in task marks. A task is work that produces a verifiable outcome (a fix, a module, an analysis, a delegated review); a single read/grep/probe is a step, not a task — never open a mark for a step, and when in doubt, treat the work as a task (a small fold costs one summary node; an unfolded task costs a degraded context). Before a task, call task_begin({ name }) alone in a step. The moment its work is done, call task_end({ name }) alone in a step: it ends the task and QUEUES archival — then deliver the task\u0027s report or deliverable (to the user, or a subagent\u0027s report to its parent) in the SAME turn, as text AFTER the task_end result and written with FULL context while every detail is still on the surface. The fold itself happens AUTOMATICALLY at the next step boundary after your deliverable lands — possibly mid-turn — so folding never precedes a deliverable and the details you deliver from are never compressed. The mark is a bookmark, not a deadline: while waiting on a background job or user reply, leave it open and do other work; fold when the wait resolves. Multi-part work MUST be split into nested subtasks (innermost closes first); a long detour or dead-end exploration inside a task is one such part — wrap it as a short subtask and close it. Folded details are never lost: list_folds → fold_recall({ fold }) → read/grep the artifact. Recall on demand — when a summary\u0027s anchors fail to answer a concrete question the work or the report needs, or when a new task genuinely depends on an earlier folded task\u0027s details (recall that fold, list_folds → fold_recall → read/grep, before starting it); never guess, never ask the user\u0027s permission to recall, never recall without such a need. Never restate a folded span from memory; never track message positions yourself. Each fold summary node ends with a Fold archive section (fold number, artifact path, and the complete span preview — one line per archived message; fold_recall\u0027s line overload returns any numbered line verbatim). A fold\u0027s archive spans just after the \u0027Task begun\u0027 result through the \u0027Task ended\u0027 result, so the task_begin call, its opening reasoning, and the \u0027Task begun\u0027 result itself stay live. Runtime context carries lifecycle nudges — treat them as directives and act on them.'
     })
 
     const TASK_TOOL_RE = /^(task_begin|task_end|task_fold|list_folds|fold_recall|todo_write)$/
