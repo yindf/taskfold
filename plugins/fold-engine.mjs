@@ -9,8 +9,11 @@
  * closing declaration and surface allow it (surface prefix + span +
  * scoping instruction → strict prefix of the main conversation request →
  * provider prefix-cache reuse), falling back to the span-only envelope.
- * A scope-adherence guard rejects any summary titled other than the
- * closing task.
+ * A scope-adherence guard scores the summary's first heading against
+ * the closing task name with a lenient normalized similarity (see
+ * headingSimilarity): typographic drift — curly quotes, case, spacing,
+ * reordered words — passes; only a genuinely foreign heading (drift
+ * into the earlier conversation) fails.
  *
  * Engine resolution: ALWAYS this ScopedEngine instance — instantiated once
  * and cached on success. auto:false keeps the constructor side-effect-free;
@@ -69,6 +72,73 @@ async function importHostPackage(pkgName) {
 }
 
 /**
+ * Lenient heading comparison for the scope-adherence guard. The guard's
+ * job is drift detection (did the model summarize the right task?), not
+ * typography policing — the former byte-exact compare turned cosmetic
+ * model behaviors (curly quotes for ASCII ones, translated headings in
+ * non-English conversations) into scope failures, and every scope
+ * failure re-summarizes the whole span on the next step boundary.
+ *
+ * normalizeHeadingTitle folds the common typographic transforms (NFKC,
+ * curly→straight quotes/dashes, whitespace, case). headingSimilarity
+ * then takes the best of two metrics: sequence ratio (character-level
+ * edit distance) and token overlap (order-insensitive and
+ * subset-tolerant — a truncated or reordered heading still scores 1.0).
+ * A translated heading stays BELOW the threshold on purpose: the
+ * closing instruction prints the heading to copy verbatim, so a
+ * translation means the model ignored it and a retry is the cheap
+ * fix. What must never score high is a heading from the EARLIER
+ * CONVERSATION — no drift survivor resembles the closing name.
+ */
+export const HEADING_SIMILARITY_THRESHOLD = 0.6
+
+export function normalizeHeadingTitle(value) {
+  if (typeof value !== 'string') return ''
+  return value.normalize('NFKC')
+    .replace(/[\u2018\u2019\u201A\u201B\u2032\u2035]/g, "'")
+    .replace(/[\u201C\u201D\u201E\u201F\u2033\u2036]/g, '"')
+    .replace(/[\u2010\u2011\u2012\u2013\u2014\u2015\u2212]/g, '-')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase()
+}
+
+function levenshtein(a, b) {
+  if (a === b) return 0
+  if (a.length === 0) return b.length
+  if (b.length === 0) return a.length
+  let prev = Array.from({ length: b.length + 1 }, (_, i) => i)
+  for (let i = 1; i <= a.length; i += 1) {
+    const cur = [i]
+    for (let j = 1; j <= b.length; j += 1) {
+      const cost = a.charCodeAt(i - 1) === b.charCodeAt(j - 1) ? 0 : 1
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
+    }
+    prev = cur
+  }
+  return prev[b.length]
+}
+
+function tokenOverlap(a, b) {
+  const split = (s) => new Set(s.split(/[^\p{L}\p{N}]+/u).filter((t) => t.length > 0))
+  const ta = split(a)
+  const tb = split(b)
+  if (ta.size === 0 || tb.size === 0) return 0
+  let inter = 0
+  for (const t of ta) if (tb.has(t)) inter += 1
+  return inter / Math.min(ta.size, tb.size)
+}
+
+export function headingSimilarity(a, b) {
+  const na = normalizeHeadingTitle(a)
+  const nb = normalizeHeadingTitle(b)
+  if (na === nb) return 1
+  if (na.length === 0 || nb.length === 0) return 0
+  const seq = 1 - levenshtein(na, nb) / Math.max(na.length, nb.length)
+  return Math.max(seq, tokenOverlap(na, nb))
+}
+
+/**
  * Build the scoped engine once. `closingTasks` is the per-session Map the
  * fold drain writes the closing declaration into ({ name, startSeq, endSeq },
  * keyed by sessionId): the name DECLARES the completion (the span's own
@@ -111,7 +181,9 @@ async function buildScopedEngine(ctx, closingTasks) {
       const closingName = closingInfo !== null && typeof closingInfo === 'object' && typeof closingInfo.name === 'string' ? closingInfo.name : ''
       const closing = closingName.length > 0
         ? '\nThe task this span belongs to is named "' + closingName + '". Rules for this fold:\n'
-          + '- Begin the summary with the heading line "# ' + closingName + '" — nothing before it. That heading prefixes the structure above: follow it with the five sections exactly as instructed.\n'
+          + '- First output line, exactly this heading — copy it, do not translate or reformat it; the summary body may use any language:\n\n'
+          + '  # ' + closingName + '\n\n'
+          + '  Follow it with the five sections exactly as instructed.\n'
           + '- This fold CLOSES the task: no further work belongs to it, so do not report anything as unfinished or pending merely because of how the span ends — this very fold is the task\u0027s ending. Closed is not the same as succeeded: if the work ended in a genuine failure or dead end, report that honestly in Outcomes.\n'
           + '- Do NOT summarize task_begin / task_end calls, their results, or any narration that merely announces starting or finishing the task — that is lifecycle bookkeeping, not content. Summarize the WORK itself.'
         : ''
@@ -171,14 +243,23 @@ async function buildScopedEngine(ctx, closingTasks) {
       const summary = rawOutput.filter((b) => b !== null && typeof b === 'object' && b.type === 'text' && typeof b.text === 'string')
       if (!summary.some((b) => b.text.trim().length > 0)) throw new Error('summarization produced no text summary content')
       // SCOPE ADHERENCE GUARD (prefix envelope): the instruction demands
-      // the heading '# <closingName>'; a summary titled anything else
-      // means the model folded the wrong region (or drifted into the
-      // earlier conversation). Fail loud → failure bucket → retried on a
+      // a first heading naming the closing task; a summary titled
+      // anything unrelated means the model folded the wrong region (or
+      // drifted into the earlier conversation). The comparison is
+      // similarity-based and deliberately lenient (headingSimilarity):
+      // typographic drift passes without a retry, so only genuinely
+      // foreign headings fail loud → failure bucket → retried on a
       // later boundary; never commit a mis-scoped summary.
       if (closingName.length > 0) {
         const firstText = summary.find((b) => b.text.trim().length > 0)
-        if (firstText !== undefined && firstText.text.trim().indexOf('# ' + closingName) !== 0) {
-          throw new Error('summary scope failure: expected the heading \'# ' + closingName + '\', got: ' + firstText.text.trim().slice(0, 80))
+        if (firstText !== undefined) {
+          const firstLine = firstText.text.trim().split('\n')[0].trim()
+          const headingMatch = /^#{1,6}[ \t]*(.*)$/.exec(firstLine)
+          const title = headingMatch !== null ? headingMatch[1] : firstLine
+          const score = headingSimilarity(title, closingName)
+          if (headingMatch === null || score < HEADING_SIMILARITY_THRESHOLD) {
+            throw new Error('summary scope failure: expected a heading similar to \'# ' + closingName + '\' (similarity ' + score.toFixed(2) + (headingMatch === null ? ', first line is not a heading' : '') + '), got: ' + firstLine.slice(0, 80))
+          }
         }
       }
       // FOLD ARCHIVE SECTION EMBEDDED IN THE SUMMARY NODE (product

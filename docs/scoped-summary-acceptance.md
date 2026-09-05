@@ -35,9 +35,14 @@ contradict the close.
 Audience is the continuing model (no human persona). Five sections: What
 happened / User inputs & decisions / Changes / Pitfalls & gotchas / Outcomes,
 plus a per-fold word budget (~10% of the span's estimated tokens) and — when
-the closing declaration is available — a forced `# <task name>` heading and
-"this fold CLOSES the task" rules. A scope-adherence guard rejects any
-summary whose heading is not the closing task's name.
+the closing declaration is available — a forced `# <task name>` heading
+(the instruction prints the exact required line verbatim with a one-line
+copy rule — no translation or reformatting, whatever language the summary
+body uses) and
+"this fold CLOSES the task" rules. A scope-adherence guard scores the
+summary's first heading against the closing task's name with a lenient
+normalized similarity (typographic drift passes); only a genuinely foreign
+heading — drift into the earlier conversation — is rejected and retried.
 
 Recall pointers live INSIDE the committed summary node: its trailing
 `## Fold archive` section carries the fold number, the JSONL artifact path,
