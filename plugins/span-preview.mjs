@@ -234,19 +234,56 @@ export function renderArchivePreview(messages) {
 // Returns the file path, or undefined when writing fails (the fold itself
 // must not fail because a diagnostic file could not be written).
 function slugPart(raw, max) {
-  const slug = String(raw).replace(/[^\p{L}\p{N}_-]+/gu, '-').replace(/^-+|-+$/g, '').slice(0, max)
+  // String(undefined) is "undefined" and String(12345) is "12345" — coerced
+  // non-strings would silently create directories named after the coercion.
+  // Only a real string may scope; anything else degrades to the empty slug.
+  const text = typeof raw === 'string' ? raw : ''
+  const slug = text.replace(/[^\p{L}\p{N}_-]+/gu, '-').replace(/^-+|-+$/g, '').slice(0, max)
   return slug.length > 0 ? slug : ''
 }
 
-export function writeSpanArtifact(messages, nameKey, sessionKey) {
+// Session-local artifact directory: the active persistence backend's own
+// location for this session — locate() resolves the backend-owned JSONL log
+// path, and its dirname is the per-session directory the backend documents
+// as "available for future session-local artifacts". Backend-neutral by
+// construction: no session-path encoding is replicated here. Anything
+// missing (no backend via ctx.get, backend without per-session artifacts,
+// no session header, locate() throwing) degrades to undefined, and the
+// artifact writer falls back to the OS tmp root.
+export function sessionArtifactDir(ctx, session) {
   try {
-    const root = nodePath.join(nodeOs.tmpdir(), 'taskfold-artifacts')
-    // Per-session subdirectory: the OS temp dir is shared by every session
-    // on the machine, and a flat directory interleaves concurrent sessions'
-    // artifacts (and leaks task names across them). Scope writes by session
-    // id; without one, fall back to the legacy flat directory.
-    const scope = slugPart(sessionKey, 64)
-    const dir = scope.length > 0 ? nodePath.join(root, scope) : root
+    const persistence = ctx !== null && typeof ctx === 'object' && typeof ctx.get === 'function' ? ctx.get('sessionPersistence') : undefined
+    if (persistence === null || persistence === undefined || typeof persistence.locate !== 'function') return undefined
+    const meta = session !== null && typeof session === 'object' ? session.header : undefined
+    if (meta === null || meta === undefined) return undefined
+    const located = persistence.locate(meta)
+    const p = located !== null && typeof located === 'object' && typeof located.path === 'string' && located.path.length > 0 ? located.path : undefined
+    return p === undefined ? undefined : nodePath.dirname(nodePath.resolve(p))
+  } catch (err) {
+    return undefined
+  }
+}
+
+export function writeSpanArtifact(messages, nameKey, opts) {
+  try {
+    const o = opts !== null && typeof opts === 'object' ? opts : {}
+    // Location precedence: (1) the session's own artifact directory (see
+    // sessionArtifactDir) — artifacts live exactly as long as the session's
+    // durable log, OS temp cleanup never sweeps them, and cross-session
+    // mixing is impossible by construction; a taskfold/ subfolder keeps
+    // them clear of backend-owned files. (2) the OS tmp root scoped by a
+    // slugified session key — without scoping, that shared root interleaves
+    // concurrent sessions' artifacts and leaks task names across them.
+    // (3) the flat legacy tmp root when no usable key exists.
+    const sessionDir = typeof o.sessionDir === 'string' && o.sessionDir.length > 0 ? nodePath.resolve(o.sessionDir) : ''
+    let dir
+    if (sessionDir !== '') {
+      dir = nodePath.join(sessionDir, 'taskfold')
+    } else {
+      const root = nodePath.join(nodeOs.tmpdir(), 'taskfold-artifacts')
+      const scope = slugPart(o.sessionKey, 64)
+      dir = scope.length > 0 ? nodePath.join(root, scope) : root
+    }
     nodeFs.mkdirSync(dir, { recursive: true })
     const slug = slugPart(nameKey, 60)
     const file = nodePath.join(dir, (slug.length > 0 ? slug : 'artifact') + '-' + Date.now().toString(36) + '.jsonl')

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import nodeFs from 'node:fs'
 import nodePath from 'node:path'
 import nodeOs from 'node:os'
-import { blockBrief, messagePreviewLine, renderSpanPreview, writeSpanArtifact, callBrief, resultBrief, collectToolCalls, renderArchivePreview } from '../plugins/span-preview.mjs'
+import { blockBrief, messagePreviewLine, renderSpanPreview, writeSpanArtifact, callBrief, resultBrief, collectToolCalls, renderArchivePreview, sessionArtifactDir } from '../plugins/span-preview.mjs'
 
 /** Shape-accurate request messages (the same blocks deriveEventMessage yields). */
 function span() {
@@ -130,7 +130,7 @@ test('writeSpanArtifact: provenance metadata is stripped, content kept whole', (
 })
 
 test('writeSpanArtifact: a session key scopes artifacts into a per-session subdirectory', () => {
-  const file = writeSpanArtifact(span(), 'scoped artifact', 'sess 42/b')
+  const file = writeSpanArtifact(span(), 'scoped artifact', { sessionKey: 'sess 42/b' })
   assert.ok(file !== undefined)
   const dir = nodePath.dirname(file)
   assert.equal(nodePath.basename(dir), 'sess-42-b', 'session key is slugified into its own subdir')
@@ -138,6 +138,44 @@ test('writeSpanArtifact: a session key scopes artifacts into a per-session subdi
   assert.ok(nodeFs.existsSync(file), 'artifact written inside the session dir')
   nodeFs.rmSync(file)
   nodeFs.rmdirSync(dir)
+})
+
+test('writeSpanArtifact: a session dir override lands artifacts in its taskfold subfolder', () => {
+  const base = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'tf-sessiondir-'))
+  try {
+    const file = writeSpanArtifact(span(), 'session local', { sessionDir: base })
+    assert.ok(file !== undefined)
+    assert.equal(nodePath.basename(nodePath.dirname(file)), 'taskfold', 'artifact sits in the taskfold subfolder')
+    assert.equal(nodePath.dirname(nodePath.dirname(file)), nodePath.resolve(base), 'subfolder sits directly in the given session dir')
+    assert.ok(nodeFs.existsSync(file), 'artifact written inside the session-local folder')
+    assert.ok(writeSpanArtifact(span(), 'override wins', { sessionDir: base, sessionKey: 'sess 42/b' }) !== undefined, 'sessionDir takes precedence over the tmp key path')
+  } finally {
+    nodeFs.rmSync(base, { recursive: true, force: true })
+  }
+})
+
+test('sessionArtifactDir: dirname of the persistence backend\u0027s located artifact, with defensive fallbacks', () => {
+  const logPath = nodePath.join(nodePath.resolve(nodeOs.tmpdir()), 'fake-sessions', '--proj--', 'session-1', 'session.jsonl')
+  const backend = { locate: (meta) => (meta !== undefined ? { kind: 'jsonl', path: logPath } : undefined) }
+  const ctx = { get: (name) => (name === 'sessionPersistence' ? backend : undefined) }
+  const resolved = sessionArtifactDir(ctx, { header: { id: 'session-1' } })
+  assert.equal(resolved, nodePath.dirname(logPath), 'located path dirname, resolved absolute')
+  assert.ok(nodePath.isAbsolute(resolved), 'returned dir is absolute')
+  assert.equal(sessionArtifactDir(ctx, {}), undefined, 'no session header degrades to undefined')
+  assert.equal(sessionArtifactDir({ get: () => undefined }, { header: {} }), undefined, 'no backend degrades to undefined')
+  assert.equal(sessionArtifactDir({}, { header: {} }), undefined, 'ctx without get degrades to undefined')
+  const throwing = { get: () => ({ locate: () => { throw new Error('boom') } }) }
+  assert.equal(sessionArtifactDir(throwing, { header: {} }), undefined, 'locate() throwing degrades to undefined')
+})
+
+test('writeSpanArtifact: missing or non-string session keys fall back to the flat root', () => {
+  for (const bad of [undefined, null, '', 12345]) {
+    const file = writeSpanArtifact(span(), 'flat fallback probe', { sessionKey: bad })
+    assert.ok(file !== undefined)
+    assert.equal(nodePath.basename(nodePath.dirname(file)), 'taskfold-artifacts', `key ${String(bad)} must not create a subdirectory`)
+    assert.notEqual(nodePath.basename(nodePath.dirname(file)), 'undefined', 'String(undefined) must never become a directory name')
+    nodeFs.rmSync(file)
+  }
 })
 
 test('renderArchivePreview: budget-aware — small spans get no inline lines, large spans keep head AND tail', () => {

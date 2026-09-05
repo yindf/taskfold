@@ -67,7 +67,7 @@ import nodeUrl from 'node:url'
 
 // Shared span-preview/JSONL helpers: preview line N and artifact line N are
 // derived from the same message, so numbering maps both ways.
-import { renderArchivePreview, writeSpanArtifact } from './span-preview.mjs'
+import { renderArchivePreview, writeSpanArtifact, sessionArtifactDir } from './span-preview.mjs'
 
 /** Session-projection key under which the open-mark stack is published. */
 export const TASK_MARKS_KEY = 'taskMarks'
@@ -710,7 +710,7 @@ export default {
             }
             foldNo += 1
             const name = typeof closingName === 'string' && closingName.length > 0 ? closingName : 'fold'
-            const file = writeSpanArtifact(input.messages, name, agent.session.id)
+            const file = writeSpanArtifact(input.messages, name, { sessionDir: sessionArtifactDir(ctx, agent.session), sessionKey: agent.session.id })
             if (file !== undefined) {
               // Markdown-safe formatting: single newlines collapse into one
               // paragraph in every markdown renderer, which mashed the
