@@ -3,7 +3,7 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
-## 0.22.1 — code-review remediation: schema hardening, module split, dedup (unreleased draft 2026-09-05)
+## 0.22.1 — code-review remediation: schema hardening, module split, dedup (2026-09-05)
 
 - **Fixes**: the taskMarks state schema now validates
   `pendingArchives[].foldResultSeq` for real (positive integer, like every
