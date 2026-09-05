@@ -64,6 +64,16 @@ export function callBrief(name, argsStr) {
     const label = typeof args.description === 'string' && args.description.trim().length > 0 ? args.description : String(args.command === undefined ? '' : args.command)
     return '→pwsh ‹' + clip(label, 60) + '›'
   }
+  // Every other tool: prefer a human-authored label carried in the arguments
+  // — `description` (subagent-style active-voice label) first, then `name`
+  // (task marks, skills) — before degrading to clipped raw JSON. The reader
+  // can then tell calls apart at a glance instead of parsing argument soup.
+  if (typeof args.description === 'string' && args.description.trim().length > 0) {
+    return '→' + tool + ' ‹' + clip(args.description, 60) + '›'
+  }
+  if (typeof args.name === 'string' && args.name.trim().length > 0) {
+    return '→' + tool + '(' + clip(args.name, 60) + ')'
+  }
   return '→' + tool + '(' + clip(argsStr === undefined ? '' : argsStr, TEXT_CLIP) + ')'
 }
 
@@ -201,15 +211,20 @@ export function renderArchivePreview(messages) {
   return lines
 }
 
-// fold_recall's line overload: the exact original message at a 1-based span
-// position — the same position a span-preview line and the JSONL artifact
-// line carry, so a preview line number is directly recallable.
+// fold_recall's line overload: the message at a 1-based span position —
+// the same position a span-preview line and the JSONL artifact line
+// carry, so a preview line number is directly recallable. The message
+// is slimmed to {role, content} exactly as writeSpanArtifact slimms
+// each artifact line: recall serves content recovery, and host
+// provenance metadata (source/provider/model/replayState, id) would
+// only bloat the tool result — it stays in the durable event log.
 export function artifactLineAt(messages, line) {
   if (!Array.isArray(messages)) return { ok: false, error: 'no messages' }
   if (!Number.isInteger(line) || line < 1 || line > messages.length) {
     return { ok: false, error: 'line must be an integer in 1..' + Math.max(messages.length, 1) }
   }
-  return { ok: true, message: messages[line - 1] }
+  const m = messages[line - 1]
+  return { ok: true, message: m !== null && typeof m === 'object' ? { role: m.role, content: m.content } : m }
 }
 
 // Artifact writer: JSONL, one message per line, in preview order. Each line

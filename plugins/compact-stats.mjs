@@ -269,7 +269,9 @@ export default {
           }
           if (value.line !== undefined) {
             const role = value.message !== null && typeof value.message === 'object' && typeof value.message.role === 'string' ? value.message.role : '?'
-            return [{ type: 'text', text: 'Fold #' + value.fold + ' line ' + value.line + ' of ' + value.entries + ' (role: ' + role + '):\n' + JSON.stringify(value.message, null, 2) }]
+            // Single-line JSON: byte-for-byte the artifact line this
+            // position denotes — and no pretty-print inflation.
+            return [{ type: 'text', text: 'Fold #' + value.fold + ' line ' + value.line + ' of ' + value.entries + ' (role: ' + role + '):\n' + JSON.stringify(value.message) }]
           }
           return [{ type: 'text', text: 'Artifact regenerated (' + value.entries + ' messages): ' + value.file + (Array.isArray(value.preview) && value.preview.length > 0 ? '\n' + value.preview.join('\n') : '') + '\nRead or grep it with any file tool.' }]
         }

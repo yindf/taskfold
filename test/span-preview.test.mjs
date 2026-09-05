@@ -73,13 +73,24 @@ test('renderSpanPreview: every message line, no elision, true numbering', () => 
   assert.deepEqual(renderSpanPreview([]), ['Span preview: (empty)'])
 })
 
-test('artifactLineAt: the fold_recall line overload picks the exact message', () => {
+test('artifactLineAt: the fold_recall line overload picks the exact message, slimmed like the artifact line', () => {
   const messages = span()
   const first = artifactLineAt(messages, 1)
   assert.equal(first.ok, true)
-  assert.equal(first.message, messages[0], 'line N returns exactly message N')
+  assert.deepEqual(first.message, messages[0], 'line N returns message N ({role, content})')
   const last = artifactLineAt(messages, messages.length)
-  assert.equal(last.ok === true && last.message, messages[messages.length - 1], 'last line is the last message')
+  assert.deepEqual(last.ok === true && last.message, messages[messages.length - 1], 'last line is the last message')
+  // Provenance never crosses into the recall result: the raw derived
+  // message may carry source/provider/model/replayState and id — the
+  // line overload strips them exactly as the JSONL artifact writer does.
+  const tagged = [...messages, {
+    role: 'assistant',
+    content: [{ type: 'text', text: 'x' }],
+    id: 'm-9',
+    source: { kind: 'model', provider: 'p', model: 'm', replayState: { response: { huge: true } } }
+  }]
+  const picked = artifactLineAt(tagged, tagged.length)
+  assert.deepEqual(picked.ok === true && picked.message, { role: 'assistant', content: [{ type: 'text', text: 'x' }] }, 'source/id/replayState stripped')
   assert.equal(artifactLineAt(messages, 0).ok, false, 'line 0 is rejected')
   assert.equal(artifactLineAt(messages, messages.length + 1).ok, false, 'beyond-the-end is rejected')
   assert.equal(artifactLineAt(messages, 2.5).ok, false, 'non-integer lines are rejected')
@@ -105,6 +116,9 @@ test('callBrief: tool-specific call summaries for common tools', () => {
   assert.equal(callBrief('grep', '{"pattern":"reportPart","include":"*.mjs"}'), '→grep "reportPart" (*.mjs)')
   assert.equal(callBrief('pwsh', '{"command":"node -e …","description":"Run live probe"}'), '→pwsh ‹Run live probe›')
   assert.equal(callBrief('pwsh', '{"command":"node -e \\"console.log(1)\\""}'), '→pwsh ‹node -e "console.log(1)"›', 'empty description falls back to the command')
+  assert.equal(callBrief('subagent', '{"description":"Fold engine audit","prompt":"…"}'), '→subagent ‹Fold engine audit›', 'generic tools prefer an argument-borne description label')
+  assert.equal(callBrief('task_begin', '{"name":"Fix fold guard"}'), '→task_begin(Fix fold guard)', 'without a description, a name argument becomes the label')
+  assert.equal(callBrief('skill', '{"description":"  ","name":"fold-engine"}'), '→skill(fold-engine)', 'blank description is skipped, name still wins')
   assert.equal(callBrief('other', '{"x":1}'), '→other({"x":1})', 'unknown tools keep the generic form')
 })
 
