@@ -19,7 +19,30 @@ const TASK_TOOL_RE = /^(task_begin|task_end|task_fold|list_folds|fold_recall|tod
 export function todoBridgeLine(openNames) {
   const names = Array.isArray(openNames) ? openNames.filter((n) => typeof n === 'string' && n !== '') : []
   const roster = names.length > 0 ? names.map((n) => '"' + n.replace(/"/g, "'") + '"').join(', ') : 'none'
-  return 'Todo bridge: todo_write was called; open tasks: ' + roster + ' — keep marks in sync: task_begin for new tasks, task_end for finished tasks.'
+  return 'Todo bridge: todo_write was called; open tasks: ' + roster + ' — mirror the plan in marks: as you start a todo item with a verifiable outcome, task_begin a nested mark for it; task_end it when that item is done.'
+}
+
+/**
+ * Decomposition nudge (Nudge 3) window. Fires in the coverage GAP between
+ * a task's opening (nothing to decompose yet) and Nudge 2's close
+ * pressure (20+ rounds): while an open mark is 8–19 rounds old and real
+ * work keeps happening, the model gets a HOLD hint to wrap the remaining
+ * distinct parts as nested subtasks. Upper bound 19 hands off cleanly to
+ * Nudge 2 at 20 — decompose and close-nag never render together.
+ */
+export const DECOMPOSE_NUDGE_MIN_ROUNDS = 8
+export const DECOMPOSE_NUDGE_MAX_ROUNDS = 19
+
+export function shouldSuggestDecomposition(depth, oldestAge, workCallCount) {
+  return depth >= 1
+    && oldestAge >= DECOMPOSE_NUDGE_MIN_ROUNDS
+    && oldestAge <= DECOMPOSE_NUDGE_MAX_ROUNDS
+    && workCallCount >= 3
+}
+
+export function decomposeHintLine(name) {
+  const safe = typeof name === 'string' ? name.replace(/"/g, "'") : ''
+  return 'Task lifecycle: task "' + safe + '" has been open 8+ rounds with active work — if the remaining work has distinct parts, wrap each part as a nested subtask: task_begin({ name: "part" }) when starting it, task_end when that part\u0027s outcome is verifiable; innermost closes first, each part folds at its own close.'
 }
 
 /** Count non-task tool calls in the last 10 assistant messages. */

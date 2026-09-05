@@ -48,7 +48,7 @@ import { TASK_MARKS_KEY, taskMarksStateSchema, applyTaskMarks, validTaskName, cl
 import { DETAILED_CHECKPOINT_INSTRUCTION } from './fold-instruction.mjs'
 import { createFoldEngine } from './fold-engine.mjs'
 import { createArchiveDrain } from './fold-drain.mjs'
-import { todoBridgeLine, recentWorkCallCount, lastAssistantHasTodoWrite, roundsSinceFoldOutcome, countAssistantSince } from './lifecycle-nudges.mjs'
+import { todoBridgeLine, recentWorkCallCount, lastAssistantHasTodoWrite, roundsSinceFoldOutcome, countAssistantSince, shouldSuggestDecomposition, decomposeHintLine } from './lifecycle-nudges.mjs'
 
 export default {
   name: 'compact-region',
@@ -167,7 +167,13 @@ export default {
         render(args, value) {
           if (value.ok !== true) return [{ type: 'text', text: 'task_begin failed: ' + String(value.error === undefined ? 'unknown error' : value.error) }]
           const openList = value.openNames.length <= 1 ? '' : ': ' + value.openNames.join(', ')
-          return [{ type: 'text', text: 'Task begun: ' + value.name + ' — ' + value.openNames.length + ' open' + openList + '.' }]
+          // depth ≥ 2 means THIS begin opened a nested mark — prime the
+          // hierarchy habit exactly there: the result is the one channel
+          // guaranteed to be read at the moment a big task gains parts.
+          const nest = value.depth >= 2
+            ? ' Nested mark: close it before its parent; wrap distinct parts of the remaining work as further nested marks — each part folds at its own close.'
+            : ''
+          return [{ type: 'text', text: 'Task begun: ' + value.name + ' — ' + value.openNames.length + ' open' + openList + '.' + nest }]
         }
       },
       async execute(args, exec) {
@@ -276,7 +282,7 @@ export default {
     ctx.systemPrompt.section({
       name: 'task-marker-compaction',
       order: 650,
-      text: 'MANDATORY task lifecycle discipline: every discrete task MUST be wrapped in task marks. A task is work that produces a verifiable outcome (a fix, a module, an analysis, a delegated review); a single read/grep/probe is a step, not a task — never open a mark for a step, and when in doubt, treat the work as a task (a small fold costs one summary node; an unfolded task costs a degraded context). Before a task, call task_begin({ name }) alone in a step. The moment its work is done, call task_end({ name }) alone in a step: it ends the task and QUEUES archival — then deliver the task\u0027s report or deliverable (to the user, or a subagent\u0027s report to its parent) in the SAME turn, as text AFTER the task_end result and written with FULL context while every detail is still on the surface. The fold itself happens AUTOMATICALLY at the next step boundary after your deliverable lands — possibly mid-turn — so folding never precedes a deliverable and the details you deliver from are never compressed. The mark is a bookmark, not a deadline: while waiting on a background job or user reply, leave it open and do other work; fold when the wait resolves. Multi-part work MUST be split into nested subtasks (innermost closes first); a long detour or dead-end exploration inside a task is one such part — wrap it as a short subtask and close it. Folded details are never lost: list_folds → fold_recall({ fold }) → read/grep the artifact. Recall on demand — when a summary\u0027s anchors fail to answer a concrete question the work or the report needs, or when a new task genuinely depends on an earlier folded task\u0027s details (recall that fold, list_folds → fold_recall → read/grep, before starting it); never guess, never ask the user\u0027s permission to recall, never recall without such a need. Never restate a folded span from memory; never track message positions yourself. Each fold summary node ends with a Fold archive section (fold number, artifact path, and the complete span preview — one line per archived message; fold_recall\u0027s line overload returns any numbered line verbatim). A fold\u0027s archive spans just after the \u0027Task begun\u0027 result through the \u0027Task ended\u0027 result, so the task_begin call, its opening reasoning, and the \u0027Task begun\u0027 result itself stay live. Runtime context carries lifecycle nudges — treat them as directives and act on them.'
+      text: 'MANDATORY task lifecycle discipline: every discrete task MUST be wrapped in task marks. A task is work that produces a verifiable outcome (a fix, a module, an analysis, a delegated review); a single read/grep/probe is a step, not a task — never open a mark for a step, and when in doubt, treat the work as a task (a small fold costs one summary node; an unfolded task costs a degraded context). Before a task, call task_begin({ name }) alone in a step. The moment its work is done, call task_end({ name }) alone in a step: it ends the task and QUEUES archival — then deliver the task\u0027s report or deliverable (to the user, or a subagent\u0027s report to its parent) in the SAME turn, as text AFTER the task_end result and written with FULL context while every detail is still on the surface. The fold itself happens AUTOMATICALLY at the next step boundary after your deliverable lands — possibly mid-turn — so folding never precedes a deliverable and the details you deliver from are never compressed. The mark is a bookmark, not a deadline: while waiting on a background job or user reply, leave it open and do other work; fold when the wait resolves. Multi-part work MUST be split into NESTED SUBTASKS: while the outer task stays open, task_begin each distinct part as you start it and task_end it the moment that part\u0027s outcome is verifiable — innermost closes first and each part folds at its own close, so the surface stays lean during long work instead of one giant fold at the end. A long detour or dead-end exploration inside a task is one such part. Shape example: task_begin "review week 47" → task_begin "review PR #98" … task_end "review PR #98" → task_begin "review PR #99" … task_end "review PR #99" → task_end "review week 47". Folded details are never lost: list_folds → fold_recall({ fold }) → read/grep the artifact. Recall on demand — when a summary\u0027s anchors fail to answer a concrete question the work or the report needs, or when a new task genuinely depends on an earlier folded task\u0027s details (recall that fold, list_folds → fold_recall → read/grep, before starting it); never guess, never ask the user\u0027s permission to recall, never recall without such a need. Never restate a folded span from memory; never track message positions yourself. Each fold summary node ends with a Fold archive section (fold number, artifact path, and the complete span preview — one line per archived message; fold_recall\u0027s line overload returns any numbered line verbatim). A fold\u0027s archive spans just after the \u0027Task begun\u0027 result through the \u0027Task ended\u0027 result, so the task_begin call, its opening reasoning, and the \u0027Task begun\u0027 result itself stay live. Runtime context carries lifecycle nudges — treat them as directives and act on them.'
     })
 
     // HOLD semantics for lifecycle nudges: each nudge line renders for as
@@ -337,6 +343,19 @@ export default {
           }
           if (oldestAge >= 20) {
             lines.push('Task lifecycle: task "' + oldest.name + '" is 20+ rounds old — if done, call task_end({ name: "' + oldest.name + '" }); if a newer task blocks it, close that first; if it is genuinely waiting on a job or reply, leave it open.')
+          }
+          // ── Nudge 3: decomposition while a big task is actively worked ──
+          // Covers the GAP between "just began" (nothing to decompose) and
+          // Nudge 2's close pressure (20+): a mark aged 8–19 rounds with
+          // ongoing work gets a HOLD hint to wrap remaining distinct parts
+          // as nested subtasks — without it, the only live signal after the
+          // first task_begin is Nudge 2 pushing to CLOSE, and long jobs run
+          // as one flat mark (observed in the wild: a 14-minute 4-PR review
+          // folded as a single blob). Retracts when the age leaves the
+          // window, the work stops, or the roster changes (a nested begin
+          // reshapes oldest/depth). Wording is byte-stable past threshold.
+          if (shouldSuggestDecomposition(ownDepth, oldestAge, recentWorkCallCount(events))) {
+            lines.push(decomposeHintLine(oldest.name))
           }
         }
 

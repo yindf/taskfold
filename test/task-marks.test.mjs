@@ -8,7 +8,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { applyTaskMarks, taskMarksStateSchema, closeTarget, validTaskName, deferredArchivePlan } from '../plugins/task-marks.mjs'
-import { todoBridgeLine } from '../plugins/lifecycle-nudges.mjs'
+import { todoBridgeLine, shouldSuggestDecomposition, decomposeHintLine } from '../plugins/lifecycle-nudges.mjs'
 import { FOLD_SUMMARY_INSTRUCTION, DETAILED_CHECKPOINT_INSTRUCTION, buildFoldInstruction } from '../plugins/fold-instruction.mjs'
 
 /** assistant/message carrying tool-call blocks (shape per dsh-agent-loop). */
@@ -268,14 +268,37 @@ test('closeTarget: duplicate names match the most recent occurrence, blocking de
 
 test('todoBridgeLine: roster rendering with names, none, and quote defense', () => {
   assert.equal(todoBridgeLine(['fix-bridge', 'add-tests']),
-    'Todo bridge: todo_write was called; open tasks: "fix-bridge", "add-tests" — keep marks in sync: task_begin for new tasks, task_end for finished tasks.')
-  assert.equal(todoBridgeLine([]), 'Todo bridge: todo_write was called; open tasks: none — keep marks in sync: task_begin for new tasks, task_end for finished tasks.')
+    'Todo bridge: todo_write was called; open tasks: "fix-bridge", "add-tests" — mirror the plan in marks: as you start a todo item with a verifiable outcome, task_begin a nested mark for it; task_end it when that item is done.')
+  assert.equal(todoBridgeLine([]), 'Todo bridge: todo_write was called; open tasks: none — mirror the plan in marks: as you start a todo item with a verifiable outcome, task_begin a nested mark for it; task_end it when that item is done.')
   // Quotes in task names are neutralized so the roster stays parseable.
   assert.ok(!todoBridgeLine(['say "hi"']).includes('"say "hi""'))
   assert.ok(todoBridgeLine(['say "hi"']).includes("'"))
   // Defensive: non-array / junk input degrades to the empty roster.
   assert.equal(todoBridgeLine(undefined), todoBridgeLine([]))
   assert.equal(todoBridgeLine([null, 42, '', 'ok']).includes('"ok"'), true)
+})
+
+test('shouldSuggestDecomposition: fires only in the 8–19 round window with active work', () => {
+  // Before the window: a fresh task has nothing to decompose yet.
+  assert.equal(shouldSuggestDecomposition(1, 7, 10), false)
+  // In the window, work happening.
+  assert.equal(shouldSuggestDecomposition(1, 8, 3), true)
+  assert.equal(shouldSuggestDecomposition(2, 19, 9), true)
+  // At 20 the close-nag (Nudge 2) takes over — never render both.
+  assert.equal(shouldSuggestDecomposition(1, 20, 10), false)
+  // No work (waiting on a job/reply): no decomposition pressure.
+  assert.equal(shouldSuggestDecomposition(1, 12, 2), false)
+  // No open task: Nudge 1's territory.
+  assert.equal(shouldSuggestDecomposition(0, 12, 10), false)
+})
+
+test('decomposeHintLine: byte-stable wording, quotes neutralized', () => {
+  const a = decomposeHintLine('review week 47')
+  const b = decomposeHintLine('review week 47')
+  assert.equal(a, b, 'byte-stable for a given name')
+  assert.ok(a.startsWith('Task lifecycle: task "review week 47" has been open 8+ rounds with active work'))
+  assert.ok(a.includes('innermost closes first'))
+  assert.ok(!decomposeHintLine('say "hi"').includes('"say "hi""'), 'embedded quotes neutralized')
 })
 
 /** assistant/message helper for the deferred-archive gate tests. */
