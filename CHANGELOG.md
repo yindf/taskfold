@@ -3,6 +3,30 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.20.0 — fold artifacts live in the session's own directory (2026-09-05)
+
+- **Features**: span artifacts are written into the session's own durable
+  directory — resolved backend-neutrally as the dirname of
+  sessionPersistence.locate(session.header), the per-session directory the
+  persistence backend documents as "available for future session-local
+  artifacts" — under a taskfold/ subfolder clear of backend-owned files.
+  Placement now has a three-level precedence: session directory, then the
+  OS tmp root scoped by a slugified session key, then the flat legacy tmp
+  root. Session-local placement binds artifact lifetime to the session's
+  durable log (a resumed session's old fold artifacts stay reachable;
+  deleting the session cleans them up) and makes OS temp sweeps and
+  cross-session mixing impossible by construction. The backend is resolved
+  lazily through ctx.get rather than a hard inject, and any missing link
+  (no backend, no per-session artifact, no header, locate() throwing)
+  degrades to the tmp fallback instead of failing the fold. fold_recall's
+  description and failure message state the new location.
+- **Fix**: slugPart no longer coerces non-string session keys —
+  String(undefined) is "undefined" and String(12345) is "12345", and both
+  silently became literal directory names instead of the documented
+  flat-root fallback. Only real strings scope now; anything else degrades
+  to the empty slug. Tests pin the override precedence, the four bad-key
+  fallbacks, and sessionArtifactDir's resolution plus defensive paths.
+
 ## 0.19.0 — symmetric fold bookends, per-session artifacts, head+tail previews (2026-09-05)
 
 - **Features**: a fold's archive now spans the "Task begun" result through
