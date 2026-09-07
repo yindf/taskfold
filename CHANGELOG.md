@@ -3,7 +3,7 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
-## 0.28.0 — What happened granularity + reasoning capture (unreleased draft 2026-09-07)
+## 0.28.0 — What happened granularity + reasoning capture (2026-09-07)
 
 - **Instruction change — coverage accuracy outranks the word budget in What
   happened.** Field observation on 0.26.0/0.27.0 summaries: with clustering
