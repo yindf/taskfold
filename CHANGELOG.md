@@ -3,7 +3,7 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
-## 0.26.0 — turn-stopping drain, instruction-tail span index, archive footer (unreleased draft 2026-09-07)
+## 0.26.0 — turn-stopping drain, instruction-tail span index, archive footer (2026-09-07)
 
 - **Folding economics: top-level folds now run while the provider prefix
   cache is hot.** The archive drain is additionally wired to the host's
