@@ -3,6 +3,46 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.24.1 — skip parallel partner results when picking the fold span start (2026-09-07)
+
+- **Fix — parallel `task_begin` wedged every fold with an unbalanced START
+  boundary** (found live while verifying dsh 0.1.2-rc.1): when the
+  begin-carrying assistant message also calls other tools in parallel,
+  their `tool/result` events follow the "Task begun" result on the surface,
+  and `deferredArchivePlan` opened the span at the first of them — a cut
+  that splits the partner call/result pair. The engine's
+  `validateSurfaceRegion` rejects unbalanced START boundaries, and the
+  drain cannot self-heal those (its node-by-node fallback shrinks the END;
+  shrinking the end can never fix the start), so every retry failed into
+  the `'fold failed'` bucket and the task never folded. Symptom in the
+  running host: `auto-fold for "…" is failing (fold failed)` HOLD warnings,
+  with zero `compaction/start` events in the session log — the transaction
+  dies before its first durable write. The plan now advances the start
+  floor past the LAST result of every call in the begin-carrying message
+  (a bounded skip; partner calls/results stay live on the surface beside
+  the begin pair), which is byte-identical to the old choice for a
+  single-call begin; a missing partner result (interrupted step) degrades
+  to the single-call choice. The fold instruction's boundary wording
+  (`FOLD_BOUNDARY_RULE` and the prefix envelope's CONTEXT ONLY clause) is
+  aligned to name the partner results. Regression-pinned in
+  test/task-marks.test.mjs (five cases: skip, order-independence,
+  interrupted partner, single-call identity, foreign-result exclusion).
+- **Verification — dsh 0.1.2-rc.1** (drove this release): offline suite
+  75/75; a runtime probe of every host seam the plugin touches (engine
+  class export and `summarize(input, agent, signal)` hook, `BlockAssembler`,
+  `Session.prototype.snapshotEvents/eventAt/deriveEventMessage/requestHeader`
+  and the `surface` getter, the `compaction/summary` commit shape with
+  `compactionId`/`shadowedRange`, the detailed-checkpoint
+  `source: { kind: 'plugin', plugin: 'dsh-compaction-basic' }`
+  discriminator) all intact; and an offline replay of the live session's
+  decoded log (32,946 events rebuilt into a real `Session`) running the
+  real rc.1 region transaction end-to-end — with the fix, the fold that
+  failed live commits (span 8,672..13,556, 16,029 shadowed tokens), and
+  the drain's END-shrink fallback demonstrably absorbs the
+  `task_end`-with-parallel-partner imbalance. Both READMEs' "Supported
+  dsh versions" now record `0.1.2-rc.1` as known-good (minimum unchanged
+  at `0.1.2-alpha.5`).
+
 ## 0.24.0 — engine-built fold headings, nested-task-mark incentives (2026-09-05)
 
 - **Breaking-ish fix — heading construction replaces heading compliance**: the
