@@ -196,20 +196,21 @@ export function attachFoldTitles(folds, events) {
  * list_folds render lines from a collectStats() value — pure, so tests can
  * pin the numbering contract: line i carries '#' + (i+1), the SAME 1-based
  * chronological index fold_recall({ fold }) validates and task_fold counts.
- * The event seq appears only as a parenthesized annotation.
+ * Display carries only that domain: number, tokens, title. Internal ids
+ * (event seq, shadowed range) stay in the durable log and the artifact
+ * footers — never in the model-facing listing.
  */
 export function renderFoldList(stats) {
   const lines = []
   const surfaceLength = stats !== null && typeof stats === 'object' && Number.isInteger(stats.surfaceLength) ? stats.surfaceLength : 0
-  const eventCount = stats !== null && typeof stats === 'object' && Number.isInteger(stats.eventCount) ? stats.eventCount : 0
   const totals = stats !== null && typeof stats === 'object' && stats.totals !== null && typeof stats.totals === 'object' ? stats.totals : { folds: 0, shadowedTokens: 0 }
   const folds = stats !== null && typeof stats === 'object' && Array.isArray(stats.folds) ? stats.folds : []
-  lines.push('Surface: ' + surfaceLength + ' live nodes over ' + eventCount + ' events; folds: ' + totals.folds + ', shadowed tokens estimated: ' + totals.shadowedTokens + '.')
+  lines.push('Surface: ' + surfaceLength + ' nodes; folds: ' + totals.folds + ', ~' + totals.shadowedTokens + ' tokens shadowed.')
   for (let i = 0; i < folds.length; i += 1) {
     const f = folds[i]
-    const where = f.shadowedStart !== undefined ? ' range ' + f.shadowedStart + '..' + f.shadowedEnd : ''
+    const tk = Number.isInteger(f.shadowedTokenCount) ? f.shadowedTokenCount : '?'
     const missing = f.shadowedTokenCountMissing === true ? ' (token count missing on this event)' : ''
-    lines.push('#' + (i + 1) + ' (seq ' + f.seq + ')' + where + ' → ' + f.shadowedTokenCount + ' tokens' + missing + ' | ' + (f.title !== undefined ? f.title : f.preview))
+    lines.push('#' + (i + 1) + ' ' + tk + ' tokens' + missing + ' | ' + (f.title !== undefined ? f.title : f.preview))
   }
   return lines
 }
@@ -220,7 +221,7 @@ export default {
   apply(ctx) {
     ctx.tools.register({
       name: 'list_folds',
-      description: 'List every committed fold in THIS session: fold number (1-based, chronological — the exact number fold_recall consumes), estimated shadowed tokens, summary preview or task title, plus surface/event totals. The seq shown in parentheses is an archive id, not the fold number. Call this when you need to regenerate an artifact or audit what compaction saved.',
+      description: 'Fold index for THIS session: chronological fold number (the exact number fold_recall consumes), shadowed tokens, and title — use it to pick a fold_recall target or audit what compaction saved.',
       parameters: { type: 'object', properties: {} },
       output: {
         schema: { type: 'object', additionalProperties: true },
