@@ -3,6 +3,27 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.25.0 — slim the list_folds listing to number, tokens, and title (2026-09-07)
+
+- **Breaking-ish output change — `list_folds` now lists only what the model
+  consumes.** The old per-fold line carried three internals no caller uses:
+  the archive seq (`(seq N)` — an id `fold_recall` never takes; the tool
+  description even had to warn against confusing it with the fold number),
+  the shadowed event `range A..B` (raw seqs nothing else in the model's
+  context references), and the total event count in the header. All three
+  are gone; the durable event log and each artifact's footer still record
+  them verbatim, so offline audits lose nothing. What remains per fold is
+  the fold number (the exact `fold_recall` domain), the shadowed token
+  count (the size signal for picking a recall target), and the title; the
+  header keeps surface nodes and the shadowed total (`Surface: 137 nodes;
+  folds: 7, ~114107 tokens shadowed.`). The resident tool description was
+  halved too (~65 → ~33 words) — it sits in every session's tool list, a
+  larger recurring cost than any single output. Tests now pin the shape
+  (`#N <tokens> tokens | title`) and assert the internal ids never leak
+  back into the render.
+- **Features**
+  - slim the list_folds listing to number, tokens, and title
+
 ## 0.24.2 — live-verified subtask folding on dsh 0.1.2-rc.1 (2026-09-07)
 
 - **Docs — the dsh `0.1.2-rc.1` verification is now live, not offline-only.**
