@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { collectStats, foldOf, attachFoldTitles, collectFolds, renderFoldList } from '../plugins/compact-stats.mjs'
+import pluginDefault, { collectStats, foldOf, attachFoldTitles, collectFolds, renderFoldList } from '../plugins/compact-stats.mjs'
 
 /** Minimal but shape-accurate events mirroring dsh-compaction-basic output. */
 function fixture() {
@@ -213,4 +213,45 @@ test('renderFoldList: empty and defensive inputs', () => {
   assert.equal(renderFoldList(null).length, 1, 'degenerate stats still render a header line')
   assert.equal(renderFoldList({ folds: [{ seq: 1, shadowedTokenCount: 3, preview: 'p' }] })[1],
     '#1 3 tokens | p', 'missing totals/range fields degrade gracefully')
+})
+
+test('fold_recall range overload: one call returns a cited slice of exact originals (no file written)', async () => {
+  const captured = []
+  pluginDefault.apply({ tools: { register: (t) => captured.push(t) } })
+  const recall = captured.find((t) => t.name === 'fold_recall')
+  assert.ok(recall !== undefined, 'fold_recall registered')
+  const messages = [
+    { role: 'user', content: [{ type: 'text', text: 'fix it' }] },
+    { role: 'assistant', content: [{ type: 'tool-call', id: 'c1', name: 'read', arguments: '{"file_path":"a"}' }] },
+    { role: 'user', content: [{ type: 'tool-result', toolCallId: 'c1', content: [{ type: 'text', text: 'contents' }] }] },
+    { role: 'assistant', content: [{ type: 'text', text: 'done' }] }
+  ]
+  const seqs = [11, 12, 13, 14]
+  const log = [{ seq: 20, type: 'compaction/summary', data: { shadowedTokenCount: 42, shadowedSeqs: seqs, summary: [{ type: 'text', text: '# demo task\n\n## What happened\n- did things' }] } }]
+  const session = {
+    id: 'sess-range-test',
+    events: log,
+    surface: { nodes: [20] },
+    eventAt: (seq) => ({ seq }),
+    deriveEventMessage: (e) => messages[seqs.indexOf(e.seq)]
+  }
+  const exec = { agent: { session } }
+  const range = await recall.execute({ fold: 1, from: 2, to: 3 }, exec)
+  assert.equal(range.ok, true)
+  assert.deepEqual(range.lines.map((l) => l.line), [2, 3], 'true line numbers carried')
+  assert.equal(range.entries, 4, 'total span size reported')
+  assert.deepEqual(Object.keys(range.lines[0].message), ['role', 'content'], 'slimmed like the line overload')
+  const text = recall.output.render({ fold: 1, from: 2, to: 3 }, range)[0].text
+  assert.ok(text.startsWith('Fold #1 lines 2-3 of 4:'), 'render header carries the range and the total')
+  assert.ok(text.includes('\n2 {"role":"assistant"'), 'each line prefixed by its true number, raw JSON body')
+  assert.ok(text.includes('\n3 {"role":"user"'), 'slice ends at the requested line')
+  const clash = await recall.execute({ fold: 1, line: 2, from: 2, to: 3 }, exec)
+  assert.equal(clash.ok, false, 'line and from/to are mutually exclusive')
+  assert.match(clash.error, /mutually exclusive/)
+  const inverted = await recall.execute({ fold: 1, from: 3, to: 2 }, exec)
+  assert.equal(inverted.ok, false)
+  assert.match(inverted.error, /fold #1 \(4 lines\): /, 'validation errors carry the fold context prefix')
+  const oob = await recall.execute({ fold: 1, from: 2, to: 9 }, exec)
+  assert.equal(oob.ok, false, 'out-of-span range rejected')
+  assert.match(oob.error, /1\.\.4/, 'error names the valid domain')
 })

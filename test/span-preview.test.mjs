@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import nodeFs from 'node:fs'
 import nodePath from 'node:path'
 import nodeOs from 'node:os'
-import { blockBrief, messagePreviewLine, renderSpanPreview, writeSpanArtifact, callBrief, resultBrief, collectToolCalls, renderArchiveFooter, ARCHIVE_HEAD_LINES, ARCHIVE_TAIL_LINES, sessionArtifactDir, artifactLineAt } from '../plugins/span-preview.mjs'
+import { blockBrief, messagePreviewLine, renderSpanPreview, writeSpanArtifact, callBrief, resultBrief, collectToolCalls, renderArchiveFooter, ARCHIVE_HEAD_LINES, ARCHIVE_TAIL_LINES, sessionArtifactDir, artifactLineAt, artifactLines, RECALL_RANGE_MAX } from '../plugins/span-preview.mjs'
 
 /** Shape-accurate request messages (the same blocks deriveEventMessage yields). */
 function span() {
@@ -248,4 +248,23 @@ test('renderArchiveFooter: head 3 + elision + tail 8 with true line numbers; sma
   const guard = renderArchiveFooter(degenerate)
   assert.equal(guard.length, 1, 'near-empty spans degrade to a single pointer line instead of rivaling the span')
   assert.ok(/fold_recall/.test(guard[0]), 'pointer directs at the full-index re-render')
+})
+
+test('artifactLines: inclusive 1-based range of exact originals, guarded', () => {
+  const ok = artifactLines(span(), 2, 3)
+  assert.equal(ok.ok, true)
+  assert.deepEqual(ok.lines.map((l) => l.line), [2, 3], 'true line numbers carried')
+  assert.equal(ok.lines[0].message.role, 'assistant', 'line 2 is the span\u0027s second message')
+  assert.deepEqual(Object.keys(ok.lines[1].message), ['role', 'content'], 'slimmed to {role, content} like artifactLineAt')
+  assert.equal(artifactLines(span(), 2, 2).lines.length, 1, 'single-line range allowed')
+  assert.equal(artifactLines(span(), 4, 4).ok, true, 'range may end at the final line')
+  assert.ok(!artifactLines(span(), 0, 2).ok, 'from < 1 rejected')
+  assert.ok(!artifactLines(span(), 3, 2).ok, 'to < from rejected')
+  assert.ok(!artifactLines(span(), 2, 5).ok, 'to beyond the span rejected')
+  assert.ok(!artifactLines(span(), 2, undefined).ok, 'half-passed params rejected')
+  const fat = []
+  for (let i = 0; i < 12; i += 1) fat.push({ role: 'user', content: [{ type: 'text', text: 'm' + i }] })
+  assert.ok(!artifactLines(fat, 1, 12).ok, 'range beyond RECALL_RANGE_MAX rejected')
+  assert.equal(artifactLines(fat, 1, RECALL_RANGE_MAX).ok, true, 'exactly RECALL_RANGE_MAX lines allowed')
+  assert.equal(artifactLines([], 1, 1).ok, false, 'empty span rejected')
 })

@@ -74,4 +74,6 @@ Fold this very task and check: the summary mentions only this span's work; no
 project background; its heading is `# <the closing task name>`; the node ends
 with a Fold archive section whose span runs from just after the 'Task begun'
 result through the 'Task ended' result; `list_folds` numbers the fold and
-`fold_recall({ fold })` round-trips the original span.
+`fold_recall({ fold })` round-trips the original span; `fold_recall({ fold,
+from, to })` returns a cited `L<N>-<M>` slice of exact originals in one call
+(inclusive 1-based line numbers, ≤10 lines, no file written).

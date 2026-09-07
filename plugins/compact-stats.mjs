@@ -16,7 +16,7 @@
 // Shared span-preview/JSONL helpers: regenerated artifacts keep the exact
 // format (JSONL, one message per line) and numbering that task folds'
 // preview lines use. events.mjs carries the shared event-log accessor.
-import { renderSpanPreview, writeSpanArtifact, sessionArtifactDir, artifactLineAt } from './span-preview.mjs'
+import { renderSpanPreview, writeSpanArtifact, sessionArtifactDir, artifactLineAt, artifactLines } from './span-preview.mjs'
 import { sessionEvents, messageOf, blocksOf } from './events.mjs'
 
 /**
@@ -253,12 +253,14 @@ export default {
 
     ctx.tools.register({
       name: 'fold_recall',
-      description: 'Regenerate the artifact FILE for one fold: every span message from just after the \u0027Task begun\u0027 result through the \u0027Task ended\u0027 result — full original content (role + content blocks) — written as JSONL into this session\u0027s own artifact directory (the session\u0027s durable directory; OS tmp as fallback), one message per line, numbered. Each committed fold summary\u0027s trailing Fold archive section carries the artifact path; use this tool when that file has since been removed — pass the fold number, get a fresh file path plus the complete span preview (every message, one line each), then read/grep it with any file tool. Line overload: pass the optional second parameter line (a preview line number) to return ONLY that numbered message — its exact original content — directly in the result, with no file written; line numbers match the span preview and the JSONL artifact. Use list_folds for the fold index. Changes no session state; without line, the only write is the fresh JSONL file itself.',
+      description: 'Regenerate the artifact FILE for one fold: every span message from just after the \u0027Task begun\u0027 result through the \u0027Task ended\u0027 result — full original content (role + content blocks) — written as JSONL into this session\u0027s own artifact directory (the session\u0027s durable directory; OS tmp as fallback), one message per line, numbered. Each committed fold summary\u0027s trailing Fold archive section carries the artifact path; use this tool when that file has since been removed — pass the fold number, get a fresh file path plus the complete span preview (every message, one line each), then read/grep it with any file tool. Line overload: pass the optional second parameter line (a preview line number) to return ONLY that numbered message — its exact original content — directly in the result, with no file written; line numbers match the span preview and the JSONL artifact. Range overload: pass from and to (inclusive 1-based line numbers, at most 10 lines, mutually exclusive with line) to return those exact original messages in one call, no file written — it matches the L<N>-<M> range citations fold summaries carry. Use list_folds for the fold index. Changes no session state; without line or from/to, the only write is the fresh JSONL file itself.',
       parameters: {
         type: 'object',
         properties: {
           fold: { type: 'integer', description: 'Fold number (1-based, chronological) from list_folds.' },
-          line: { type: 'integer', description: 'Optional: return ONLY this line — the exact original message at this 1-based position, matching the span preview numbering and the JSONL artifact line. No file is written.' }
+          line: { type: 'integer', description: 'Optional: return ONLY this line — the exact original message at this 1-based position, matching the span preview numbering and the JSONL artifact line. No file is written.' },
+          from: { type: 'integer', description: 'Optional: with to, the inclusive 1-based start of a line range (at most 10 lines) whose exact original messages return in one call. Mutually exclusive with line; no file is written.' },
+          to: { type: 'integer', description: 'Optional: with from, the inclusive 1-based end of a line range (at most 10 lines). Mutually exclusive with line; no file is written.' }
         },
         required: ['fold']
       },
@@ -267,6 +269,13 @@ export default {
         render(args, value) {
           if (value.ok !== true) {
             return [{ type: 'text', text: 'fold_recall failed: ' + String(value.error === undefined ? 'unknown error' : value.error) }]
+          }
+          if (value.from !== undefined && value.to !== undefined) {
+            // One raw JSON per line, each prefixed by its TRUE line number —
+            // same byte-for-byte fidelity as the line overload, no
+            // pretty-print inflation.
+            const body = value.lines.map((l) => l.line + ' ' + JSON.stringify(l.message)).join('\n')
+            return [{ type: 'text', text: 'Fold #' + value.fold + ' lines ' + value.from + '-' + value.to + ' of ' + value.entries + ':\n' + body }]
           }
           if (value.line !== undefined) {
             const role = value.message !== null && typeof value.message === 'object' && typeof value.message.role === 'string' ? value.message.role : '?'
@@ -302,9 +311,19 @@ export default {
             const message = session.deriveEventMessage(session.eventAt(seq))
             if (message !== null && message !== undefined) messages.push(message)
           }
-          // Line overload: return the exact original message at one preview
-          // line position — no artifact file is written for this lookup.
+          // Range overload: one call returns a cited L<N>-<M> slice of exact
+          // originals — no artifact file is written for this lookup either.
           const wanted = args !== null && typeof args === 'object' ? args.line : undefined
+          const rangeFrom = args !== null && typeof args === 'object' ? args.from : undefined
+          const rangeTo = args !== null && typeof args === 'object' ? args.to : undefined
+          if (wanted !== undefined && (rangeFrom !== undefined || rangeTo !== undefined)) {
+            return { ok: false, error: 'line and from/to are mutually exclusive — pass one or the other' }
+          }
+          if (rangeFrom !== undefined || rangeTo !== undefined) {
+            const picked = artifactLines(messages, rangeFrom, rangeTo)
+            if (picked.ok !== true) return { ok: false, error: 'fold #' + foldNo + ' (' + messages.length + ' lines): ' + picked.error }
+            return { ok: true, fold: foldNo, from: rangeFrom, to: rangeTo, entries: messages.length, lines: picked.lines }
+          }
           if (wanted !== undefined) {
             const picked = artifactLineAt(messages, wanted)
             if (picked.ok !== true) return { ok: false, error: 'fold #' + foldNo + ' (' + messages.length + ' lines): ' + picked.error }

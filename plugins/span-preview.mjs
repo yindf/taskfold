@@ -244,6 +244,33 @@ export function artifactLineAt(messages, line) {
   return { ok: true, message: m !== null && typeof m === 'object' ? { role: m.role, content: m.content } : m }
 }
 
+// fold_recall's RANGE overload: the exact original messages at a 1-based
+// inclusive line range — same fidelity and slimming as artifactLineAt
+// ({role, content} only), same coordinate contract (span position = preview
+// line = artifact line). Ranges mirror the L<N>-<M> citations the walkthrough
+// summaries emit, so one call recovers a cited phase without the full-index
+// regeneration. Guarded to RECALL_RANGE_MAX lines: a range makes one fat
+// call far easier than the single-line overload, and one raw message can
+// already be thousands of tokens.
+export const RECALL_RANGE_MAX = 10
+
+export function artifactLines(messages, from, to) {
+  if (!Array.isArray(messages)) return { ok: false, error: 'no messages' }
+  const total = messages.length
+  if (!Number.isInteger(from) || !Number.isInteger(to)) return { ok: false, error: 'from and to must both be integers' }
+  if (from < 1 || to < from) return { ok: false, error: 'range must satisfy 1 <= from <= to' }
+  if (to > total) return { ok: false, error: 'to must be an integer in 1..' + Math.max(total, 1) }
+  if (to - from + 1 > RECALL_RANGE_MAX) {
+    return { ok: false, error: 'range spans ' + (to - from + 1) + ' lines (max ' + RECALL_RANGE_MAX + ') — narrow the range or use the full regeneration' }
+  }
+  const lines = []
+  for (let i = from; i <= to; i += 1) {
+    const m = messages[i - 1]
+    lines.push({ line: i, message: m !== null && typeof m === 'object' ? { role: m.role, content: m.content } : m })
+  }
+  return { ok: true, lines }
+}
+
 // Artifact writer: JSONL, one message per line, in preview order. Each line
 // is the message slimmed to {role, content} — the full original content
 // blocks, without host provenance metadata (source/replayState/id): recall

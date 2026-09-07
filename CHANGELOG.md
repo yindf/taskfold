@@ -3,6 +3,26 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.27.0 — fold_recall range overload (from/to) (unreleased draft 2026-09-07)
+
+- **New recall grammar matching the citations summaries emit.** Since 0.26.0
+  the walkthrough summaries cite span messages as `L<N>-<M>` ranges, but
+  fold_recall only spoke single-line or full-index: recovering a cited phase
+  meant either the whole preview (~15 tokens per message, plus an
+  unconditional artifact rewrite) or N sequential single-line calls. The new
+  `from`/`to` parameters (inclusive 1-based line numbers, mutually exclusive
+  with `line`, capped at 10 lines) return the exact original messages of the
+  cited slice in ONE call — `{role, content}` fidelity identical to the line
+  overload, true line numbers preserved, no file written (full mode's write
+  exists to make the artifact greppable; a slice lookup doesn't need it).
+  Validation errors carry the fold context prefix and name the valid domain;
+  the cap failure tells the model to narrow the range or use the full
+  regeneration. The tool description grows by two sentences (~25 resident
+  tokens) — wording deliberately mirrors the `L<N>-<M>` citation grammar so a
+  summary citation maps to a recall call without translation.
+- **Features**
+  - fold_recall `from`/`to` range overload: exact originals, ≤10 lines, no file write
+
 ## 0.26.0 — turn-stopping drain, instruction-tail span index, archive footer (2026-09-07)
 
 - **Folding economics: top-level folds now run while the provider prefix
