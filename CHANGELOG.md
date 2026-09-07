@@ -3,7 +3,7 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
-## 0.27.0 — fold_recall range overload (from/to) (unreleased draft 2026-09-07)
+## 0.27.0 — fold_recall range overload (from/to) (2026-09-07)
 
 - **New recall grammar matching the citations summaries emit.** Since 0.26.0
   the walkthrough summaries cite span messages as `L<N>-<M>` ranges, but
