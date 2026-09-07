@@ -3,6 +3,47 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.28.0 — What happened granularity + reasoning capture (unreleased draft 2026-09-07)
+
+- **Instruction change — coverage accuracy outranks the word budget in What
+  happened.** Field observation on 0.26.0/0.27.0 summaries: with clustering
+  merely *permitted* ("MAY cluster into one phase bullet") and no ceiling, the
+  summarizer packed up to ~37 messages into a single separator-joined bullet —
+  facts survived, but scanning granularity and per-action recall anchors
+  degraded (controlled experiments had shown the natural density is 4-9
+  messages per bullet; the license, not the capability, was the problem). The
+  instruction now pins a numeric rule in both the section line and a dedicated
+  Granularity rule: a step = one assistant action with its tool results
+  (typically 2-4 span lines); one bullet covers 3-5 steps, 10 is the hard
+  ceiling — an over-ceiling bullet MUST split into consecutive bullets, each
+  keeping its own `L<N>-<M>`; distinct actions are never joined with
+  separators inside one bullet; "Coverage is a correctness requirement that
+  outweighs the word budget: when words run short, write terser bullets —
+  never fewer, never merged, never dropped." The Budget rule now disclaims
+  coverage authority explicitly ("The budget shapes prose economy, never
+  coverage") and defers What happened to the Granularity rule. Self-limiting
+  by construction: the ceiling bounds bullet count (~span_lines/30 minimum,
+  in practice 5-30 bullets), so the section stays well inside the summarizer's
+  maxTokens even on giant spans. Offline tests pin the numeric anchors, the
+  ceiling, the anti-packing clause, and the budget disclaimer.
+- **Instruction change — the summary now captures the reasoning, not just the
+  actions.** Field observation: 0.27.0 fold summaries recorded WHAT happened
+  (calls, results, files) but none of the WHY — the decision process lives
+  only in the span's thinking blocks and was lost to every recall. The
+  instruction adds a dedicated Reasoning rule and extends the What-happened
+  section line: thinking blocks are "the primary source of decision rationale
+  — hypotheses weighed, options compared, why one path was chosen over
+  another, what a result confirmed or refuted"; each bullet states "not only
+  WHAT was done but WHY, anchored to the deciding consideration"; keeps
+  "rejected alternatives and the reason they lost"; and distinguishes settled
+  conclusions from passing guesses. Division of labor stays explicit: failure
+  causes → Pitfalls & gotchas, choice rationale → What happened. Rationale is
+  the one class of span knowledge that exists nowhere else — actions are
+  re-derivable from artifacts and code, reasoning is not.
+- **Features**
+  - What happened granularity rule (3-5 steps per bullet, ceiling 10, budget never trims coverage)
+  - Reasoning capture in What happened (why + rejected alternatives, mined from thinking blocks)
+
 ## 0.27.0 — fold_recall range overload (from/to) (2026-09-07)
 
 - **New recall grammar matching the citations summaries emit.** Since 0.26.0

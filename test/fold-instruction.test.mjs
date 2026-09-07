@@ -23,10 +23,24 @@ test('citation rules present: index-copy, source-file, no-evidence, mirror prohi
   assert.match(FOLD_SUMMARY_INSTRUCTION, /navigation input only/, 'mirror prohibition present')
 })
 
-test('clustering wording agrees between the What-happened line and the Budget rule', () => {
-  assert.match(FOLD_SUMMARY_INSTRUCTION, /one bullet per meaningful step; consecutive steps MAY cluster into one phase bullet/, 'section line allows clustering')
-  assert.match(FOLD_SUMMARY_INSTRUCTION, /covered by at least one bullet; consecutive steps may cluster into one phase bullet/, 'budget rule allows the same clustering')
-  assert.ok(!FOLD_SUMMARY_INSTRUCTION.includes('merge only same-action repeats'), 'the old anti-clustering clause is gone — it contradicted the new wording')
+test('granularity rule: 3-5 steps per bullet with a hard ceiling of 10; budget never trims coverage', () => {
+  assert.match(FOLD_SUMMARY_INSTRUCTION, /one bullet per phase of 3-5 steps/, 'section line carries the numeric granularity')
+  assert.match(FOLD_SUMMARY_INSTRUCTION, /10 is the hard ceiling/, 'hard ceiling present in the rules')
+  assert.match(FOLD_SUMMARY_INSTRUCTION, /MUST be split into consecutive bullets/, 'over-ceiling bullets must split, keeping their L<N>-<M>')
+  assert.match(FOLD_SUMMARY_INSTRUCTION, /Never join distinct actions with separators inside one bullet/, 'anti separator-packing present')
+  assert.match(FOLD_SUMMARY_INSTRUCTION, /outweighs the word budget/, 'coverage beats budget stated')
+  assert.match(FOLD_SUMMARY_INSTRUCTION, /The budget shapes prose economy, never coverage/, 'budget rule disclaims coverage authority')
+  assert.ok(!FOLD_SUMMARY_INSTRUCTION.includes('one bullet per meaningful step'), 'old vague granularity wording gone')
+  assert.ok(!FOLD_SUMMARY_INSTRUCTION.includes('merge only same-action repeats'), 'the older anti-clustering clause stays gone')
+})
+
+test('reasoning rule: thinking blocks mined for rationale; why + rejected alternatives per bullet', () => {
+  assert.match(FOLD_SUMMARY_INSTRUCTION, /which alternatives were rejected and why/, 'section line carries the reasoning clause')
+  assert.match(FOLD_SUMMARY_INSTRUCTION, /thinking blocks are the primary source of decision rationale/, 'thinking blocks declared the primary rationale source')
+  assert.match(FOLD_SUMMARY_INSTRUCTION, /not only WHAT was done but WHY/, 'why is a per-bullet requirement')
+  assert.match(FOLD_SUMMARY_INSTRUCTION, /rejected alternatives and the reason they lost/, 'rejected alternatives kept with their losing reason')
+  assert.match(FOLD_SUMMARY_INSTRUCTION, /distinguish settled conclusions from passing guesses/, 'conclusion confidence distinguished')
+  assert.match(FOLD_SUMMARY_INSTRUCTION, /Failure causes belong in Pitfalls & gotchas; choice rationale belongs here/, 'division of labor vs Pitfalls pinned')
 })
 
 test('assembleFoldInstruction: base + budget + closing, fenced index appended LAST with a non-H2 lead line', () => {
