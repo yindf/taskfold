@@ -53,7 +53,7 @@ Restart dsh — every session on that profile gets the tools.
 
 ## Supported dsh versions
 
-- **Known to work: `0.1.2-alpha.5`** (the version this plugin is developed and tested against; `dsh`, `dsh-compaction-basic`, and `dsh-llm` ship version-locked, so one number covers the whole surface).
+- **Known to work: `0.1.2-rc.1`** (verified 2026-09-07: full offline suite plus an offline replay of a live session's log through the real `dsh-compaction-basic` region transaction — engine class, `summarize` hook, `BlockAssembler`, `snapshotEvents`/`eventAt`/`deriveEventMessage`/`requestHeader`, the `compaction/summary` commit shape, and the detailed-checkpoint `source` discriminator all intact; that check caught and fixed a parallel-`task_begin` fold-start bug). `dsh`, `dsh-compaction-basic`, and `dsh-llm` ship version-locked, so one number covers the whole surface.
 - **Minimum: `0.1.2-alpha.5`.** No older version has been tested; older alphas differ in the compaction-engine internals this plugin builds on.
 - **Upper bound: untested, not enforced.** dsh does not yet expose host-version negotiation to plugins, so nothing rejects an incompatible host automatically — on an incompatible dsh, folds degrade (tasks still close, unfolded) rather than corrupt. After each dsh upgrade, re-check this section and update it with test results.
 
