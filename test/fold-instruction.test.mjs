@@ -23,23 +23,25 @@ test('citation rules present: index-copy, source-file, no-evidence, mirror prohi
   assert.match(FOLD_SUMMARY_INSTRUCTION, /navigation input only/, 'mirror prohibition present')
 })
 
-test('granularity rule: 3-5 steps per bullet with a hard ceiling of 10; no budget anywhere', () => {
-  assert.match(FOLD_SUMMARY_INSTRUCTION, /one bullet per phase of 3-5 steps/, 'section line carries the numeric granularity')
-  assert.match(FOLD_SUMMARY_INSTRUCTION, /10 is the hard ceiling/, 'hard ceiling present in the rules')
+test('granularity rule: intent-based grouping, typical 3-5 steps, hard ceiling of 10; no budget anywhere', () => {
+  assert.match(FOLD_SUMMARY_INSTRUCTION, /one bullet per intent \(one coherent purpose or phase, typically 3-5 steps\)/, 'section line groups bullets by intent with a typical size')
+  assert.match(FOLD_SUMMARY_INSTRUCTION, /10 steps is the hard ceiling/, 'hard ceiling present in the rules')
+  assert.match(FOLD_SUMMARY_INSTRUCTION, /a smaller intent still gets its own bullet/, 'small intents are not force-merged into bigger bullets')
   assert.match(FOLD_SUMMARY_INSTRUCTION, /MUST be split into consecutive bullets/, 'over-ceiling bullets must split, keeping their L<N>-<M>')
-  assert.match(FOLD_SUMMARY_INSTRUCTION, /Never join distinct actions with separators inside one bullet/, 'anti separator-packing present')
+  assert.match(FOLD_SUMMARY_INSTRUCTION, /Never join distinct intents into one bullet — not even with separators/, 'anti separator-packing reframed on intents')
   assert.match(FOLD_SUMMARY_INSTRUCTION, /never fewer bullets, never merged, never dropped/, 'compression tightens wording, never coverage')
   assert.ok(!FOLD_SUMMARY_INSTRUCTION.toLowerCase().includes('budget'), 'the word budget is fully removed from the instruction')
   assert.ok(!FOLD_SUMMARY_INSTRUCTION.includes('one bullet per meaningful step'), 'old vague granularity wording gone')
   assert.ok(!FOLD_SUMMARY_INSTRUCTION.includes('merge only same-action repeats'), 'the older anti-clustering clause stays gone')
 })
 
-test('reasoning rule: thinking blocks mined for rationale; why + rejected alternatives per bullet', () => {
+test('reasoning rule: thinking blocks mined for rationale; explicit why: clause per bullet', () => {
   assert.match(FOLD_SUMMARY_INSTRUCTION, /which alternatives were rejected and why/, 'section line carries the reasoning clause')
   assert.match(FOLD_SUMMARY_INSTRUCTION, /thinking blocks are the primary source of decision rationale/, 'thinking blocks declared the primary rationale source')
-  assert.match(FOLD_SUMMARY_INSTRUCTION, /not only WHAT was done but WHY/, 'why is a per-bullet requirement')
-  assert.match(FOLD_SUMMARY_INSTRUCTION, /rejected alternatives and the reason they lost/, 'rejected alternatives kept with their losing reason')
-  assert.match(FOLD_SUMMARY_INSTRUCTION, /distinguish settled conclusions from passing guesses/, 'conclusion confidence distinguished')
+  assert.match(FOLD_SUMMARY_INSTRUCTION, /ENDS with an explicit why: clause naming the deciding consideration/, 'structural forcing: every bullet terminates in a why: clause')
+  assert.match(FOLD_SUMMARY_INSTRUCTION, /an action-only bullet is a failure/, 'action-only bullets are explicitly failures')
+  assert.match(FOLD_SUMMARY_INSTRUCTION, /do not merely echo it: capture the deliberation that produced it/, 'in-span polished reports must not be echoed in place of mined reasoning')
+  assert.match(FOLD_SUMMARY_INSTRUCTION, /Distinguish settled conclusions from passing guesses/, 'conclusion confidence distinguished')
   assert.match(FOLD_SUMMARY_INSTRUCTION, /Failure causes belong in Pitfalls & gotchas; choice rationale belongs here/, 'division of labor vs Pitfalls pinned')
 })
 

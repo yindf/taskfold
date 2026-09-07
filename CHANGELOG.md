@@ -3,6 +3,34 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.29.1 — intent-based bullets and structurally forced why: clauses (unreleased draft 2026-09-07)
+
+- **Instruction change — Granularity regroups by intent; Reasoning gets a
+  structural forcing shape.** Live verification (0.29.0 subagent run) showed
+  the numeric granularity targets met (20 messages → 4 bullets) but two
+  wording-level defects: (a) the "3-5 steps per bullet" typical size and the
+  anti-packing clause literally conflicted — one bullet covering several
+  steps must contain several actions, so the model packed distinct actions
+  with separators to satisfy both; (b) the Reasoning rule's "state WHY" was
+  satisfiable by a trailing because-clause, and when the span already
+  contained a polished report the summarizer echoed it instead of mining the
+  thinking blocks (fold #22: rationale clauses present but sparse). Fixes:
+  a bullet now covers ONE intent — a coherent purpose or phase of work;
+  3-5 steps is the TYPICAL size, a smaller intent still gets its own bullet,
+  10 steps remains the hard ceiling, and "never join distinct intents into
+  one bullet — not even with separators" replaces the action-level clause.
+  The Reasoning rule now forces structure: every What-happened bullet ENDS
+  with an explicit `why:` clause naming the deciding consideration plus the
+  strongest rejected alternative; action-only bullets are failures; an
+  in-span polished report must not be echoed in place of the deliberation
+  that produced it (hypotheses discarded mid-work, uncertainty resolved,
+  ordering rationale). Tests pin the intent grouping, the small-intent
+  guarantee, the why-clause forcing, the echo prohibition, and the continued
+  absence of any budget language.
+- **Features**
+  - What happened bullets regroup by intent (typical 3-5 steps, ceiling 10)
+  - every What happened bullet ends with an explicit why: clause
+
 ## 0.29.0 — word budget and maxTokens cap removed from fold summaries (2026-09-07)
 
 - **Instruction + engine change — the mechanism no longer limits summary

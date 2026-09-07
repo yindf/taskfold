@@ -41,14 +41,16 @@ contradict the close.
 Audience is the continuing model (no human persona). Five sections: What
 happened / User inputs & decisions / Changes / Pitfalls & gotchas / Outcomes.
 There is NO word budget (removed in 0.29.0): coverage is governed by
-structure alone — a numeric granularity rule (one bullet per 3-5 steps, hard
-ceiling of 10 steps per bullet, no separator-packing of distinct actions),
-and a Reasoning rule makes the span's thinking blocks the
-primary source of decision rationale: each What-happened bullet states not
-only WHAT was done but WHY (hypotheses weighed, chosen path, rejected
-alternatives and the reason they lost; failure causes stay in Pitfalls), with
-settled conclusions distinguished from passing guesses — and, when the closing
-declaration is available, a forced
+structure alone — a numeric granularity rule (one bullet per INTENT — a
+coherent purpose or phase, typically 3-5 steps, hard ceiling of 10 steps per
+bullet, no separator-packing of distinct intents; small intents keep their
+own bullets), and a Reasoning rule makes the span's thinking blocks the
+primary source of decision rationale: every What-happened bullet ENDS with
+an explicit why: clause naming the deciding consideration plus the strongest
+rejected alternative (action-only bullets are failures; an in-span polished
+report must not be echoed in place of the deliberation that produced it),
+with settled conclusions distinguished from passing guesses — and, when the
+closing declaration is available, a forced
 `# <task name>` heading
 (the instruction prints the exact required line verbatim with a one-line
 copy rule — no translation or reformatting, whatever language the summary
