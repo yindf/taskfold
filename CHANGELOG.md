@@ -3,6 +3,26 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.24.2 — live-verified subtask folding on dsh 0.1.2-rc.1 (2026-09-07)
+
+- **Docs — the dsh `0.1.2-rc.1` verification is now live, not offline-only.**
+  After the host restarted onto taskfold 0.24.1, the full drain ran in a
+  real session: every archive queued from the broken era folded on the
+  first boundaries (three commits, ranges matching the offline replay's
+  prediction seq-for-seq), a plain subtask folded end-to-end, and — the
+  regression case — a subtask whose `task_begin` shares an assistant
+  message with a parallel partner call opened its region through the
+  v0.24.1 guard and committed (fold #7: 1,610 shadowed tokens, artifact
+  on disk, `fold_recall` line round-trip exact). A deliberately tiny
+  parallel span (215 tokens) was rejected by the shrink check
+  (`summary is not smaller than the shadowed content`) and settled
+  silently — the designed degradation, confirming the guard does not
+  force-fold spans a summary cannot shrink. Both READMEs' "Supported dsh
+  versions" now record the live in-process verification alongside the
+  offline suite, host-API probe, and region-transaction replay.
+- **Docs**
+  - live-verified subtask folding on dsh 0.1.2-rc.1
+
 ## 0.24.1 — skip parallel partner results when picking the fold span start (2026-09-07)
 
 - **Fix — parallel `task_begin` wedged every fold with an unbalanced START
