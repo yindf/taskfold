@@ -35,9 +35,9 @@ const FOLD_SUMMARY_CORE = [
   '- [results, verdicts, failures and their meaning; anything a later step must know]',
   'Rules:',
   '- Boundary: What happened = the span\'s actions and decisions in order, including the commands it ran; Changes = only durable artifacts that outlive the span and stay grep-able later (exact file paths written or edited, key values, durable identifiers). If it is not grep-able later, it belongs in What happened, not Changes.',
-  '- Granularity (What happened): a step = one assistant action together with its tool results (typically 2-4 span lines). One bullet covers 3-5 steps; 10 is the hard ceiling — a bullet that would exceed it MUST be split into consecutive bullets, each keeping its own L<N>-<M>. Never join distinct actions with separators inside one bullet. Coverage is a correctness requirement that outweighs the word budget: when words run short, write terser bullets — never fewer, never merged, never dropped.',
+  '- Granularity (What happened): a step = one assistant action together with its tool results (typically 2-4 span lines). One bullet covers 3-5 steps; 10 is the hard ceiling — a bullet that would exceed it MUST be split into consecutive bullets, each keeping its own L<N>-<M>. Never join distinct actions with separators inside one bullet. Coverage is a correctness requirement: when detail must compress, write terser bullets — never fewer bullets, never merged, never dropped.',
   '- Reasoning (What happened): the span\'s thinking blocks are the primary source of decision rationale — hypotheses weighed, options compared, why one path was chosen over another, what a result confirmed or refuted. Each bullet states not only WHAT was done but WHY, anchored to the deciding consideration; keep rejected alternatives and the reason they lost; distinguish settled conclusions from passing guesses. Failure causes belong in Pitfalls & gotchas; choice rationale belongs here.',
-  '- Budget: the closing rules state THIS fold\u0027s concrete word budget (≈10% of the span\u0027s estimated tokens). Spend it on fidelity, never on padding; a section ends at "(none)" as soon as it is true. The budget shapes prose economy, never coverage. Sections get different treatment: What happened follows the Granularity rule regardless of budget; Changes is exhaustive — every file path written or edited, every key value, no selection; Pitfalls & gotchas keeps every failure and its cause; Outcomes keeps every result and verdict; User inputs & decisions keeps every request, correction, and approval. When the budget forces triage, drop narrative connective tissue and restated context first — never anchors, decisions, or failure causes.',
+  '- Sections: spend words on fidelity, never on padding; a section ends at "(none)" as soon as it is true. What happened follows the Granularity and Reasoning rules; Changes is exhaustive — every file path written or edited, every key value, no selection; Pitfalls & gotchas keeps every failure and its cause; Outcomes keeps every result and verdict; User inputs & decisions keeps every request, correction, and approval. When detail must compress, drop narrative connective tissue and restated context first — never anchors, decisions, or failure causes.',
   '- Preserve exact file paths, commands, error strings, identifiers, and numbers. When this summary names files, commands, or errors, keep them precise (paths verbatim) — the reader will only recall the original span if these anchors fail to answer its question, and precise anchors double as grep keywords for that recall.',
   '- Citations: the Span message index printed at the end of THIS instruction numbers every message of the span: line N = the N-th span message = what fold_recall({ fold, line: N }) returns. When you cite a message position, copy N from the index (as L<N> or L<N>-<M>) — never count messages yourself.',
   '- Source-file references must carry the file name and a line number visible in a tool result inside the span; never estimate line numbers from memory.',
@@ -74,7 +74,7 @@ export function buildFoldInstruction(opts) {
 }
 
 /**
- * Pure envelope assembler: buildFoldInstruction(opts) + budgetLine + closing
+ * Pure envelope assembler: buildFoldInstruction(opts) + closing
  * + the SPAN MESSAGE INDEX (the complete renderSpanPreview output of the
  * span, fenced) appended LAST. The index is the citation ground truth — the
  * model copies line numbers from it instead of counting messages (three-arm
@@ -88,9 +88,8 @@ export function buildFoldInstruction(opts) {
  */
 export function assembleFoldInstruction(parts) {
   const p = parts !== null && typeof parts === 'object' ? parts : {}
-  const budgetLine = typeof p.budgetLine === 'string' ? p.budgetLine : ''
   const closing = typeof p.closing === 'string' ? p.closing : ''
-  let text = buildFoldInstruction(p.opts) + budgetLine + closing
+  let text = buildFoldInstruction(p.opts) + closing
   if (Array.isArray(p.indexLines) && p.indexLines.length > 0) {
     text += '\n\nSpan message index (line N = the N-th span message = artifact line N):\n\n```\n' + p.indexLines.join('\n') + '\n```'
   }

@@ -1,8 +1,8 @@
 // Offline pins for the fold instruction layer: the five-section structure,
 // the citation rules (index-copy / source-file / no-evidence / mirror), the
-// clustering wording agreement between the What-happened line and the Budget
-// rule, and the assembleFoldInstruction envelope contract (index appended
-// last, fenced, non-H2 lead line).
+// granularity rule (3-5 steps per bullet, ceiling 10, no word budget), the
+// reasoning rule, and the assembleFoldInstruction envelope contract (index
+// appended last, fenced, non-H2 lead line).
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import nodeFs from 'node:fs'
@@ -23,13 +23,13 @@ test('citation rules present: index-copy, source-file, no-evidence, mirror prohi
   assert.match(FOLD_SUMMARY_INSTRUCTION, /navigation input only/, 'mirror prohibition present')
 })
 
-test('granularity rule: 3-5 steps per bullet with a hard ceiling of 10; budget never trims coverage', () => {
+test('granularity rule: 3-5 steps per bullet with a hard ceiling of 10; no budget anywhere', () => {
   assert.match(FOLD_SUMMARY_INSTRUCTION, /one bullet per phase of 3-5 steps/, 'section line carries the numeric granularity')
   assert.match(FOLD_SUMMARY_INSTRUCTION, /10 is the hard ceiling/, 'hard ceiling present in the rules')
   assert.match(FOLD_SUMMARY_INSTRUCTION, /MUST be split into consecutive bullets/, 'over-ceiling bullets must split, keeping their L<N>-<M>')
   assert.match(FOLD_SUMMARY_INSTRUCTION, /Never join distinct actions with separators inside one bullet/, 'anti separator-packing present')
-  assert.match(FOLD_SUMMARY_INSTRUCTION, /outweighs the word budget/, 'coverage beats budget stated')
-  assert.match(FOLD_SUMMARY_INSTRUCTION, /The budget shapes prose economy, never coverage/, 'budget rule disclaims coverage authority')
+  assert.match(FOLD_SUMMARY_INSTRUCTION, /never fewer bullets, never merged, never dropped/, 'compression tightens wording, never coverage')
+  assert.ok(!FOLD_SUMMARY_INSTRUCTION.toLowerCase().includes('budget'), 'the word budget is fully removed from the instruction')
   assert.ok(!FOLD_SUMMARY_INSTRUCTION.includes('one bullet per meaningful step'), 'old vague granularity wording gone')
   assert.ok(!FOLD_SUMMARY_INSTRUCTION.includes('merge only same-action repeats'), 'the older anti-clustering clause stays gone')
 })
@@ -43,10 +43,9 @@ test('reasoning rule: thinking blocks mined for rationale; why + rejected altern
   assert.match(FOLD_SUMMARY_INSTRUCTION, /Failure causes belong in Pitfalls & gotchas; choice rationale belongs here/, 'division of labor vs Pitfalls pinned')
 })
 
-test('assembleFoldInstruction: base + budget + closing, fenced index appended LAST with a non-H2 lead line', () => {
+test('assembleFoldInstruction: base + closing, fenced index appended LAST with a non-H2 lead line', () => {
   const text = assembleFoldInstruction({
     opts: { prefix: true, name: 'demo' },
-    budgetLine: '\nWord budget for THIS fold: at most ~100 words.',
     closing: '\nThe task this span belongs to is named "demo". Rules for this fold:',
     indexLines: [
       'Span preview (3 messages, one per line — same order/numbering as the JSONL artifact):',
@@ -56,12 +55,11 @@ test('assembleFoldInstruction: base + budget + closing, fenced index appended LA
     ]
   })
   assert.match(text, /Task begun: demo/, 'opts forwarded: prefix-anchored opening present')
-  assert.ok(text.indexOf('Word budget for THIS fold') < text.indexOf('Rules for this fold:'), 'budget precedes closing')
   const idx = text.indexOf('Span message index (line N')
   assert.ok(idx > text.indexOf('Rules for this fold:'), 'index appended AFTER the closing rules')
   assert.match(text.slice(idx), /^Span message index \(line N = the N-th span message = artifact line N\):/, 'lead line is plain text — deliberately not a heading')
   assert.ok(text.includes('```\nSpan preview (3 messages, one per line — same order/numbering as the JSONL artifact):\n  1 user: hi\n  2 assistant: hello\n  3 tool: ←done\n```'), 'index body fenced verbatim, header line included')
-  const lean = assembleFoldInstruction({ opts: {}, budgetLine: '', closing: '', indexLines: [] })
+  const lean = assembleFoldInstruction({ opts: {}, closing: '', indexLines: [] })
   assert.equal(lean, buildFoldInstruction({}), 'empty extras + no index degrade to the plain span-only instruction')
   assert.ok(!lean.includes('Span message index (line N'), 'no index section when indexLines is empty (rule text may still mention the index by name)')
 })

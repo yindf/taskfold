@@ -3,6 +3,27 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.29.0 — word budget and maxTokens cap removed from fold summaries (unreleased draft 2026-09-07)
+
+- **Instruction + engine change — the mechanism no longer limits summary
+  length.** The per-fold word budget is gone entirely: the engine no longer
+  computes estTokens/wordBudget or injects a budget line, the assembler
+  signature drops `budgetLine`, and the instruction's Budget rule is replaced
+  by a Sections rule that keeps only the coverage duties (fidelity over
+  padding, "(none)" as soon as true, Changes exhaustive, Pitfalls keeps every
+  failure cause, compress narrative first — never anchors, decisions, or
+  failure causes). The fold LLM call also no longer sets `maxTokens` — no
+  mechanism-level length limit remains: accuracy governs length, bounded only
+  by the provider's default and the host's not-smaller-than-span rejection.
+  What-happened coverage is governed by structure alone (Granularity: 3-5
+  steps per bullet, ceiling 10, split-don't-pack; Reasoning: WHAT + WHY per
+  bullet, rejected alternatives kept). Field motivation: budget framing kept
+  licensing coarse summaries even after the granularity rules landed; the
+  ruling is that coverage accuracy is the only goal.
+- **Features**
+  - remove the per-fold word budget (instruction rule, engine computation, assembler parameter)
+  - drop the fold call's maxTokens cap (no mechanism-level limit on summary length)
+
 ## 0.28.0 — What happened granularity + reasoning capture (2026-09-07)
 
 - **Instruction change — coverage accuracy outranks the word budget in What

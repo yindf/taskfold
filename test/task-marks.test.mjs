@@ -435,7 +435,7 @@ test('FOLD_SUMMARY_INSTRUCTION: five-section structure with user-inputs and pitf
   assert.ok(FOLD_SUMMARY_INSTRUCTION.includes('relay'), 'fallback-relay rule present (summary may back a never-sent deliverable)')
   assert.ok(FOLD_SUMMARY_INSTRUCTION.includes('cite its conclusions, not restate'), 'delivered-report citation rule present (Outcomes cites, never restates)')
   assert.ok(FOLD_SUMMARY_INSTRUCTION.includes('paths verbatim'), 'anchor-precision rule present (anchors double as recall grep keywords)')
-  assert.ok(FOLD_SUMMARY_INSTRUCTION.includes('≈10% of the span\u0027s estimated tokens'), 'budget is proportional to the span (10%), not a flat cap')
+  assert.ok(!FOLD_SUMMARY_INSTRUCTION.includes('word budget'), 'no word budget anywhere — coverage is governed by structure, not a budget')
   assert.ok(FOLD_SUMMARY_INSTRUCTION.includes('Changes is exhaustive — every file path written or edited'), 'changes are exhaustive, never culled to a bullet count')
   assert.ok(FOLD_SUMMARY_INSTRUCTION.includes('keeps every request, correction, and approval'), 'user inputs are kept in full')
   assert.ok(FOLD_SUMMARY_INSTRUCTION.includes('stay grep-able later'), 'changes are durable grep-able artifacts; commands belong to What happened')

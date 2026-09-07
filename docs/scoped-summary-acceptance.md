@@ -39,12 +39,11 @@ contradict the close.
 ## Instruction shape
 
 Audience is the continuing model (no human persona). Five sections: What
-happened / User inputs & decisions / Changes / Pitfalls & gotchas / Outcomes,
-plus a per-fold word budget (~10% of the span's estimated tokens) that shapes
-prose economy but never coverage — What happened's granularity is governed by
-a numeric rule (one bullet per 3-5 steps, hard ceiling of 10 steps per bullet,
-no separator-packing of distinct actions), so accuracy of coverage outranks
-the budget — and a Reasoning rule makes the span's thinking blocks the
+happened / User inputs & decisions / Changes / Pitfalls & gotchas / Outcomes.
+There is NO word budget (removed in 0.29.0): coverage is governed by
+structure alone — a numeric granularity rule (one bullet per 3-5 steps, hard
+ceiling of 10 steps per bullet, no separator-packing of distinct actions),
+and a Reasoning rule makes the span's thinking blocks the
 primary source of decision rationale: each What-happened bullet states not
 only WHAT was done but WHY (hypotheses weighed, chosen path, rejected
 alternatives and the reason they lost; failure causes stay in Pitfalls), with

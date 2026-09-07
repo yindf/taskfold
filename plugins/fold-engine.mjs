@@ -147,14 +147,6 @@ async function buildScopedEngine(ctx, closingTasks) {
           + '- This fold CLOSES the task: no further work belongs to it, so do not report anything as unfinished or pending merely because of how the span ends — this very fold is the task\u0027s ending. Closed is not the same as succeeded: if the work ended in a genuine failure or dead end, report that honestly in Outcomes.\n'
           + '- Do NOT summarize task_begin / task_end calls, their results, or any narration that merely announces starting or finishing the task — that is lifecycle bookkeeping, not content. Summarize the WORK itself.'
         : ''
-      // Concrete per-fold budget: ~10% of the span's estimated tokens
-      // (chars/4 heuristic), floored so tiny spans still get a usable
-      // summary, ceilinged to stay inside the summarizer's maxTokens.
-      // Budget is computed from the SPAN alone — prefix context never
-      // inflates it.
-      const estTokens = Math.max(1, Math.floor(JSON.stringify(input.messages).length / 4))
-      const wordBudget = Math.min(4000, Math.max(150, Math.floor((estTokens * 0.1) / 1.35)))
-      const budgetLine = '\nWord budget for THIS fold: at most ~' + wordBudget + ' words (≈10% of ~' + estTokens + ' estimated span tokens).'
       // PREFIX-ANCHORED ENVELOPE: prepend every surface node before the
       // span so the request is a strict prefix of the main conversation
       // request → provider prefix-cache reuse (~97% hit measured; the
@@ -191,7 +183,6 @@ async function buildScopedEngine(ctx, closingTasks) {
           type: 'text',
           text: assembleFoldInstruction({
             opts: { prefix: prefixMessages.length > 0, name: closingName },
-            budgetLine,
             closing,
             indexLines: renderSpanPreview(input.messages)
           })
@@ -203,7 +194,10 @@ async function buildScopedEngine(ctx, closingTasks) {
         messages,
         ...(input.system === undefined ? {} : { system: input.system }),
         ...(input.tools === undefined ? {} : { tools: [...input.tools] }),
-        maxTokens: cfg.maxTokens,
+        // NO maxTokens cap on the fold call (product ruling: the mechanism
+        // imposes no length limit on summaries — accuracy governs length,
+        // bounded only by the provider default and the host's
+        // not-smaller-than-span rejection).
         sessionId: agent.session.id,
         purpose: 'compaction',
         ...(signal === undefined ? {} : { signal })
@@ -278,7 +272,6 @@ async function buildScopedEngine(ctx, closingTasks) {
         llmStreamCall: true,
         provider: options.provider,
         model: options.model,
-        maxTokens: cfg.maxTokens,
         ...(assembler.usage === undefined ? {} : { usage: assembler.usage })
       }
     }
