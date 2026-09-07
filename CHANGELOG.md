@@ -3,6 +3,53 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.26.0 — turn-stopping drain, instruction-tail span index, archive footer (unreleased draft 2026-09-07)
+
+- **Folding economics: top-level folds now run while the provider prefix
+  cache is hot.** The archive drain is additionally wired to the host's
+  `agent/turn-stopping` hook (serial contract; the whole registration sits
+  in a try/catch, so older hosts degrade to the previous pre-step-only
+  semantics and `apply()` never breaks). Measured motivation: in a live
+  session's seven folds, both all-miss folds billed ~82% fresh input because
+  a turn-final deliverable's fold waited for the next turn's pre-step — after
+  the user's idle gap had expired the cache; the same boundary drained
+  seconds after the last main request instead hits ~97%. Aborted or errored
+  turns never dispatch the hook, so pre-step remains the fallback; the
+  drain's running guard was renamed `drainRunning` to reflect that it now
+  covers both hooks (its real job is cross-session reentry — the host loop
+  serializes same-session dispatch).
+- **Citations grounded by the span message index.** The fold instruction's
+  tail now carries a fenced, numbered, one-line-per-message index of the
+  span, rendered by the same `renderSpanPreview` that serves `fold_recall`
+  (preview line N = artifact line N), and four citation rules make the
+  summarizer copy line numbers from that index (never count messages), cite
+  source files only with file names and tool-visible line numbers (never
+  estimated from memory), fall back to a short verbatim quote when no anchor
+  resolves, and never mirror the index into the summary. Grounding: three
+  fresh-context controlled arms on a 52-message artifact — index arm 100%
+  correct message-level citations, control arm (no index, counting) 100% at
+  that size, perturbed arm (+1 index labels) followed the printed labels in
+  37/37 citations, proving index-copy over counting. The index rides the
+  instruction message (always fresh input); the span bytes and the envelope's
+  cached prefix are untouched.
+- **Compact archive footer instead of the full inline preview.** The
+  `## Fold archive` section embedded in every summary node now carries the
+  fold number, the message count, the artifact path, and a head-3 + elision
+  + tail-8 window of the span preview with TRUE line numbers — lines sliced
+  from `renderSpanPreview` output, so footer and index can never drift
+  apart; the complete index stays one `fold_recall({ fold })` away.
+  Measured motivation: the full inline preview was 64% of all fold-summary
+  tokens, and 49% of its characters were `[think]` fragments. What-happened
+  bullets may now cluster consecutive steps into phase bullets carrying
+  `L<N>-<M>`, and the Budget rule's old anti-clustering clause was rewritten
+  to agree. Model-facing texts (task_end description, system-prompt section)
+  no longer promise a no-elision complete preview; `list_folds` and
+  `fold_recall` behavior is unchanged.
+- **Features**
+  - turn-stopping drain for cache-hot top-level folds
+  - span message index + citation rules in the fold instruction
+  - compact archive footer (head 3 + elision + tail 8, true line numbers)
+
 ## 0.25.0 — slim the list_folds listing to number, tokens, and title (2026-09-07)
 
 - **Breaking-ish output change — `list_folds` now lists only what the model

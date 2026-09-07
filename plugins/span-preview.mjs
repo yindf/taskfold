@@ -1,13 +1,18 @@
 // Shared span preview + JSONL artifact helpers for the taskfold bundle.
 //
-// CONTRACT: the preview lines task_fold prints and the lines of the JSONL
-// artifact are derived from the SAME messages in the SAME order — line N of
-// the artifact file is exactly what preview line N describes. The model can
-// map a one-line preview back to its full original by line number. When a
-// span exceeds the preview cap, the window is HEAD+TAIL: opening lines and
-// closing lines are kept and the middle collapses into one elision pointer
-// — shown lines always keep their TRUE 1-based numbers, so the line-N
-// contract holds for the tail too.
+// TWO preview contracts share ONE line renderer (messagePreviewLine):
+//  - renderSpanPreview: the COMPLETE 1:1 index — one line per message, every
+//    message, no elision. Preview line N = the N-th span message = line N of
+//    the JSONL artifact = the message fold_recall({ fold, line: N }) returns.
+//    It is the single source for the fold instruction's span message index
+//    and for fold_recall's full re-render.
+//  - renderArchiveFooter: the RESIDENT footer embedded in summary nodes —
+//    a head+tail window (ARCHIVE_HEAD_LINES + one elision pointer +
+//    ARCHIVE_TAIL_LINES), NOT a complete index. Shown lines keep their TRUE
+//    1-based numbers (same coordinate contract as the full index), and the
+//    complete index stays one fold_recall({ fold }) away. Anti-drift: footer
+//    lines are SLICES of renderSpanPreview's own output, never a second
+//    rendering path — the two previews cannot diverge.
 //
 // Kept dependency-free (node builtins only) so both bundle plugins can import
 // it without touching the bundle patch — it is a plain module, not a row.
@@ -187,28 +192,40 @@ export function renderSpanPreview(messages) {
   return lines
 }
 
-// Complete preview for the Fold archive section inside a summary node: every
-// message line, no elision — the preview is the span's own index, and its line
-// numbers are the recall coordinates (fold_recall line overload). The engine
-// REJECTS a fold whose framed summary is not smaller than the shadowed span;
-// each preview line is clipped to LINE_CLIP, so a full listing normally costs
-// a small fraction of the span it indexes. The one defensive guard: a
-// degenerate span (many near-empty messages) could break that assumption, so
-// if the whole listing would rival the span itself, degrade to a header plus
-// pointer rather than risk the engine rejecting the fold. Composition: the
-// per-line rendering IS renderSpanPreview — this wrapper only adds the size
-// guard, so the two previews can never drift apart.
-export function renderArchivePreview(messages) {
+// Resident footer for the Fold archive section inside a summary node:
+// ARCHIVE_HEAD_LINES opening lines + ONE elision pointer + ARCHIVE_TAIL_LINES
+// closing lines, all sliced from renderSpanPreview's output (anti-drift by
+// construction — there is no second line renderer). Spans of at most
+// HEAD+TAIL messages return the full listing: the window covers everything,
+// so no elision line exists. The engine REJECTS a fold whose framed summary
+// is not smaller than the shadowed span; the footer is bounded (≤ HEAD+TAIL+1
+// lines of ≤ LINE_CLIP each), so it costs a small fraction of any real span.
+// The one defensive guard that remains: a degenerate span of near-empty
+// messages could let even this bounded footer rival the span itself —
+// degrade to a single pointer line rather than risk the engine's
+// not-smaller rejection.
+export const ARCHIVE_HEAD_LINES = 3
+export const ARCHIVE_TAIL_LINES = 8
+
+export function renderArchiveFooter(messages) {
   if (!Array.isArray(messages) || messages.length === 0) return ['Span preview: (empty)']
-  const header = 'Span preview (' + messages.length + ' messages, one per line — same order/numbering as the JSONL artifact):'
-  const estChars = JSON.stringify(messages).length
-  const lines = renderSpanPreview(messages)
-  let previewChars = 0
-  for (const line of lines) previewChars += line.length
-  if (previewChars > estChars * 0.6) {
-    return [header, '… full listing would rival the span itself — read the artifact file.']
+  const n = messages.length
+  const lines = renderSpanPreview(messages).slice(1) // drop the header line — the fold bullet carries the count
+  const window = ARCHIVE_HEAD_LINES + ARCHIVE_TAIL_LINES
+  let footer
+  if (n <= window) {
+    footer = lines
+  } else {
+    const elision = '… lines ' + (ARCHIVE_HEAD_LINES + 1) + '-' + (n - ARCHIVE_TAIL_LINES) + ' omitted (' + (n - window) + ' of ' + n + ') — fold_recall({ fold }) re-renders the full index'
+    footer = lines.slice(0, ARCHIVE_HEAD_LINES).concat([elision], lines.slice(n - ARCHIVE_TAIL_LINES))
   }
-  return lines
+  let footerChars = 0
+  for (const line of footer) footerChars += line.length
+  const estChars = JSON.stringify(messages).length
+  if (footerChars > estChars * 0.6) {
+    return ['Span preview (' + n + ' messages) — listing would rival the span itself; fold_recall({ fold }) re-renders the full index.']
+  }
+  return footer
 }
 
 // fold_recall's line overload: the message at a 1-based span position —

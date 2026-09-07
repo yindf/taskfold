@@ -88,7 +88,12 @@ async function foldRegion(session, agent, engine, name, startSeq, endSeq, signal
 
 /**
  * The drain factory. `engineFor` comes from createFoldEngine; the returned
- * processDeferredArchives(agent, signal) is wired into 'agent/pre-step'.
+ * processDeferredArchives(agent, signal) is wired into BOTH 'agent/pre-step'
+ * and 'agent/turn-stopping' (compact-region.mjs): pre-step keeps every queued
+ * archive moving; turn-stopping folds turn-final deliverables while the
+ * provider prefix cache is still hot. Same-session dispatch order is
+ * serialized by the host loop; the running guard below covers cross-session
+ * reentry (subagent sessions share this process).
  *
  * At every agent step boundary, drain queue entries whose deliverable has
  * landed (deferredArchivePlan gate), innermost (highest seq) first. Serial
@@ -100,7 +105,7 @@ async function foldRegion(session, agent, engine, name, startSeq, endSeq, signal
 export function createArchiveDrain({ ctx, engineFor, closingTasks }) {
   const settledArchives = new Map() // session.id → Set<seq>
   const autoFoldFailures = new Map() // session.id → Map<name, bucket>
-  let preStepRunning = false
+  let drainRunning = false
 
   function isSettledArchive(session, seq) {
     const set = settledArchives.get(session.id)
@@ -125,8 +130,8 @@ export function createArchiveDrain({ ctx, engineFor, closingTasks }) {
   }
 
   async function processDeferredArchives(agent, signal) {
-    if (preStepRunning) return
-    preStepRunning = true
+    if (drainRunning) return
+    drainRunning = true
     try {
       const session = agent.session
       for (;;) {
@@ -181,7 +186,7 @@ export function createArchiveDrain({ ctx, engineFor, closingTasks }) {
         }
       }
     } finally {
-      preStepRunning = false
+      drainRunning = false
     }
   }
 

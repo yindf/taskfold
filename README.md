@@ -56,6 +56,7 @@ Restart dsh — every session on that profile gets the tools.
 - **Known to work: `0.1.2-rc.1`** (verified 2026-09-07: offline suite, a host-API probe against the real packages, an offline replay of a live session's log through the real `dsh-compaction-basic` region transaction, and live in-process subtask folds on a restarted host — plain and parallel-`task_begin` topologies, `fold_recall` round-trip, and queued archives drained automatically on restart; that verification round caught and fixed a parallel-`task_begin` fold-start bug). `dsh`, `dsh-compaction-basic`, and `dsh-llm` ship version-locked, so one number covers the whole surface.
 - **Minimum: `0.1.2-alpha.5`.** No older version has been tested; older alphas differ in the compaction-engine internals this plugin builds on.
 - **Upper bound: untested, not enforced.** dsh does not yet expose host-version negotiation to plugins, so nothing rejects an incompatible host automatically — on an incompatible dsh, folds degrade (tasks still close, unfolded) rather than corrupt. After each dsh upgrade, re-check this section and update it with test results.
+- **Optional hook: `agent/turn-stopping`** — since 0.26.0 the archive drain also runs at turn end, folding turn-final deliverables while the provider prefix cache is still hot. Hosts without the hook simply keep the previous pre-step-only semantics (folds still happen, one turn later); the registration is wrapped so its absence never breaks `apply()`.
 
 ## For maintainers
 

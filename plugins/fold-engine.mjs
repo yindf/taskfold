@@ -33,8 +33,8 @@ import nodePath from 'node:path'
 import nodeFs from 'node:fs'
 import nodeUrl from 'node:url'
 
-import { renderArchivePreview, writeSpanArtifact, sessionArtifactDir } from './span-preview.mjs'
-import { buildFoldInstruction } from './fold-instruction.mjs'
+import { renderArchiveFooter, renderSpanPreview, writeSpanArtifact, sessionArtifactDir } from './span-preview.mjs'
+import { assembleFoldInstruction } from './fold-instruction.mjs'
 import { sessionEvents } from './events.mjs'
 
 function engineCandidatePaths() {
@@ -178,9 +178,24 @@ async function buildScopedEngine(ctx, closingTasks) {
           }
         } catch (err) { prefixMessages = [] }
       }
+      // Instruction tail carries the SPAN MESSAGE INDEX (renderSpanPreview
+      // of the span, fenced, appended after the closing rules): the model
+      // copies line numbers from it instead of counting messages (three-arm
+      // controlled experiment: 100% citation accuracy with a visible index;
+      // mechanism = copy-the-visible-number). The index rides in the
+      // always-fresh instruction message — the span bytes stay untouched,
+      // so the prefix-cache anchor is preserved.
       const messages = [...prefixMessages, ...input.messages, {
         role: 'user',
-        content: [{ type: 'text', text: buildFoldInstruction({ prefix: prefixMessages.length > 0, name: closingName }) + budgetLine + closing }]
+        content: [{
+          type: 'text',
+          text: assembleFoldInstruction({
+            opts: { prefix: prefixMessages.length > 0, name: closingName },
+            budgetLine,
+            closing,
+            indexLines: renderSpanPreview(input.messages)
+          })
+        }]
       }]
       const options = {
         provider: target.provider,
@@ -228,13 +243,15 @@ async function buildScopedEngine(ctx, closingTasks) {
       // (input.messages IS the exact span) are computed HERE and
       // appended as a section formatted like the summary's own five:
       //   ## Fold archive
-      //   - fold #N · originals (JSONL, one message per line — span
-      //     "Task begun" result … "Task ended" result): <path>
-      //   + the complete span preview (preview line N = artifact
-      //     line N). The committed node then carries its own recall
-      //     handles; no separate notice message is injected at all. If
-      //     the engine later rejects the commit, the pre-written
-      //     artifact becomes an orphan temp file — harmless.
+      //   - fold #N · M messages · originals (JSONL, one message per
+      //     line): <path>
+      //   + a resident footer — head+tail window of the span preview
+      //     with TRUE line numbers (renderArchiveFooter; the complete
+      //     index stays one fold_recall away). The committed node then
+      //     carries its own recall handles; no separate notice message
+      //     is injected at all. If the engine later rejects the commit,
+      //     the pre-written artifact becomes an orphan temp file —
+      //     harmless.
       const withFooter = [...withHeading]
       if (withFooter.length > 0) {
         let foldNo = 0
@@ -249,8 +266,8 @@ async function buildScopedEngine(ctx, closingTasks) {
           // paragraph in every markdown renderer, which mashed the
           // preview into a blob. A fenced code block preserves the
           // per-line layout; a blank line separates the metadata bullet.
-          const section = '\n\n## Fold archive\n\n- fold #' + foldNo + ' · originals (JSONL, one message per line — span: just after the "Task begun" result … "Task ended" result): ' + file + '\n\n```\n'
-            + renderArchivePreview(input.messages).join('\n') + '\n```'
+          const section = '\n\n## Fold archive\n\n- fold #' + foldNo + ' · ' + input.messages.length + ' messages · originals (JSONL, one message per line): ' + file + '\n\n```\n'
+            + renderArchiveFooter(input.messages).join('\n') + '\n```'
           const last = withFooter[withFooter.length - 1]
           withFooter[withFooter.length - 1] = { ...last, text: last.text.replace(/\s+$/, '') + section }
         }

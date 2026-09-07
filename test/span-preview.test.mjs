@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import nodeFs from 'node:fs'
 import nodePath from 'node:path'
 import nodeOs from 'node:os'
-import { blockBrief, messagePreviewLine, renderSpanPreview, writeSpanArtifact, callBrief, resultBrief, collectToolCalls, renderArchivePreview, sessionArtifactDir, artifactLineAt } from '../plugins/span-preview.mjs'
+import { blockBrief, messagePreviewLine, renderSpanPreview, writeSpanArtifact, callBrief, resultBrief, collectToolCalls, renderArchiveFooter, ARCHIVE_HEAD_LINES, ARCHIVE_TAIL_LINES, sessionArtifactDir, artifactLineAt } from '../plugins/span-preview.mjs'
 
 /** Shape-accurate request messages (the same blocks deriveEventMessage yields). */
 function span() {
@@ -220,25 +220,32 @@ test('writeSpanArtifact: missing or non-string session keys fall back to the fla
   }
 })
 
-test('renderArchivePreview: every message line inline; degenerate spans degrade defensively', () => {
-  const small = renderArchivePreview(span())
-  assert.ok(small[0].startsWith('Span preview (4 messages'), 'header present')
-  assert.equal(small.length, 5, 'small span lists every message line inline')
+test('renderArchiveFooter: head 3 + elision + tail 8 with true line numbers; small spans stay full', () => {
+  const small = renderArchiveFooter(span())
+  assert.equal(small.length, 4, '4 ≤ HEAD+TAIL messages → every message line, no elision')
+  assert.ok(small[0].startsWith('  1 '), 'first line is the true message 1')
+  assert.ok(small[3].startsWith('  4 '), 'last line is the true final message')
   const big = []
   for (let i = 0; i < 60; i += 1) {
     big.push({ role: 'user', content: [{ type: 'text', text: 'request ' + i + ' '.repeat(400) }] })
     big.push({ role: 'assistant', content: [{ type: 'text', text: 'answer ' + i + ' '.repeat(400) }] })
   }
-  const large = renderArchivePreview(big)
-  assert.equal(large.length, 121, 'large span lists ALL 120 message lines — no elision, no window')
-  assert.ok(!large.some((l) => l.startsWith('… +')), 'no elision pointer')
-  assert.ok(large[large.length - 1].startsWith('120 '), 'the span\'s final message is the last preview line (true number kept)')
-  const totalChars = large.join('\n').length
-  const estChars = JSON.stringify(big).length
-  assert.ok(totalChars < estChars * 0.6, 'full listing still costs a fraction of the span it indexes')
+  const footer = renderArchiveFooter(big)
+  assert.equal(footer.length, ARCHIVE_HEAD_LINES + 1 + ARCHIVE_TAIL_LINES, 'head window + one elision pointer + tail window')
+  assert.ok(footer[0].startsWith('  1 '), 'head window opens at true line 1')
+  assert.ok(footer[ARCHIVE_HEAD_LINES - 1].startsWith('  3 '), 'head window ends at true line 3')
+  assert.ok(/… lines 4-112 omitted \(109 of 120\)/.test(footer[ARCHIVE_HEAD_LINES]), 'elision pointer names the omitted range and count')
+  assert.ok(/fold_recall\(\{ fold \}\)/.test(footer[ARCHIVE_HEAD_LINES]), 'elision points at the full-index re-render')
+  assert.ok(footer[ARCHIVE_HEAD_LINES + 1].startsWith('113 '), 'tail window opens at true line N-7')
+  assert.ok(footer[footer.length - 1].startsWith('120 '), 'the span\'s final message closes the footer (true number kept)')
+  const edge = []
+  for (let i = 0; i < ARCHIVE_HEAD_LINES + ARCHIVE_TAIL_LINES; i += 1) edge.push({ role: 'user', content: [{ type: 'text', text: 'm' + i + ' ' + 'x'.repeat(20) }] })
+  assert.equal(renderArchiveFooter(edge).length, ARCHIVE_HEAD_LINES + ARCHIVE_TAIL_LINES, 'n = HEAD+TAIL → full listing, no elision line')
+  edge.push({ role: 'user', content: [{ type: 'text', text: 'm11 ' + 'x'.repeat(20) }] })
+  assert.equal(renderArchiveFooter(edge).length, ARCHIVE_HEAD_LINES + 1 + ARCHIVE_TAIL_LINES, 'n = HEAD+TAIL+1 → elision appears')
   const degenerate = []
-  for (let i = 0; i < 80; i += 1) degenerate.push({ role: 'user', content: [] })
-  const guard = renderArchivePreview(degenerate)
-  assert.equal(guard.length, 2, 'near-empty spans degrade to header + pointer instead of rivaling the span')
-  assert.ok(/artifact file/.test(guard[1]), 'pointer directs at the artifact file')
+  for (let i = 0; i < 12; i += 1) degenerate.push({ role: 'user', content: [] })
+  const guard = renderArchiveFooter(degenerate)
+  assert.equal(guard.length, 1, 'near-empty spans degrade to a single pointer line instead of rivaling the span')
+  assert.ok(/fold_recall/.test(guard[0]), 'pointer directs at the full-index re-render')
 })

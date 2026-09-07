@@ -24,7 +24,7 @@ const FOLD_SUMMARY_CORE = [
   'Summarize ONLY what the span contains — what was done, tried, decided, and produced. Do NOT restate project background, architecture, goals, or context the messages merely assume: the continuing model already has all of that from outside the span.',
   'Output EXACTLY this structure, terse bullets, "(none)" for empty sections:',
   '## What happened',
-  '- [the work performed in this span, in order, one bullet per meaningful step]',
+  '- [the work performed in this span, in order, one bullet per meaningful step; consecutive steps MAY cluster into one phase bullet carrying L<N>-<M> copied from the Span message index]',
   '## User inputs & decisions',
   '- [the user\'s requests, corrections, rejections, answers, and approvals from THIS span, with the decision each produced; quote verbatim where the exact wording matters]',
   '## Changes',
@@ -35,8 +35,12 @@ const FOLD_SUMMARY_CORE = [
   '- [results, verdicts, failures and their meaning; anything a later step must know]',
   'Rules:',
   '- Boundary: What happened = the span\'s actions and decisions in order, including the commands it ran; Changes = only durable artifacts that outlive the span and stay grep-able later (exact file paths written or edited, key values, durable identifiers). If it is not grep-able later, it belongs in What happened, not Changes.',
-  '- Budget: the closing rules state THIS fold\u0027s concrete word budget (≈10% of the span\u0027s estimated tokens). Spend it on fidelity, never on padding; a section ends at "(none)" as soon as it is true. Sections get different treatment: What happened keeps every meaningful step as its own bullet (compress phrasing, not facts; merge only same-action repeats); Changes is exhaustive — every file path written or edited, every key value, no selection; Pitfalls & gotchas keeps every failure and its cause; Outcomes keeps every result and verdict; User inputs & decisions keeps every request, correction, and approval. When the budget forces triage, drop narrative connective tissue and restated context first — never anchors, decisions, or failure causes.',
+  '- Budget: the closing rules state THIS fold\u0027s concrete word budget (≈10% of the span\u0027s estimated tokens). Spend it on fidelity, never on padding; a section ends at "(none)" as soon as it is true. Sections get different treatment: every meaningful step in What happened is covered by at least one bullet; consecutive steps may cluster into one phase bullet with L<N>-<M> (compress phrasing, not facts); Changes is exhaustive — every file path written or edited, every key value, no selection; Pitfalls & gotchas keeps every failure and its cause; Outcomes keeps every result and verdict; User inputs & decisions keeps every request, correction, and approval. When the budget forces triage, drop narrative connective tissue and restated context first — never anchors, decisions, or failure causes.',
   '- Preserve exact file paths, commands, error strings, identifiers, and numbers. When this summary names files, commands, or errors, keep them precise (paths verbatim) — the reader will only recall the original span if these anchors fail to answer its question, and precise anchors double as grep keywords for that recall.',
+  '- Citations: the Span message index printed at the end of THIS instruction numbers every message of the span: line N = the N-th span message = what fold_recall({ fold, line: N }) returns. When you cite a message position, copy N from the index (as L<N> or L<N>-<M>) — never count messages yourself.',
+  '- Source-file references must carry the file name and a line number visible in a tool result inside the span; never estimate line numbers from memory.',
+  '- When neither the index nor a visible tool result can locate something you must reference, quote a short verbatim fragment instead of citing a number.',
+  '- The Span message index is navigation input only: never reproduce it, or any part of it, in your output.',
   '- Capture user feedback and explicit instructions faithfully, especially corrections.',
   '- Pitfalls and their causes are the span\'s most reusable knowledge: never drop why something failed.',
   '- If the deliverable was never sent, a later turn may relay this summary to the user as the task report\'s basis: keep every section accurate and human-readable. If the span already contains the delivered report, Outcomes should cite its conclusions, not restate them.',
@@ -65,6 +69,30 @@ export function buildFoldInstruction(opts) {
   }
   return 'You are summarizing ONE FOLDED SPAN of a longer session. The messages above are exactly that span; your summary replaces them for the model that continues this session. ' + FOLD_BOUNDARY_RULE
     + '\n' + FOLD_SUMMARY_CORE
+}
+
+/**
+ * Pure envelope assembler: buildFoldInstruction(opts) + budgetLine + closing
+ * + the SPAN MESSAGE INDEX (the complete renderSpanPreview output of the
+ * span, fenced) appended LAST. The index is the citation ground truth — the
+ * model copies line numbers from it instead of counting messages (three-arm
+ * controlled experiment: 100% accurate with a visible index, mechanism =
+ * copy-the-visible-number, proven by a +1-perturbed index arm). The lead
+ * line is deliberately NOT a '## ' heading: the instruction fixes exactly
+ * five sections, and a sixth H2 would invite the model to mirror the index
+ * into its output — a plain lead line plus the Mirror rule in
+ * FOLD_SUMMARY_CORE prevent that. Empty indexLines degrade to the plain
+ * instruction (no index section), keeping the assembler total.
+ */
+export function assembleFoldInstruction(parts) {
+  const p = parts !== null && typeof parts === 'object' ? parts : {}
+  const budgetLine = typeof p.budgetLine === 'string' ? p.budgetLine : ''
+  const closing = typeof p.closing === 'string' ? p.closing : ''
+  let text = buildFoldInstruction(p.opts) + budgetLine + closing
+  if (Array.isArray(p.indexLines) && p.indexLines.length > 0) {
+    text += '\n\nSpan message index (line N = the N-th span message = artifact line N):\n\n```\n' + p.indexLines.join('\n') + '\n```'
+  }
+  return text
 }
 
 export const FOLD_SUMMARY_INSTRUCTION = buildFoldInstruction({})
