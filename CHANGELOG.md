@@ -3,7 +3,7 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
-## 0.29.0 — word budget and maxTokens cap removed from fold summaries (unreleased draft 2026-09-07)
+## 0.29.0 — word budget and maxTokens cap removed from fold summaries (2026-09-07)
 
 - **Instruction + engine change — the mechanism no longer limits summary
   length.** The per-fold word budget is gone entirely: the engine no longer
