@@ -371,6 +371,52 @@ test('deferredArchivePlan: the deliverable gate (wait / fold / defer / drop)', (
     'close seq before the begin anchor is inconsistent — drop')
 })
 
+test('deferredArchivePlan: parallel-begin guard — the start skips the partner results of the begin message', () => {
+  // The begin-carrying assistant message (seq 10) calls task_begin AND a
+  // partner tool in parallel. Live regression on dsh 0.1.2-rc.1: the old
+  // plan opened the span at the first surface node after the "Task begun"
+  // result — the partner's tool/result — whose cut splits the partner's
+  // call/result pair. The engine rejects unbalanced START boundaries and
+  // the drain cannot self-heal them, so every retry failed ('fold failed').
+  const p = { seq: 10, name: 'alpha', foldResultSeq: 25 }
+  const beginMsg = assistantMsg(10, [
+    { type: 'tool-call', id: 'b1', name: 'task_begin', arguments: '{"name":"alpha"}' },
+    { type: 'tool-call', id: 'p1', name: 'grep', arguments: '{}' }
+  ])
+  const begun = { seq: 11, type: 'tool/result', data: { message: { content: [{ type: 'tool-result', toolCallId: 'b1', content: [{ type: 'text', text: 'Task begun: alpha — 1 open.' }] }] } } }
+  const partner = { seq: 12, type: 'tool/result', data: { message: { content: [{ type: 'tool-result', toolCallId: 'p1', content: [{ type: 'text', text: '3 matches' }] }] } } }
+  const deliverable = assistantMsg(30, [{ type: 'text', text: 'final report' }])
+  // ① Partner result AFTER the begun result: the span must open past BOTH
+  // results (node 15), never at the partner result (node 12).
+  const nodes = [10, 11, 12, 15, 20, 25, 30, 35]
+  const plan = deferredArchivePlan(p, nodes, [beginMsg, begun, partner, deliverable], [])
+  assert.equal(plan.action, 'fold')
+  assert.equal(plan.startSeq, 15, 'parallel partner results are skipped — a cut at 12 would split the grep pair')
+  assert.equal(plan.endSeq, 25)
+  // ② Partner result BEFORE the begun result: the begun result is already
+  // the last of the batch; identical outcome.
+  const swapped = deferredArchivePlan(p, nodes, [beginMsg, { ...partner, seq: 11 }, { ...begun, seq: 12 }, deliverable], [])
+  assert.equal(swapped.startSeq, 15, 'order inside the parallel batch does not matter — the floor is the max result seq')
+  // ③ A partner that never produced a result (interrupted step) must not
+  // wedge the plan: the floor falls back to the begun result alone, and the
+  // next node opens the span exactly like the single-call case.
+  const interrupted = deferredArchivePlan(p, nodes, [beginMsg, begun, deliverable], [])
+  assert.equal(interrupted.startSeq, 12, 'missing partner result degrades to the first node after the begun result')
+  // ④ A single-call begin keeps the exact pre-guard choice.
+  const single = deferredArchivePlan(p, [10, 11, 15, 20, 25, 30, 35], [
+    assistantMsg(10, [{ type: 'tool-call', id: 'b1', name: 'task_begin', arguments: '{}' }]), begun, deliverable
+  ], [])
+  assert.equal(single.startSeq, 15, 'single-call begin is byte-identical to the old behavior')
+  // ⑤ The guard only skips results of the BEGIN message's own calls — a
+  // later step's unrelated result (different call id, same shape) still
+  // opens the span when it is the first node after the floor.
+  const laterStep = { seq: 12, type: 'tool/result', data: { message: { content: [{ type: 'tool-result', toolCallId: 'other-message-call', content: [{ type: 'text', text: 'x' }] }] } } }
+  const foreign = deferredArchivePlan(p, nodes, [
+    assistantMsg(10, [{ type: 'tool-call', id: 'b1', name: 'task_begin', arguments: '{}' }]), begun, laterStep, deliverable
+  ], [])
+  assert.equal(foreign.startSeq, 12, 'unrelated later results are span content, not floor candidates')
+})
+
 test('FOLD_SUMMARY_INSTRUCTION: five-section structure with user-inputs and pitfalls sections', () => {
   // v2 contract: the five section headings, in order.
   const sections = ['## What happened', '## User inputs & decisions', '## Changes', '## Pitfalls & gotchas', '## Outcomes']

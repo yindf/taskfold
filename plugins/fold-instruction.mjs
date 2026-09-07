@@ -16,7 +16,7 @@
  */
 // Boundary semantics shared by BOTH envelopes below: what the span covers
 // and what deliberately stays outside it.
-const FOLD_BOUNDARY_RULE = 'The span opens just after the \'Task begun\' result and closes with the \'Task ended\' result — the begin call, its opening reasoning, and the \'Task begun\' result itself stay outside the span by design; do not treat their absence as missing work.'
+const FOLD_BOUNDARY_RULE = 'The span opens just after the \'Task begun\' result (and any results of tools called in parallel with the begin) and closes with the \'Task ended\' result — the begin call, its opening reasoning, the \'Task begun\' result itself, and those parallel partner results stay outside the span by design; do not treat their absence as missing work.'
 
 // The sections, structure, and rules every fold summary follows regardless of
 // envelope.
@@ -60,7 +60,7 @@ export function buildFoldInstruction(opts) {
   const o = opts !== null && typeof opts === 'object' ? opts : {}
   const name = typeof o.name === 'string' && o.name.length > 0 ? o.name : '<the task name>'
   if (o.prefix === true) {
-    return 'You are summarizing ONE FOLDED SPAN of a longer session; your summary replaces that span for the model that continues this session. The messages above consist of two parts: EARLIER CONVERSATION, then THE TASK SPAN to fold. The boundary between them is explicit — the task span begins immediately after the result message \'Task begun: ' + name + '\' and ends with the result message \'Task ended: ' + name + '\' (the final lifecycle markers in the input). Summarize ONLY that final span. ' + FOLD_BOUNDARY_RULE + ' The earlier conversation before the \'Task begun\' result is CONTEXT ONLY: you may use it to resolve references and confirm full paths, but never summarize it, restate it, or fold any of it into a section — every section below describes the task span alone.'
+    return 'You are summarizing ONE FOLDED SPAN of a longer session; your summary replaces that span for the model that continues this session. The messages above consist of two parts: EARLIER CONVERSATION, then THE TASK SPAN to fold. The boundary between them is explicit — the task span begins immediately after the result message \'Task begun: ' + name + '\' and ends with the result message \'Task ended: ' + name + '\' (the final lifecycle markers in the input). Summarize ONLY that final span. ' + FOLD_BOUNDARY_RULE + ' The earlier conversation before the task span — including the \'Task begun\' result and any results of tools called in parallel with the begin — is CONTEXT ONLY: you may use it to resolve references and confirm full paths, but never summarize it, restate it, or fold any of it into a section — every section below describes the task span alone.'
       + '\n' + FOLD_SUMMARY_CORE
   }
   return 'You are summarizing ONE FOLDED SPAN of a longer session. The messages above are exactly that span; your summary replaces them for the model that continues this session. ' + FOLD_BOUNDARY_RULE

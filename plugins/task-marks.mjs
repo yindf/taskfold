@@ -174,13 +174,17 @@ function hasDeliverableText(event) {
  *   { action:'fold', startSeq, endSeq, name }  gate open; region is
  *                                     start..end INCLUSIVE, bracketed by
  *                                     the two lifecycle RESULTS: startSeq =
- *                                     the "Task begun" result's seq
- *                                     (fallback: the begin call itself),
- *                                     endSeq = the close result's own seq —
- *                                     the begin call (with its opening
- *                                     reasoning) stays on the surface as
- *                                     the live bookmark; everything after
- *                                     the end stays on the surface too
+ *                                     the first surface node AFTER the last
+ *                                     result of the begin-carrying message
+ *                                     (the "Task begun" result itself, plus
+ *                                     any parallel partner results — see the
+ *                                     parallel-begin guard below; fallback:
+ *                                     the begin call itself), endSeq = the
+ *                                     close result's own seq — the begin
+ *                                     call (with its opening reasoning)
+ *                                     stays on the surface as the live
+ *                                     bookmark; everything after the end
+ *                                     stays on the surface too
  *
  * successorAnchors = seqs of begin anchors opened AFTER this entry's
  * foldResultSeq that are STILL open or pending (caller derives from
@@ -238,19 +242,63 @@ export function deferredArchivePlan(entry, surfaceNodes, events, successorAnchor
     if (nodes.indexOf(e.seq) !== -1) beginResultSeq = e.seq
     break
   }
-  let startSeq = entry.seq
+  // PARALLEL-BEGIN GUARD (found live on dsh 0.1.2-rc.1): when the
+  // begin-carrying assistant message also calls OTHER tools, their results
+  // follow the "Task begun" result on the surface, and a cut right after
+  // the begin result splits those call/result pairs — the engine rejects
+  // the region with an unbalanced START boundary, which the drain cannot
+  // self-heal (shrinking the END never fixes the START; every retry fails
+  // into the 'fold failed' bucket). Advance the floor past the LAST result
+  // of every call in that same assistant message: a bounded skip that
+  // leaves the partner calls/results live on the surface beside the begin
+  // pair, and is byte-identical to the old choice for a single-call begin
+  // (the begin result IS that message's last result).
+  let startFloorSeq = beginResultSeq
   if (beginResultSeq !== null) {
+    const callIds = assistantMessageCallIds(list, entry.seq)
+    if (callIds !== null) {
+      for (const e of list) {
+        if (e === null || typeof e !== 'object' || !Number.isInteger(e.seq)) continue
+        if (e.seq <= entry.seq || e.seq >= foldResultSeq) continue
+        if (e.type !== 'tool/result') continue
+        for (const b of blocksOf(messageOf(e))) {
+          if (b !== null && typeof b === 'object' && b.type === 'tool-result' && typeof b.toolCallId === 'string'
+            && callIds.has(b.toolCallId) && e.seq > startFloorSeq) startFloorSeq = e.seq
+        }
+      }
+    }
+  }
+  let startSeq = entry.seq
+  if (startFloorSeq !== null) {
     let next = null
     for (const s of nodes) {
-      // Strictly between the begun result and the close result: the close
-      // result itself can never open a region (same unbalanced-cut shape),
-      // so the upper bound is exclusive.
-      if (typeof s !== 'number' || s <= beginResultSeq || s >= foldResultSeq) continue
+      // Strictly between the begun result (or the last parallel partner
+      // result) and the close result: the close result itself can never
+      // open a region (same unbalanced-cut shape), so the upper bound is
+      // exclusive.
+      if (typeof s !== 'number' || s <= startFloorSeq || s >= foldResultSeq) continue
       if (next === null || s < next) next = s
     }
     if (next !== null) startSeq = next
   }
   return { action: 'fold', startSeq, endSeq: foldResultSeq, name: entry.name }
+}
+
+/**
+ * Tool-call ids carried by the assistant message at `seq` (the begin anchor's
+ * own message), or null when no such message / no calls. Pure scan.
+ */
+function assistantMessageCallIds (list, seq) {
+  for (const e of list) {
+    if (e === null || typeof e !== 'object' || !Number.isInteger(e.seq) || e.seq !== seq) continue
+    if (e.type !== 'assistant/message') return null
+    const ids = new Set()
+    for (const b of blocksOf(messageOf(e))) {
+      if (b !== null && typeof b === 'object' && b.type === 'tool-call' && typeof b.id === 'string') ids.add(b.id)
+    }
+    return ids.size > 0 ? ids : null
+  }
+  return null
 }
 
 /**
