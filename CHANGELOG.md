@@ -3,7 +3,7 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
-## 0.29.1 — intent-based bullets and structurally forced why: clauses (unreleased draft 2026-09-07)
+## 0.29.1 — intent-based bullets and structurally forced why: clauses (2026-09-07)
 
 - **Instruction change — Granularity regroups by intent; Reasoning gets a
   structural forcing shape.** Live verification (0.29.0 subagent run) showed
