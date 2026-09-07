@@ -53,7 +53,7 @@ dsh plugin --profile <你的profile> add github:yindf/taskfold
 
 ## 支持的 dsh 版本
 
-- **已验证可用：`0.1.2-rc.1`**（2026-09-07 实测：完整离线测试套件 + 用真实 `dsh-compaction-basic` 区域事务离线回放一段线上会话日志——引擎类、`summarize` 钩子、`BlockAssembler`、`snapshotEvents`/`eventAt`/`deriveEventMessage`/`requestHeader`、`compaction/summary` 提交形状、详细检查点 `source` 判别器全部完好；该轮验证还抓出并修复了一个并行 `task_begin` 的折叠起点缺陷）。`dsh`、`dsh-compaction-basic`、`dsh-llm` 三者版本锁步发布，一个数字覆盖全部耦合面。
+- **已验证可用：`0.1.2-rc.1`**（2026-09-07 实测：离线测试套件 + 真实包宿主 API 探针 + 用真实 `dsh-compaction-basic` 区域事务离线回放线上会话日志 + 重启宿主上的进程内子任务活体折叠——普通与并行 `task_begin` 两种拓扑、`fold_recall` 回读、重启时排队归档自动排干；该轮验证抓出并修复了一个并行 `task_begin` 的折叠起点缺陷）。`dsh`、`dsh-compaction-basic`、`dsh-llm` 三者版本锁步发布，一个数字覆盖全部耦合面。
 - **最低兼容：`0.1.2-alpha.5`。** 未测试过更早版本；更早的 alpha 在本插件依赖的压缩引擎内部接口上有差异。
 - **上界：未测试、未强制。** dsh 尚未向插件提供宿主版本协商机制，不兼容的宿主不会被自动拒绝——在不兼容的 dsh 上，折叠会降级（任务照常关闭、不折叠），不会损坏数据。每次 dsh 升级后，请复核本节并按实测结果更新。
 
