@@ -32,6 +32,22 @@ The conversation stays readable, every request gets cheaper, and the model keeps
 - **Gentle guardrails.** If the agent forgets the discipline, a short hint appears in its context. Hints are events, not state: one is published only when the condition appears or its wording changes, nothing is published once the condition clears (the model already complied and does not need to be told), and there is no wrapper, supersession header, or expiry notice — no noise when the flow is healthy.
 - **Cheap on the cache.** Folding only rewrites a middle chunk of history; the stable prefix (system prompt, tools, earlier context) stays cache-friendly.
 
+## What it saves (measured)
+
+One real session — 411 model steps, 26 folds, one host upgrade in the middle — read from the harness's own usage records:
+
+| What | Measured |
+| --- | --- |
+| Raw history replaced by fold summaries | **441,100 tokens** over 26 folds |
+| Prompt-cache hit rate, main conversation | **99.1%** (52,127,098 prompt tokens; 483,962 uncached) |
+| Fold summarizer cache hit | **68.0% → 98.1%** |
+| Span tokens re-paid by the summarizer | **216,490 eliminated** across 15 folds — uncached fell to 47,710, which is just the trailing instructions |
+| Runtime-context snapshots re-sent for lifecycle hints | **24 → 0** (4,612 → 910 tokens) |
+
+Why the fold rows moved: `dsh` ≥ `0.1.5-alpha.1` moved the system prompt into `messages[0]`, which collided with the fold envelope and broke the summarizer's prefix cache — every fold re-paid its whole span. After the fix, a 40,422-token span costs 4,695 uncached (the trailing instruction) instead of re-paying all 40,422. Folded history also stops being re-sent, which is why the main conversation held a 99.1% cache hit across 411 steps.
+
+One session, one task shape — your numbers will differ. The mechanism is the point: finished work leaves the surface, and the stable prefix stays cached.
+
 ## What it adds
 
 Four agent tools (plus the reminders above):
