@@ -3,6 +3,40 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.30.0 — gate fold cache reuse with verify-cache.mjs (2026-09-09)
+
+- **The fold cache regression that 0.29.3 fixed can no longer come back
+  unnoticed: `scripts/verify-cache.mjs` reads a live session log and fails when
+  a fold re-pays its span.** Offline tests can only pin the structural
+  precondition (one system message, the request is a strict prefix of the main
+  conversation) — `cacheReadTokens` exists only in a real provider's usage, so
+  the empirical check has to read a real session. The script decodes the
+  multi-frame zstd log, takes each `compaction/summary`'s usage and
+  `shadowedTokenCount`, and classifies the difference: a healthy fold has
+  `uncached − span < 0` (the span came from cache, only the trailing
+  instruction — plus any mid-span rewrite — is billed again), the regression
+  has a positive tail of at least instruction + system head. `--since-restart`
+  scopes judging to folds after the newest `reason=resume` request header,
+  which is the right window right after a dsh upgrade; `--tail-budget`,
+  `--min-span`, `--last`, `--require` and `--json` cover the rest, and a
+  regression exits 1.
+- **The rule was calibrated by its own first live run.** The first draft passed
+  a fold when `uncached <= 3500`; on fold 1303 that misfired — `uncached` 5,655
+  looked over budget, but the span was 19,796 (tail −14,141) and fully cached,
+  the extra few thousand tokens coming from a nested fold that had rewritten
+  the middle of the span. Switching the test to the sign of `uncached − span`
+  fixes it: the same log then passes 3/3 after the restart (hit 97.7 / 98.3 /
+  95.9%, tails −4,806 / −5,445 / −14,141) while all eleven historical broken
+  folds still fail (+3,974 … +18,587). Assertions were added for both
+  directions, including the mid-span-rewrite pass and the partially re-paid
+  span fail.
+- **Wired into the flow, not just the toolbox.** `npm run verify:cache` runs
+  the script; `test/verify-cache.test.mjs` (15 assertions, suite 89 → 104)
+  covers decoding, both usage paths, and the classifier, so `npm test` guards
+  the gate itself; the maintainer notes in both READMEs, the `release.mjs`
+  draft reminder, and the release-flow design note all require the live run
+  after a dsh upgrade or before any release that touches the fold envelope.
+
 ## 0.29.3 — fold summary calls stop re-billing the span (2026-09-09)
 
 - **Cache regression fixed — dsh `0.1.5-alpha.1` moved the system prompt into
