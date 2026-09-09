@@ -27,12 +27,15 @@
  * <name>") instead of showing it — owning the instruction removed the
  * constraint that once forced the two-phase end→commit split.
  *
- * Todo bridge: detects todo_write calls in the event log (stateless) and
- * renders ONE transient runtime-context line on the round right after the
- * model updated its todo list — it reports the change plus the open task
- * roster and asks the model to keep task marks in sync (task_begin for new
- * work, task_end for finished work). No conditional nagging: the decision
- * stays with the model. The todo tool itself is never wrapped or replaced.
+ * Lifecycle notices: every nudge line (todo bridge, begin/close/decompose
+ * hints, auto-fold failure warnings) is published as a STANDALONE
+ * plugin-authored user/message (lifecycle-injection.mjs, source.kind
+ * 'task-marks:lifecycle') instead of riding the host's runtime-context
+ * snapshot — that snapshot is ONE message assembled from every active
+ * contribution, so a nudge change re-emitted sandbox:policy and
+ * approval:policy with it. One state message per change, each carrying its
+ * own supersession header; there is no separate retraction kind. The todo
+ * tool itself is never wrapped or replaced.
  *
  * Module map (plain modules imported by this mounted row — they add no
  * bundle rows of their own, exactly like span-preview.mjs):
@@ -42,13 +45,15 @@
  *   fold-engine.mjs      self-hosted ScopedEngine + lazy resolution
  *   fold-drain.mjs       the deliverable-gated pre-step auto-folder
  *   lifecycle-nudges.mjs pure nudge predicates over an events snapshot
+ *   lifecycle-injection.mjs the standalone superseding notice channel
  */
 import { sessionEvents } from './events.mjs'
 import { TASK_MARKS_KEY, taskMarksStateSchema, applyTaskMarks, validTaskName, closeTarget, normalizeName, marksOf, archivesOf, lastSurfaceAssistantSeq } from './task-marks.mjs'
 import { DETAILED_CHECKPOINT_INSTRUCTION } from './fold-instruction.mjs'
 import { createFoldEngine } from './fold-engine.mjs'
 import { createArchiveDrain } from './fold-drain.mjs'
-import { todoBridgeLine, recentWorkCallCount, lastAssistantHasTodoWrite, roundsSinceFoldOutcome, countAssistantSince, shouldSuggestDecomposition, decomposeHintLine } from './lifecycle-nudges.mjs'
+import { todoBridgeLine, recentWorkCallCount, lastAssistantHasTodoWrite, roundsSinceFoldOutcome, shouldSuggestDecomposition, decomposeHintLine, innermostMark, taskAgeRounds, closePressureLine } from './lifecycle-nudges.mjs'
+import { lifecycleMessage, lifecycleNoticeText, planLifecycleInjection, publishedLifecycleNotice, renderLifecycleBody } from './lifecycle-injection.mjs'
 
 export default {
   name: 'compact-region',
@@ -145,7 +150,28 @@ export default {
         } catch (err) {
           // retried at the next pre-step; never wedge the step
         }
-        return pass()
+        const decision = await pass()
+        // Standalone lifecycle notice: the agent loop appends every message in
+        // decision.messages as a persistent user/message — the same channel
+        // the host's own skill catalog uses. Publish ONLY when the rendered
+        // state changed; an unconditional push would append one message per
+        // step. A broken notice must never wedge the step.
+        try {
+          const agent = payload !== null && typeof payload === 'object' ? payload.agent : undefined
+          if (agent !== undefined && decision !== null && typeof decision === 'object' && Array.isArray(decision.messages)) {
+            const lines = lifecycleLines({ agent })
+            if (lines !== null) {
+              const body = renderLifecycleBody(lines)
+              const text = lifecycleNoticeText(body)
+              if (planLifecycleInjection(text, publishedLifecycleNotice(sessionEvents(agent.session))) === 'publish') {
+                return { ...decision, messages: [...decision.messages, lifecycleMessage(body)] }
+              }
+            }
+          }
+        } catch (err) {
+          // a broken notice must never wedge the step
+        }
+        return decision
       })
     } catch (err) {
       // Hook unavailable in this host build: queued archives stay unfolded
@@ -313,104 +339,100 @@ export default {
       text: 'MANDATORY task lifecycle discipline: every discrete task MUST be wrapped in task marks. A task is work that produces a verifiable outcome (a fix, a module, an analysis, a delegated review); a single read/grep/probe is a step, not a task — never open a mark for a step, and when in doubt, treat the work as a task (a small fold costs one summary node; an unfolded task costs a degraded context). Before a task, call task_begin({ name }) alone in a step. The moment its work is done, call task_end({ name }) alone in a step: it ends the task and QUEUES archival — then deliver the task\u0027s report or deliverable (to the user, or a subagent\u0027s report to its parent) in the SAME turn, as text AFTER the task_end result and written with FULL context while every detail is still on the surface. The fold itself happens AUTOMATICALLY at the next step boundary after your deliverable lands — possibly mid-turn — so folding never precedes a deliverable and the details you deliver from are never compressed. The mark is a bookmark, not a deadline: while waiting on a background job or user reply, leave it open and do other work; fold when the wait resolves. Multi-part work MUST be split into NESTED SUBTASKS: while the outer task stays open, task_begin each distinct part as you start it and task_end it the moment that part\u0027s outcome is verifiable — innermost closes first and each part folds at its own close, so the surface stays lean during long work instead of one giant fold at the end. A long detour or dead-end exploration inside a task is one such part. Shape example: task_begin "review week 47" → task_begin "review PR #98" … task_end "review PR #98" → task_begin "review PR #99" … task_end "review PR #99" → task_end "review week 47". Folded details are never lost: list_folds → fold_recall({ fold }) → read/grep the artifact. Recall on demand — when a summary\u0027s anchors fail to answer a concrete question the work or the report needs, or when a new task genuinely depends on an earlier folded task\u0027s details (recall that fold, list_folds → fold_recall → read/grep, before starting it); never guess, never ask the user\u0027s permission to recall, never recall without such a need. Never restate a folded span from memory; never track message positions yourself. Each fold summary node ends with a Fold archive section (fold number, message count, artifact path, and a compact archive footer — head and tail of the span preview with true line numbers; fold_recall({ fold }) re-renders the full index, and its line overload returns any numbered line verbatim). A fold\u0027s archive spans just after the \u0027Task begun\u0027 result through the \u0027Task ended\u0027 result, so the task_begin call, its opening reasoning, and the \u0027Task begun\u0027 result itself stay live. Runtime context carries lifecycle nudges — treat them as directives and act on them.'
     })
 
-    // HOLD semantics for lifecycle nudges: each nudge line renders for as
-    // long as its condition holds — no fire/cooldown cycle, so a nudge never
-    // "fires then stops nagging". The snapshot engine is diff-driven: an
-    // unchanged context render produces NO new snapshot, and a condition
-    // clearing produces exactly one retraction snapshot. This only works
-    // while the line text is BYTE-STABLE, so nudge wording past its
-    // threshold is deliberately number-free ("20+ rounds", never "~23").
-    ctx.systemPrompt.context({
-      name: 'todo-bridge',
-      order: 130,
-      text: (context) => {
-        // Per-session state: the context callback receives { agent, scope,
-        // signal }, so marks and todos are keyed to THIS session.
-        const agent = context !== null && typeof context === 'object' ? context.agent : undefined
-        if (agent === undefined) return ''
-        let session
-        try { session = agent.session } catch (err) { session = undefined }
-        if (session === null || session === undefined) return ''
-        // ONE event-log snapshot per render, shared by every nudge predicate
-        // below — snapshotting is O(n) in the log, and this callback runs on
-        // every request of exactly the long sessions taskfold exists for.
-        const events = sessionEvents(session)
-        const lines = []
-        // Only NAMED marks count: nameless entries are unclosable legacy
-        // phantoms (self-healed at projection load, but guard here too).
-        const marks = marksOf(ctx, session).filter((m) => m.name !== '')
-        const ownDepth = marks.length
-        // Deliberately NO standing "Open task marks: N" line: depth rides in
-        // every task_begin/task_end result text, so echoing it in a snapshot
-        // would re-inject after every lifecycle call for no new information.
-        // This context exists ONLY for cross-state signals the model cannot
-        // read from any single message.
+    // HOLD semantics for lifecycle nudges: a notice renders for as long as
+    // its condition holds — no fire/cooldown cycle, so a nudge never "fires
+    // then stops nagging". The published text is compared VERBATIM by
+    // lifecycle-injection.mjs, so it must stay BYTE-STABLE (wording past a
+    // threshold is deliberately number-free: "20+ rounds", never "~23"), and
+    // every condition clearing publishes the empty state exactly once.
+    // Returns the live lines, or null when no session is available (publish
+    // nothing rather than an empty state).
+    const lifecycleLines = (context) => {
+      // Per-session state: the context callback receives { agent, scope,
+      // signal }, so marks and todos are keyed to THIS session.
+      const agent = context !== null && typeof context === 'object' ? context.agent : undefined
+      if (agent === undefined) return null
+      let session
+      try { session = agent.session } catch (err) { session = undefined }
+      if (session === null || session === undefined) return null
+      // ONE event-log snapshot per render, shared by every nudge predicate
+      // below — snapshotting is O(n) in the log, and this callback runs on
+      // every request of exactly the long sessions taskfold exists for.
+      const events = sessionEvents(session)
+      const lines = []
+      // Only NAMED marks count: nameless entries are unclosable legacy
+      // phantoms (self-healed at projection load, but guard here too).
+      const marks = marksOf(ctx, session).filter((m) => m.name !== '')
+      const ownDepth = marks.length
+      // Deliberately NO standing "Open task marks: N" line: depth rides in
+      // every task_begin/task_end result text, so echoing it in a snapshot
+      // would re-inject after every lifecycle call for no new information.
+      // This context exists ONLY for cross-state signals the model cannot
+      // read from any single message.
 
-        // ── Nudge 1: no task open but work is happening ─────────────────
-        // Renders for as long as the model keeps making non-task tool calls
-        // with no open task; retracts the moment a task begins (or the work
-        // stops). ≥3 work calls in the last 10 assistant messages, with a
-        // 3-round grace after a task close so a fresh close is not
-        // immediately answered with "begin another".
-        if (ownDepth === 0 && recentWorkCallCount(events) >= 3 && roundsSinceFoldOutcome(events) >= 3) {
-          lines.push('Task lifecycle: no open task during tool work — call task_begin({ name: "…" }) if this is a discrete task.')
-        }
-
-        // ── Nudge 2: a task left open for a long time ──────────────────
-        // Scans ALL open marks and holds on the OLDEST one aged 20+ rounds
-        // (one task per line, byte-stable). Tie-break: first hit wins —
-        // equal (cap-saturated) ages mean both are ≥20 rounds old and seqs
-        // ascend with push order, so the earlier mark is the older task.
-        // This only holds while cap ≥ threshold; revisit if either changes.
-        if (ownDepth > 0) {
-          let oldest = null
-          let oldestAge = -1
-          for (const m of marks) {
-            const age = countAssistantSince(events, m.seq, 21)
-            if (age > oldestAge) { oldestAge = age; oldest = m }
-          }
-          if (oldestAge >= 20) {
-            lines.push('Task lifecycle: task "' + oldest.name + '" is 20+ rounds old — if done, call task_end({ name: "' + oldest.name + '" }); if a newer task blocks it, close that first; if it is genuinely waiting on a job or reply, leave it open.')
-          }
-          // ── Nudge 3: decomposition while a big task is actively worked ──
-          // Covers the GAP between "just began" (nothing to decompose) and
-          // Nudge 2's close pressure (20+): a mark aged 8–19 rounds with
-          // ongoing work gets a HOLD hint to wrap remaining distinct parts
-          // as nested subtasks — without it, the only live signal after the
-          // first task_begin is Nudge 2 pushing to CLOSE, and long jobs run
-          // as one flat mark (observed in the wild: a 14-minute 4-PR review
-          // folded as a single blob). Retracts when the age leaves the
-          // window, the work stops, or the roster changes (a nested begin
-          // reshapes oldest/depth). Wording is byte-stable past threshold.
-          if (shouldSuggestDecomposition(ownDepth, oldestAge, recentWorkCallCount(events))) {
-            lines.push(decomposeHintLine(oldest.name))
-          }
-        }
-
-        // ── Auto-fold failure warning (HOLD) ─────────────────────────────
-        // Renders for as long as a queued archive's auto-fold keeps failing
-        // (engine busy etc.); retracts when the fold finally commits or the
-        // entry settles. Bucket wording is byte-stable per failure cause.
-        const fails = drain.autoFoldFailures.get(session.id)
-        if (fails !== undefined) {
-          for (const [failName, bucket] of fails) {
-            lines.push('Task lifecycle: auto-fold for "' + failName.replace(/"/g, "'") + '" is failing (' + bucket + ') — it retries automatically at every step boundary; no action needed.')
-          }
-        }
-
-        // ── Todo bridge: transient change report ──────────────────────
-        // Renders ONLY on the request right after the model called
-        // todo_write (detected statelessly in the most recent assistant
-        // message); the diff-driven snapshot engine retracts the line on
-        // the next unchanged render — one appearance per todo_write. The
-        // line reports the change plus the open task roster; whether to
-        // task_begin or task_end is the MODEL's call — a status report,
-        // not a conditional nag.
-        if (lastAssistantHasTodoWrite(events)) {
-          lines.push(todoBridgeLine(marks.map((m) => m.name)))
-        }
-        return lines.join('\n')
+      // ── Nudge 1: no task open but work is happening ─────────────────
+      // Renders for as long as the model keeps making non-task tool calls
+      // with no open task; retracts the moment a task begins (or the work
+      // stops). ≥3 work calls in the last 10 assistant messages, with a
+      // 3-round grace after a task close so a fresh close is not
+      // immediately answered with "begin another".
+      if (ownDepth === 0 && recentWorkCallCount(events) >= 3 && roundsSinceFoldOutcome(events) >= 3) {
+        lines.push('Task lifecycle: no open task during tool work — call task_begin({ name: "…" }) if this is a discrete task.')
       }
-    })
+
+      // ── Nudge 2: the INNERMOST task left open for a long time ──────
+      // The target is the innermost open mark (the one being worked on):
+      // an outer mark with an open child cannot be closed (LIFO) and is not
+      // idle, so nagging it is noise. Age is measured from the mark's
+      // activity anchor, which nested begins/ends advance — a parent that
+      // just gained a child is therefore NOT flagged (live bug: parent
+      // 'add cache-hit …' was flagged 20+ in the snapshot right after its
+      // child 'wire verify:cache …' began). Wording is byte-stable past the
+      // threshold ("20+ rounds", never "~23") and offers both exits.
+      if (ownDepth > 0) {
+        const target = innermostMark(marks)
+        const targetAge = taskAgeRounds(events, target)
+        if (target !== null && targetAge >= 20) {
+          lines.push(closePressureLine(target.name))
+        }
+        // ── Nudge 3: decomposition while a big task is actively worked ──
+        // Covers the GAP between "just began" (nothing to decompose) and
+        // Nudge 2's close pressure (20+): the innermost mark aged 8–19
+        // rounds with ongoing work gets a HOLD hint to wrap remaining
+        // distinct parts as nested subtasks — without it, the only live
+        // signal after the first task_begin is close pressure, and long
+        // jobs run as one flat mark (observed in the wild: a 14-minute
+        // 4-PR review folded as a single blob). Retracts when the age
+        // leaves the window or the work stops. Byte-stable past threshold.
+        if (target !== null && shouldSuggestDecomposition(ownDepth, targetAge, recentWorkCallCount(events))) {
+          lines.push(decomposeHintLine(target.name))
+        }
+      }
+
+      // ── Auto-fold failure warning (HOLD) ─────────────────────────────
+      // Renders for as long as a queued archive's auto-fold keeps failing
+      // (engine busy etc.); retracts when the fold finally commits or the
+      // entry settles. Bucket wording is byte-stable per failure cause.
+      const fails = drain.autoFoldFailures.get(session.id)
+      if (fails !== undefined) {
+        for (const [failName, bucket] of fails) {
+          lines.push('Task lifecycle: auto-fold for "' + failName.replace(/"/g, "'") + '" is failing (' + bucket + ') — it retries automatically at every step boundary; no action needed.')
+        }
+      }
+
+      // ── Todo bridge: transient change report ──────────────────────
+      // Renders ONLY on the request right after the model called
+      // todo_write (detected statelessly in the most recent assistant
+      // message). On the standalone channel that is TWO publishes — the
+      // line, then the next state (empty or the remaining notices) — which
+      // is the same number of messages the snapshot engine emitted before.
+      // The line reports the change plus the open task roster; whether to
+      // task_begin or task_end is the MODEL's call — a status report,
+      // not a conditional nag.
+      if (lastAssistantHasTodoWrite(events)) {
+        lines.push(todoBridgeLine(marks.map((m) => m.name)))
+      }
+      return lines
+    }
   }
 }

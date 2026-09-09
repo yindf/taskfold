@@ -29,7 +29,7 @@ The conversation stays readable, every request gets cheaper, and the model keeps
 - **Named tasks.** The agent opens a task before starting work and closes it when done. Open tasks survive restarts; closing is well-ordered (innermost first), and a failed close never corrupts anything — just retry.
 - **Folding = closing + summarizing in one call.** The summary is written once, while the original span is still in context, so it's accurate — not a "summary of a summary".
 - **Summaries keep what matters.** The summarizer is instructed to preserve user decisions and feedback (verbatim where wording matters), pitfalls and *why* things failed, what changed, and the outcome.
-- **Gentle guardrails.** If the agent forgets the discipline, a one-line reminder appears in its context until it complies — no noise when the flow is healthy.
+- **Gentle guardrails.** If the agent forgets the discipline, a short notice appears in its context until it complies. Each notice replaces the previous one (it carries its own supersession header), and clearing the condition publishes one "nothing applies" notice — no noise when the flow is healthy.
 - **Cheap on the cache.** Folding only rewrites a middle chunk of history; the stable prefix (system prompt, tools, earlier context) stays cache-friendly.
 
 ## What it adds
@@ -60,7 +60,7 @@ Restart dsh — every session on that profile gets the tools.
 
 ## For maintainers
 
-- Layout: `plugins/` (the two mounted rows `compact-region.mjs` and `compact-stats.mjs`, plus the shared plain modules they import — `events.mjs`, `task-marks.mjs`, `fold-instruction.mjs`, `fold-engine.mjs`, `fold-drain.mjs`, `lifecycle-nudges.mjs`, `span-preview.mjs`), `scripts/release.mjs` and `scripts/verify-cache.mjs`, `test/` (`npm test`), `CHANGELOG.md`.
+- Layout: `plugins/` (the two mounted rows `compact-region.mjs` and `compact-stats.mjs`, plus the shared plain modules they import — `events.mjs`, `task-marks.mjs`, `fold-instruction.mjs`, `fold-engine.mjs`, `fold-drain.mjs`, `lifecycle-nudges.mjs`, `lifecycle-injection.mjs`, `span-preview.mjs`), `scripts/release.mjs` and `scripts/verify-cache.mjs`, `test/` (`npm test`), `CHANGELOG.md`.
 - Releasing: `node scripts/release.mjs draft` → review the CHANGELOG entry → `node scripts/release.mjs release` (CHANGELOG is the single source of truth for versions). If this release changes which dsh versions are supported, update the "Supported dsh versions" section in **both** READMEs before releasing — the release script reminds you. Keep that section to **one line per channel**: the newest verified `alpha`, then the newest verified `rc`; delete historical alpha/rc entries instead of listing them.
 - **Fold cache verification is part of the flow.** After every dsh upgrade — and before any release that touches the fold envelope — run `node scripts/verify-cache.mjs --since-restart` against a live session log, and record the numbers in the CHANGELOG entry. It exits non-zero when a fold's summarizer call re-pays its span — the test is `uncached − span > --tail-budget`, i.e. a positive tail, which is the signature of the prefix envelope no longer matching the host's summarization input. The offline suite pins the structural precondition (one system message, strict prefix); only a live log can show the actual cache read.
 - Design decisions and history live in `CHANGELOG.md` and the design notes in the source repo.

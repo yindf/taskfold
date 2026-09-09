@@ -1,10 +1,10 @@
 /**
- * Pure lifecycle-nudge predicates for compact-region's todo-bridge context
- * callback. Every function here takes an EVENTS SNAPSHOT (array), never a
- * session: the callback takes ONE sessionEvents() snapshot per render and
- * feeds it to all of them — snapshotting the whole log is O(n), and this
- * callback runs on every request of exactly the long sessions taskfold
- * targets, so it must not happen four times per render.
+ * Pure lifecycle-nudge predicates for compact-region's lifecycle notices.
+ * Every function here takes an EVENTS SNAPSHOT (array), never a session: the
+ * renderer takes ONE sessionEvents() snapshot per render and feeds it to all
+ * of them — snapshotting the whole log is O(n), and this runs on every
+ * request of exactly the long sessions taskfold targets, so it must not
+ * happen four times per render.
  */
 import { messageOf, blocksOf, taskResultEventText } from './events.mjs'
 
@@ -43,6 +43,64 @@ export function shouldSuggestDecomposition(depth, oldestAge, workCallCount) {
 export function decomposeHintLine(name) {
   const safe = typeof name === 'string' ? name.replace(/"/g, "'") : ''
   return 'Task lifecycle: task "' + safe + '" has been open 8+ rounds with active work — if the remaining work has distinct parts, wrap each part as a nested subtask: task_begin({ name: "part" }) when starting it, task_end when that part\u0027s outcome is verifiable; innermost closes first, each part folds at its own close.'
+}
+
+/**
+ * The nudge TARGET: the INNERMOST open mark — the last pushed, i.e. the
+ * highest seq. Close pressure and decomposition hints belong on the task the
+ * model is actually working on: an outer mark with an open child cannot be
+ * closed (LIFO) and is not idle, so nagging it is noise. Selecting the
+ * innermost is also the reset the model expects — a fresh nested begin
+ * silences the outer close-pressure line with no extra state.
+ */
+export function innermostMark(marks) {
+  const list = Array.isArray(marks) ? marks : []
+  let best = null
+  for (const m of list) {
+    if (m === null || typeof m !== 'object' || !Number.isInteger(m.seq)) continue
+    if (best === null || m.seq > best.seq) best = m
+  }
+  return best
+}
+
+/**
+ * Age anchor for one mark: its own begin seq, advanced past the most recent
+ * nested lifecycle outcome ('Task begun: ' / 'Task ended: ' result) after it.
+ * Opening or closing a subtask is progress ON the parent, so the parent's
+ * round clock restarts — otherwise a parent that just gained a child is
+ * immediately nagged to close (observed live: parent 'add cache-hit …' was
+ * flagged 20+ rounds in the very snapshot right after its child began).
+ */
+export function latestNestedOutcomeSeq(events, seq) {
+  const list = Array.isArray(events) ? events : []
+  let anchor = seq
+  for (let i = list.length - 1; i >= 0; i--) {
+    const e = list[i]
+    if (e === null || typeof e !== 'object' || !Number.isInteger(e.seq)) continue
+    if (e.seq <= seq) break
+    if (e.type !== 'tool/result') continue
+    const text = taskResultEventText(e)
+    if (text.indexOf('Task begun: ') === 0 || text.indexOf('Task ended: ') === 0 || text.indexOf('Task folded: ') === 0) { anchor = e.seq; break }
+  }
+  return anchor
+}
+
+/** Rounds (assistant messages) since the mark's activity anchor, capped. */
+export function taskAgeRounds(events, mark) {
+  if (mark === null || typeof mark !== 'object' || !Number.isInteger(mark.seq)) return 0
+  return countAssistantSince(events, latestNestedOutcomeSeq(events, mark.seq), 21)
+}
+
+/**
+ * Close-pressure line (20+ rounds). Byte-stable past the threshold, and it
+ * states BOTH exits — decompose into nested parts, or close — because a task
+ * open this long is as often under-structured as it is finished. The waiting
+ * escape stays last so a genuinely blocked task is never pushed into a bogus
+ * close.
+ */
+export function closePressureLine(name) {
+  const safe = typeof name === 'string' ? name.replace(/"/g, "'") : ''
+  return 'Task lifecycle: task "' + safe + '" has been open 20+ rounds — either wrap the remaining distinct parts as nested subtasks (task_begin each part, task_end it when that part\u0027s outcome is verifiable), or, if the task is done, call task_end({ name: "' + safe + '" }). If it is genuinely waiting on a job or reply, leave it open.'
 }
 
 /** Count non-task tool calls in the last 10 assistant messages. */

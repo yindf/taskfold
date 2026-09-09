@@ -29,7 +29,7 @@ taskfold 用“好笔记本”的方式解决：干活前，智能体先用 `tas
 - **命名任务。** 智能体开工前开任务、完工后关任务。开启状态跨重启不丢；关闭按嵌套顺序（内层先关）；关闭失败不会破坏任何状态——重试即可。
 - **折叠 = 关闭 + 总结，一次调用完成。** 摘要在原始内容还在上下文里时一次性写好，所以准确——不是“摘要的摘要”。
 - **摘要保留要紧的东西。** 总结指令明确要求保留用户的关键决策与反馈（措辞重要处原文照录）、踩过的坑和*为什么*失败、改了什么、最终结果。
-- **温和护栏。** 智能体忘记纪律时，上下文里会出现一行提醒，直到它照做为止——流程健康时零噪音。
+- **温和护栏。** 智能体忘记纪律时，上下文里会出现一条简短提示，直到它照做为止。每条提示都会取代上一条（自带「取代此前所有同类提示」声明），条件解除时再发一条「当前无任何提示」——流程健康时零噪音。
 - **对缓存友好。** 折叠只改写历史中段；稳定前缀（系统提示词、工具、更早的上下文）保持缓存命中。
 
 ## 它添加了什么
@@ -60,7 +60,7 @@ dsh plugin --profile <你的profile> add github:yindf/taskfold
 
 ## 维护者须知
 
-- 目录：`plugins/`（两个挂载行 `compact-region.mjs` 与 `compact-stats.mjs`，及其共享纯模块 `events.mjs`、`task-marks.mjs`、`fold-instruction.mjs`、`fold-engine.mjs`、`fold-drain.mjs`、`lifecycle-nudges.mjs`、`span-preview.mjs`）、`scripts/release.mjs` 与 `scripts/verify-cache.mjs`、`test/`（`npm test`）、`CHANGELOG.md`。
+- 目录：`plugins/`（两个挂载行 `compact-region.mjs` 与 `compact-stats.mjs`，及其共享纯模块 `events.mjs`、`task-marks.mjs`、`fold-instruction.mjs`、`fold-engine.mjs`、`fold-drain.mjs`、`lifecycle-nudges.mjs`、`lifecycle-injection.mjs`、`span-preview.mjs`）、`scripts/release.mjs` 与 `scripts/verify-cache.mjs`、`test/`（`npm test`）、`CHANGELOG.md`。
 - 发版：`node scripts/release.mjs draft` → 审阅 CHANGELOG 条目 → `node scripts/release.mjs release`（CHANGELOG 是版本唯一事实源）。若本次发版改变了支持的 dsh 版本范围，发版前先更新**两份** README 的“支持的 dsh 版本”一节——release 脚本会提醒。该节保持**每个通道一行**：最新的 alpha 一条、最新的 rc 一条；历史 alpha / rc 条目直接删掉，不要罗列。
 - **折叠缓存校验是流程的一部分。** 每次 dsh 升级后——以及任何触及折叠信封的发版前——对一份 live 会话日志跑 `node scripts/verify-cache.mjs --since-restart`，并把数字记进 CHANGELOG 条目。若某次折叠的摘要调用重新付费了它的 span——判据是 `uncached − span > --tail-budget`（tail 为正）——脚本以非零码退出，这正是前缀信封不再匹配宿主摘要输入的 signature。离线测试只能钉住结构前提（只有一个 system 消息、严格前缀）；真实缓存命中只能由 live 日志给出。
 - 设计决策与历史见 `CHANGELOG.md` 及源仓库中的设计笔记。
