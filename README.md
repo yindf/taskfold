@@ -34,19 +34,19 @@ The conversation stays readable, every request gets cheaper, and the model keeps
 
 ## What it saves (measured)
 
-One real session — 411 model steps, 26 folds, one host upgrade in the middle — read from the harness's own usage records:
+One real session — 411 model steps, 26 folds — read from the harness's own usage records:
 
-| What | Measured |
-| --- | --- |
-| Raw history replaced by fold summaries | **441,100 tokens** over 26 folds |
-| Prompt-cache hit rate, main conversation | **99.1%** (52,127,098 prompt tokens; 483,962 uncached) |
-| Fold summarizer cache hit | **68.0% → 98.1%** |
-| Span tokens re-paid by the summarizer | **216,490 eliminated** across 15 folds — uncached fell to 47,710, which is just the trailing instructions |
-| Runtime-context snapshots re-sent for lifecycle hints | **24 → 0** (4,612 → 910 tokens) |
+| | Without folding | With taskfold |
+| --- | --- | --- |
+| Total prompt tokens | 142,654,308 | 52,127,098 (**−63.5%**) |
+| Largest single request | 594,909 | 206,896 (−65%) |
+| Context window used at peak | 59.5% | 20.7% |
 
-Why the fold rows moved: `dsh` ≥ `0.1.5-alpha.1` moved the system prompt into `messages[0]`, which collided with the fold envelope and broke the summarizer's prefix cache — every fold re-paid its whole span. After the fix, a 40,422-token span costs 4,695 uncached (the trailing instruction) instead of re-paying all 40,422. Folded history also stops being re-sent, which is why the main conversation held a 99.1% cache hit across 411 steps.
+The mechanism: folding moved **441,100 tokens** of finished work off the surface. Because that history would otherwise be re-sent on every later request, it added up to **90,527,210 tokens never sent**. Producing the 26 summaries cost 3,550,270 tokens (3.9% of the saving, and most of it cache reads); the biggest single fold took 40,422 tokens out of the conversation in one call.
 
-One session, one task shape — your numbers will differ. The mechanism is the point: finished work leaves the surface, and the stable prefix stays cached.
+Most of those tokens would have been cache *reads* rather than fresh input — cheaper, but still billed and still occupying the window. In longer sessions that is the difference between staying inside the context window and not.
+
+One session, one task shape — your numbers will differ. The mechanism is the point: finished work leaves the surface, the stable prefix stays cached, and the model keeps the lessons instead of the transcript.
 
 ## What it adds
 
