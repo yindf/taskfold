@@ -3,6 +3,32 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.29.2 — dsh 0.1.5-alpha.1 verified, no plugin change (2026-09-09)
+
+- **Host upgrade verified — `0.1.5-alpha.1` is now the known-good dsh, and no
+  plugin change was required.** The host moved from the previously verified
+  `0.1.2-rc.1` to `0.1.5-alpha.1` (`dsh`, `dsh-compaction-basic`, and
+  `dsh-llm` ship version-locked, so one number covers the whole coupled
+  surface). Verification ran the full offline suite (83 assertions green), a
+  12-check host-API probe against the real `dsh-compaction-basic` /
+  `dsh-llm` / `dsh-session` packages, an end-to-end fold driven through the
+  real engine plus assembler (prefix-anchored envelope, fenced span index
+  carrying true line numbers, span bytes untouched, archive footer), a seam
+  audit of every host surface this plugin touches (`agent/pre-step`,
+  `agent/turn-stopping`, `sessionProjections.register` / `stateOf`,
+  `systemPrompt.section` / `context`, `tools.register`, and the
+  `dsh-compaction-basic` compaction discriminator), and live folding on the
+  running 0.1.5-alpha.1 host with the mounted copy byte-identical to HEAD.
+  One host-side drift was found and is harmless: `dsh-session` dropped
+  `decodeStorageRecord` / `packChunkRuns`, neither of which this plugin
+  uses; the offline region-transaction replay was therefore not re-run, and
+  the live fold covers that path instead. Both READMEs now declare
+  `0.1.5-alpha.1` verified (2026-09-09) and keep `0.1.2-rc.1` as previously
+  verified; the minimum stays `0.1.2-alpha.5`, and the upper bound remains
+  untested and unenforced.
+- **Docs**
+  - record dsh 0.1.5-alpha.1 as the verified host in both READMEs, demoting 0.1.2-rc.1 to previously verified
+
 ## 0.29.1 — intent-based bullets and structurally forced why: clauses (2026-09-07)
 
 - **Instruction change — Granularity regroups by intent; Reasoning gets a
