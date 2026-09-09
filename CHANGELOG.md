@@ -3,6 +3,38 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.29.3 — fold summary calls stop re-billing the span (2026-09-09)
+
+- **Cache regression fixed — dsh `0.1.5-alpha.1` moved the system prompt into
+  `messages[0]`, the prefix-anchored envelope already replayed it, and every
+  fold therefore paid full price for its own span.** The host's
+  `buildSummarizationInput()` used to return `{ system, tools, messages:
+  regionMessages }`; `0.1.5-alpha.1` returns `{ tools, messages: [system,
+  ...regionMessages] }`. taskfold's envelope prepends every surface node before
+  the span — including surface node 0, the derived `system/message` — so the
+  summarization request became `[system][pre-span][system][span][instruction]`.
+  The duplicate system lands exactly at the span start, which is where the
+  request stops being a prefix of the main conversation request, so the
+  provider's warm cache broke there and the whole span was charged again. Live
+  measurement across one session (8 folds) pinned the signature: `cacheRead`
+  always equalled "last main request prompt − span" (residual = the post-span
+  tail), never "last main request prompt", re-billing 201,196 tokens in total
+  (111,831 over the first five folds, 89,365 over the next three). The fix is
+  `dropDuplicateLeadingSystem(prefixMessages, regionMessages)`: a structural,
+  byte-equality probe that drops a leading system message only when an
+  identical one is already in the prefix. It is fail-open — an old host
+  (separate `system` field, so `messages[0]` is not a system message) is a
+  no-op, and a DIFFERENT leading system message (an in-history prompt update
+  the envelope never replayed) is kept rather than silently dropped. Only the
+  request envelope is deduped; `input.messages` still feeds the span artifact,
+  the preview, and the archive footer, so fold files keep their system line.
+  Six assertions were added (suite 83 → 89), including "the deduped request is
+  a strict prefix of the main conversation". The gain is not yet re-measured
+  live: the mounted profile copy was still the pre-fix build when the last
+  session restarted, so a fold on the fixed copy is outstanding.
+- **Docs**
+  - keep supported-dsh section to one line per alpha/rc channel
+
 ## 0.29.2 — dsh 0.1.5-alpha.1 verified, no plugin change (2026-09-09)
 
 - **Host upgrade verified — `0.1.5-alpha.1` is now the known-good dsh, and no
