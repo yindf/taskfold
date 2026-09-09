@@ -3,6 +3,29 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.31.1 — README states what folding saves against not folding at all (2026-09-09)
+
+- **The savings section is a counterfactual now, not a log of one fix.** Both
+  READMEs gained "What it saves (measured)" / "省了多少（实测）", computed from
+  one real session's own usage records (411 model steps, 26 folds) by replaying
+  every main request with the folded spans added back:
+
+  | | without folding | with taskfold |
+  | --- | --- | --- |
+  | total prompt tokens | 142,654,308 | 52,127,098 (**−63.5%**) |
+  | largest single request | 594,909 | 206,896 |
+  | peak context-window use | 59.5% | 20.7% |
+
+  441,100 tokens of finished work left the surface, and because that history
+  would otherwise have been re-sent on every later request the cumulative
+  effect is **90,527,210 tokens never sent**. Producing the 26 summaries cost
+  3,550,270 tokens (3.9% of the saving, most of it cache reads); the largest
+  single fold removed 40,422 tokens in one call. The session stayed inside the
+  1M window either way, so the figures are arithmetic rather than a truncation
+  artifact — and both READMEs say so, alongside the honest caveat that most of
+  the saved tokens would have been cache reads: cheaper, but still billed and
+  still occupying the window.
+
 ## 0.31.0 — lifecycle hints get their own channel, and target the innermost task (2026-09-09)
 
 - **Guardrail hints no longer ride the host's runtime-context snapshot.** The
