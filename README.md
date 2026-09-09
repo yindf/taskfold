@@ -1,12 +1,38 @@
-# taskfold
+<p align="center">
+  <img src="https://raw.githubusercontent.com/yindf/taskfold/master/assets/banner.png" width="100%" alt="taskfold — effectively infinite context for your coding agent" />
+</p>
 
-[English](README.md) | [中文](README.zh.md)
+<p align="center"><b>effectively infinite context for your coding agent</b></p>
 
-**taskfold — effectively infinite context for your coding agent.**
+<p align="center">
+  <a href="README.zh.md">简体中文</a> ·
+  <a href="https://github.com/yindf/taskfold/releases/latest">Releases</a> ·
+  <a href="CHANGELOG.md">Changelog</a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/yindf/taskfold/releases/latest"><img src="https://img.shields.io/github/v/release/yindf/taskfold?style=flat-square&color=4c8dff" alt="Latest release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="MIT license"></a>
+  <a href="https://github.com/topics/dsh-plugin"><img src="https://img.shields.io/badge/DeepSeek%20Harness-plugin-4c8dff?style=flat-square" alt="DeepSeek Harness plugin"></a>
+</p>
 
 Keep long AI coding sessions fast, cheap, and readable: finished work is folded into a short summary, and the full original content is always one call away.
 
 For [DeepSeek Harness](https://www.npmjs.com/package/@deepseek-ai/dsh) (DSH).
+
+## Quickstart
+
+```sh
+dsh plugin --profile <your-profile> add github:yindf/taskfold
+```
+
+Restart dsh — every session on that profile gets the tools. The agent then wraps its work in named tasks:
+
+```
+task_begin("fix the login bug")   … the work …   task_end("fix the login bug")
+```
+
+and that whole span collapses into one titled summary, still readable back with `fold_recall`.
 
 ## Why you want it
 
@@ -23,6 +49,15 @@ After:   "fix the login bug" — summary: what was tried, what failed and why,
 The conversation stays readable, every request gets cheaper, and the model keeps the *lessons* without dragging the *transcript* along.
 
 **Nothing is lost.** Every fold saves the exact original messages to a file, and `fold_recall({ fold: N })` can regenerate it at any time. Fold first, look later — like closing a book you can reopen.
+
+## How it relates to dsh's built-in compaction
+
+Same goal, different moment — and they compose.
+
+- **dsh's built-in compaction is automatic and pressure-driven.** It fires when the window is nearly full, picks a range by token pressure, and replaces it with a summary; the original events stay in the session log, shadowed rather than deleted.
+- **taskfold is explicit and task-scoped.** You fold each finished task as you go, so the summary is written while its span is still in context — accurate by construction — and it is titled, so the session stays navigable.
+- **Because you fold early, the window rarely fills.** In the measured session below the peak was 20.7% instead of 59.5%, so pressure compaction fires later, or not at all — and when it does fire, there is less left to summarize.
+- **Every fold is addressable.** `fold_recall({ fold: N })` returns the exact original messages, not a re-summary.
 
 ## How it works (plain words)
 
@@ -59,13 +94,9 @@ Four agent tools (plus the reminders above):
 | `list_folds` | List all folds (number, size, title). |
 | `fold_recall({ fold })` | Bring back any fold's original content on demand. |
 
-## Install
+## Other ways to install
 
-```sh
-dsh plugin --profile <your-profile> add github:yindf/taskfold
-```
-
-Restart dsh — every session on that profile gets the tools.
+Every release attaches a prebuilt `dsh-taskfold-<version>.tgz`. Plugin storefronts offer that asset instead of the build-from-source command, which also skips dsh's `allowBuilds` approval step — see the [latest release](https://github.com/yindf/taskfold/releases/latest).
 
 ## Supported dsh versions
 
@@ -76,7 +107,7 @@ Restart dsh — every session on that profile gets the tools.
 
 ## For maintainers
 
-- Layout: `plugins/` (the two mounted rows `compact-region.mjs` and `compact-stats.mjs`, plus the shared plain modules they import — `events.mjs`, `task-marks.mjs`, `fold-instruction.mjs`, `fold-engine.mjs`, `fold-drain.mjs`, `lifecycle-nudges.mjs`, `lifecycle-injection.mjs`, `span-preview.mjs`), `scripts/release.mjs` and `scripts/verify-cache.mjs`, `test/` (`npm test`), `CHANGELOG.md`.
+- Layout: `plugins/` (the two mounted rows `compact-region.mjs` and `compact-stats.mjs`, plus the shared plain modules they import — `events.mjs`, `task-marks.mjs`, `fold-instruction.mjs`, `fold-engine.mjs`, `fold-drain.mjs`, `lifecycle-nudges.mjs`, `lifecycle-injection.mjs`, `span-preview.mjs`), `scripts/release.mjs` and `scripts/verify-cache.mjs`, `test/` (`npm test`), `assets/` (README banner and the social-preview image to upload in repo settings), `CHANGELOG.md`.
 - Releasing: `node scripts/release.mjs draft` → review the CHANGELOG entry → `node scripts/release.mjs release` (CHANGELOG is the single source of truth for versions). If this release changes which dsh versions are supported, update the "Supported dsh versions" section in **both** READMEs before releasing — the release script reminds you. Keep that section to **one line per channel**: the newest verified `alpha`, then the newest verified `rc`; delete historical alpha/rc entries instead of listing them.
 - **Fold cache verification is part of the flow.** After every dsh upgrade — and before any release that touches the fold envelope — run `node scripts/verify-cache.mjs --since-restart` against a live session log, and record the numbers in the CHANGELOG entry. It exits non-zero when a fold's summarizer call re-pays its span — the test is `uncached − span > --tail-budget`, i.e. a positive tail, which is the signature of the prefix envelope no longer matching the host's summarization input. The offline suite pins the structural precondition (one system message, strict prefix); only a live log can show the actual cache read.
 - Design decisions and history live in `CHANGELOG.md` and the design notes in the source repo.

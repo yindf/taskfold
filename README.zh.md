@@ -1,12 +1,38 @@
-# taskfold
+<p align="center">
+  <img src="https://raw.githubusercontent.com/yindf/taskfold/master/assets/banner.zh.png" width="100%" alt="taskfold —— 给你的编程智能体，近乎无限的上下文" />
+</p>
 
-[English](README.md) | [中文](README.zh.md)
+<p align="center"><b>给你的编程智能体，近乎无限的上下文</b></p>
 
-**taskfold —— 给你的编程智能体，近乎无限的上下文。**
+<p align="center">
+  <a href="README.md">English</a> ·
+  <a href="https://github.com/yindf/taskfold/releases/latest">Releases</a> ·
+  <a href="CHANGELOG.md">更新日志</a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/yindf/taskfold/releases/latest"><img src="https://img.shields.io/github/v/release/yindf/taskfold?style=flat-square&color=4c8dff" alt="最新版本"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="MIT 许可"></a>
+  <a href="https://github.com/topics/dsh-plugin"><img src="https://img.shields.io/badge/DeepSeek%20Harness-plugin-4c8dff?style=flat-square" alt="DeepSeek Harness 插件"></a>
+</p>
 
 让长时间的 AI 编程会话保持快速、便宜、可读：完成的工作被折叠成一条短摘要，完整原始内容随时一条命令取回。
 
 面向 [DeepSeek Harness](https://www.npmjs.com/package/@deepseek-ai/dsh)（DSH）。
+
+## 快速开始
+
+```sh
+dsh plugin --profile <你的profile> add github:yindf/taskfold
+```
+
+重启 dsh——该 profile 下的每个会话都拥有这些工具。之后智能体用命名任务包住自己的工作：
+
+```
+task_begin("修复登录 bug")   … 干活 …   task_end("修复登录 bug")
+```
+
+整段来回就此折叠成一条带标题的摘要，`fold_recall` 随时能读回原始内容。
 
 ## 它解决什么问题
 
@@ -23,6 +49,15 @@ taskfold 用“好笔记本”的方式解决：干活前，智能体先用 `tas
 会话保持可读，每个请求都更便宜，模型带走的是**经验**而不是**流水账**。
 
 **什么都不丢。** 每次折叠都会把原始消息原样存成文件，`fold_recall({ fold: N })` 随时能重新生成。先折叠、后查阅——像合上一本随时能翻开的书记。
+
+## 与 dsh 内置压缩的关系
+
+同一个目标，不同的时机——两者可以叠加。
+
+- **dsh 内置压缩是自动的、由压力驱动的。** 它在窗口快满时触发，按 token 压力选出一段区间替换成摘要；原始事件仍留在会话日志里，只是被 shadow 掉，而不是删除。
+- **taskfold 是显式的、按任务划分的。** 每完成一个任务就顺手折叠一次，摘要是趁那一段还在上下文里时写下的——天然准确——而且带标题，会话始终可导航。
+- **因为你折叠得早，窗口很少被塞满。** 下面实测会话的峰值是 20.7% 而不是 59.5%，于是压力压缩要么更晚触发、要么根本不触发；真触发时，需要总结的东西也更少。
+- **每一次折叠都可寻址。** `fold_recall({ fold: N })` 取回的是原始消息，不是二手摘要。
 
 ## 原理（通俗版）
 
@@ -59,13 +94,9 @@ taskfold 用“好笔记本”的方式解决：干活前，智能体先用 `tas
 | `list_folds` | 列出全部折叠（编号、大小、标题）。 |
 | `fold_recall({ fold })` | 按需取回任意折叠的原始内容。 |
 
-## 安装
+## 其他安装方式
 
-```sh
-dsh plugin --profile <你的profile> add github:yindf/taskfold
-```
-
-重启 dsh——该 profile 下的每个会话都拥有这些工具。
+每个 Release 都附带预构建的 `dsh-taskfold-<版本>.tgz`。插件市场会优先提供该资产而不是源码构建命令，同时也免去 dsh 的 `allowBuilds` 构建授权——见[最新 Release](https://github.com/yindf/taskfold/releases/latest)。
 
 ## 支持的 dsh 版本
 
@@ -76,7 +107,7 @@ dsh plugin --profile <你的profile> add github:yindf/taskfold
 
 ## 维护者须知
 
-- 目录：`plugins/`（两个挂载行 `compact-region.mjs` 与 `compact-stats.mjs`，及其共享纯模块 `events.mjs`、`task-marks.mjs`、`fold-instruction.mjs`、`fold-engine.mjs`、`fold-drain.mjs`、`lifecycle-nudges.mjs`、`lifecycle-injection.mjs`、`span-preview.mjs`）、`scripts/release.mjs` 与 `scripts/verify-cache.mjs`、`test/`（`npm test`）、`CHANGELOG.md`。
+- 目录：`plugins/`（两个挂载行 `compact-region.mjs` 与 `compact-stats.mjs`，及其共享纯模块 `events.mjs`、`task-marks.mjs`、`fold-instruction.mjs`、`fold-engine.mjs`、`fold-drain.mjs`、`lifecycle-nudges.mjs`、`lifecycle-injection.mjs`、`span-preview.mjs`）、`scripts/release.mjs` 与 `scripts/verify-cache.mjs`、`test/`（`npm test`）、`assets/`（README banner 与仓库设置里上传的社交预览图）、`CHANGELOG.md`。
 - 发版：`node scripts/release.mjs draft` → 审阅 CHANGELOG 条目 → `node scripts/release.mjs release`（CHANGELOG 是版本唯一事实源）。若本次发版改变了支持的 dsh 版本范围，发版前先更新**两份** README 的“支持的 dsh 版本”一节——release 脚本会提醒。该节保持**每个通道一行**：最新的 alpha 一条、最新的 rc 一条；历史 alpha / rc 条目直接删掉，不要罗列。
 - **折叠缓存校验是流程的一部分。** 每次 dsh 升级后——以及任何触及折叠信封的发版前——对一份 live 会话日志跑 `node scripts/verify-cache.mjs --since-restart`，并把数字记进 CHANGELOG 条目。若某次折叠的摘要调用重新付费了它的 span——判据是 `uncached − span > --tail-budget`（tail 为正）——脚本以非零码退出，这正是前缀信封不再匹配宿主摘要输入的 signature。离线测试只能钉住结构前提（只有一个 system 消息、严格前缀）；真实缓存命中只能由 live 日志给出。
 - 设计决策与历史见 `CHANGELOG.md` 及源仓库中的设计笔记。
