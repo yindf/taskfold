@@ -115,6 +115,10 @@ Every release attaches a prebuilt `dsh-taskfold-<version>.tgz`. Plugin storefron
 - **Fold cache verification is part of the flow.** After every dsh upgrade — and before any release that touches the fold envelope — run `node scripts/verify-cache.mjs --since-restart` against a live session log, and record the numbers in the CHANGELOG entry. It exits non-zero when a fold's summarizer call re-pays its span — the test is `uncached − span > --tail-budget`, i.e. a positive tail, which is the signature of the prefix envelope no longer matching the host's summarization input. The offline suite pins the structural precondition (one system message, strict prefix); only a live log can show the actual cache read.
 - Design decisions and history live in `CHANGELOG.md` and the design notes in the source repo.
 
+## If this saves you tokens
+
+A star helps other dsh users find it — in this ecosystem, that is how a plugin gets discovered. Numbers from your own sessions are welcome in [Discussions](https://github.com/yindf/taskfold/discussions).
+
 ## License
 
 MIT. Developed against the DeepSeek Harness (`@deepseek-ai/*`, MIT) public packages.
