@@ -279,7 +279,7 @@ function cmdDraft(opts) {
   const title = commits.length === 0 ? '(no changes)' : summarizeTitle(commits)
   insertDraft(renderEntry(version, title, today(), groups))
   console.log('Draft ' + version + ' written to CHANGELOG.md — review/edit it, then run: node scripts/release.mjs release')
-  console.log('Reminder: if this release changes which dsh versions are supported, update the "Supported dsh versions" section in BOTH READMEs (README.md + README.zh.md) before releasing.')
+  console.log('Reminder: if this release changes which dsh versions are supported, update the "Supported dsh versions" section in BOTH READMEs (README.md + README.zh.md) before releasing. Keep it to ONE LINE PER CHANNEL — the newest verified alpha, then the newest verified rc — and delete historical alpha/rc entries instead of listing them.')
 }
 
 function summarizeTitle(commits) {

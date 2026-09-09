@@ -53,16 +53,15 @@ dsh plugin --profile <你的profile> add github:yindf/taskfold
 
 ## 支持的 dsh 版本
 
-- **已验证可用：`0.1.5-alpha.1`**（2026-09-09 实测：离线测试套件 83 个测试全绿；针对真实 `dsh-compaction-basic`/`dsh-llm`/`dsh-session` 包的宿主 API 探针——引擎类导出、`summarize` 钩子、`BlockAssembler`、会话 surface/`deriveEventMessage` 接口，以及用插件自己的 shim ctx 构造 `ScopedEngine`；经由真实引擎与装配器的端到端折叠——前缀锚定信封、带真行号的围栏式 span 索引、span 字节零改动、归档 footer 行号准确；接缝审计确认 `agent/pre-step`、`agent/turn-stopping`、`sessionProjections.register`/`stateOf`、`systemPrompt.section`/`context`、`tools.register` 与 `dsh-compaction-basic` 的 compaction 判别器形态均未变；以及在运行中的 0.1.5-alpha.1 宿主上活体折叠，挂载副本与本仓库 HEAD 逐字节一致。本轮无需改代码。发现一处宿主侧 API 漂移：`dsh-session` 移除了 `decodeStorageRecord`/`packChunkRuns` 导出，而本插件从不使用它们——只 import `dsh-compaction-basic` 与 `dsh-llm`——因此依赖它们的离线区域事务回放本轮未重跑，该路径改由活体折叠覆盖）。
-- **此前已验证：`0.1.2-rc.1`**（2026-09-07 实测：离线测试套件 + 真实包宿主 API 探针 + 用真实 `dsh-compaction-basic` 区域事务离线回放线上会话日志 + 重启宿主上的进程内子任务活体折叠——普通与并行 `task_begin` 两种拓扑、`fold_recall` 回读、重启时排队归档自动排干；该轮验证抓出并修复了一个并行 `task_begin` 的折叠起点缺陷）。`dsh`、`dsh-compaction-basic`、`dsh-llm` 三者版本锁步发布，一个数字覆盖全部耦合面。
-- **最低兼容：`0.1.2-alpha.5`。** 未测试过更早版本；更早的 alpha 在本插件依赖的压缩引擎内部接口上有差异。
+- **alpha 通道 —— 支持到 `0.1.5-alpha.1`**（2026-09-09 实测：离线测试套件 83 个测试全绿；针对真实 `dsh-compaction-basic`/`dsh-llm`/`dsh-session` 包的宿主 API 探针——引擎类导出、`summarize` 钩子、`BlockAssembler`、会话 surface/`deriveEventMessage` 接口，以及用插件自己的 shim ctx 构造 `ScopedEngine`；经由真实引擎与装配器的端到端折叠——前缀锚定信封、带真行号的围栏式 span 索引、span 字节零改动、归档 footer 行号准确；接缝审计确认 `agent/pre-step`、`agent/turn-stopping`、`sessionProjections.register`/`stateOf`、`systemPrompt.section`/`context`、`tools.register` 与 `dsh-compaction-basic` 的 compaction 判别器形态均未变；以及在运行中的 0.1.5-alpha.1 宿主上活体折叠，挂载副本与本仓库 HEAD 逐字节一致。本轮无需改代码。发现一处宿主侧 API 漂移：`dsh-session` 移除了 `decodeStorageRecord`/`packChunkRuns` 导出，而本插件从不使用它们——只 import `dsh-compaction-basic` 与 `dsh-llm`——因此依赖它们的离线区域事务回放本轮未重跑，该路径改由活体折叠覆盖）。
+- **rc 通道 —— 支持到 `0.1.2-rc.1`**（2026-09-07 实测：离线测试套件 + 真实包宿主 API 探针 + 用真实 `dsh-compaction-basic` 区域事务离线回放线上会话日志 + 重启宿主上的进程内子任务活体折叠——普通与并行 `task_begin` 两种拓扑、`fold_recall` 回读、重启时排队归档自动排干；该轮验证抓出并修复了一个并行 `task_begin` 的折叠起点缺陷）。`dsh`、`dsh-compaction-basic`、`dsh-llm` 三者版本锁步发布，一个数字覆盖全部耦合面。
 - **上界：未测试、未强制。** dsh 尚未向插件提供宿主版本协商机制，不兼容的宿主不会被自动拒绝——在不兼容的 dsh 上，折叠会降级（任务照常关闭、不折叠），不会损坏数据。每次 dsh 升级后，请复核本节并按实测结果更新。
 - **可选钩子：`agent/turn-stopping`** —— 0.26.0 起归档排干还会在回合结束时运行，让回合末交付的折叠赶在 provider 前缀缓存还热时执行。没有该钩子的宿主保持原来的纯 pre-step 语义（折叠照常发生，只是晚一个回合）；注册语句整体包裹，钩子缺失不会破坏 `apply()`。
 
 ## 维护者须知
 
 - 目录：`plugins/`（两个挂载行 `compact-region.mjs` 与 `compact-stats.mjs`，及其共享纯模块 `events.mjs`、`task-marks.mjs`、`fold-instruction.mjs`、`fold-engine.mjs`、`fold-drain.mjs`、`lifecycle-nudges.mjs`、`span-preview.mjs`）、`scripts/release.mjs`、`test/`（`npm test`）、`CHANGELOG.md`。
-- 发版：`node scripts/release.mjs draft` → 审阅 CHANGELOG 条目 → `node scripts/release.mjs release`（CHANGELOG 是版本唯一事实源）。若本次发版改变了支持的 dsh 版本范围，发版前先更新**两份** README 的“支持的 dsh 版本”一节——release 脚本会提醒。
+- 发版：`node scripts/release.mjs draft` → 审阅 CHANGELOG 条目 → `node scripts/release.mjs release`（CHANGELOG 是版本唯一事实源）。若本次发版改变了支持的 dsh 版本范围，发版前先更新**两份** README 的“支持的 dsh 版本”一节——release 脚本会提醒。该节保持**每个通道一行**：最新的 alpha 一条、最新的 rc 一条；历史 alpha / rc 条目直接删掉，不要罗列。
 - 设计决策与历史见 `CHANGELOG.md` 及源仓库中的设计笔记。
 
 ## 许可
