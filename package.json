@@ -7,7 +7,8 @@
   "main": "plugins/compact-region.mjs",
   "scripts": {
     "release": "node scripts/release.mjs",
-    "test": "node test/task-marks.test.mjs && node test/span-preview.test.mjs && node test/compact-stats.test.mjs && node test/release.test.mjs && node test/fold-engine.test.mjs && node test/fold-instruction.test.mjs"
+    "verify:cache": "node scripts/verify-cache.mjs",
+    "test": "node test/task-marks.test.mjs && node test/span-preview.test.mjs && node test/compact-stats.test.mjs && node test/release.test.mjs && node test/fold-engine.test.mjs && node test/fold-instruction.test.mjs && node test/verify-cache.test.mjs"
   },
   "files": [
     "plugins",
