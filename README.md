@@ -29,7 +29,7 @@ The conversation stays readable, every request gets cheaper, and the model keeps
 - **Named tasks.** The agent opens a task before starting work and closes it when done. Open tasks survive restarts; closing is well-ordered (innermost first), and a failed close never corrupts anything — just retry.
 - **Folding = closing + summarizing in one call.** The summary is written once, while the original span is still in context, so it's accurate — not a "summary of a summary".
 - **Summaries keep what matters.** The summarizer is instructed to preserve user decisions and feedback (verbatim where wording matters), pitfalls and *why* things failed, what changed, and the outcome.
-- **Gentle guardrails.** If the agent forgets the discipline, a short notice appears in its context until it complies. Each notice replaces the previous one (it carries its own supersession header), and clearing the condition publishes one "nothing applies" notice — no noise when the flow is healthy.
+- **Gentle guardrails.** If the agent forgets the discipline, a short hint appears in its context. Hints are events, not state: one is published only when the condition appears or its wording changes, nothing is published once the condition clears (the model already complied and does not need to be told), and there is no wrapper, supersession header, or expiry notice — no noise when the flow is healthy.
 - **Cheap on the cache.** Folding only rewrites a middle chunk of history; the stable prefix (system prompt, tools, earlier context) stays cache-friendly.
 
 ## What it adds

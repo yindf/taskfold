@@ -27,15 +27,15 @@
  * <name>") instead of showing it — owning the instruction removed the
  * constraint that once forced the two-phase end→commit split.
  *
- * Lifecycle notices: every nudge line (todo bridge, begin/close/decompose
+ * Lifecycle hints: every nudge line (todo bridge, begin/close/decompose
  * hints, auto-fold failure warnings) is published as a STANDALONE
  * plugin-authored user/message (lifecycle-injection.mjs, source.kind
  * 'task-marks:lifecycle') instead of riding the host's runtime-context
  * snapshot — that snapshot is ONE message assembled from every active
  * contribution, so a nudge change re-emitted sandbox:policy and
- * approval:policy with it. One state message per change, each carrying its
- * own supersession header; there is no separate retraction kind. The todo
- * tool itself is never wrapped or replaced.
+ * approval:policy with it. A hint is an event: it publishes when its text
+ * changes, never as an empty or expiry notice, and carries no wrapper. The
+ * todo tool itself is never wrapped or replaced.
  *
  * Module map (plain modules imported by this mounted row — they add no
  * bundle rows of their own, exactly like span-preview.mjs):
@@ -45,7 +45,7 @@
  *   fold-engine.mjs      self-hosted ScopedEngine + lazy resolution
  *   fold-drain.mjs       the deliverable-gated pre-step auto-folder
  *   lifecycle-nudges.mjs pure nudge predicates over an events snapshot
- *   lifecycle-injection.mjs the standalone superseding notice channel
+ *   lifecycle-injection.mjs the event-only lifecycle hint channel
  */
 import { sessionEvents } from './events.mjs'
 import { TASK_MARKS_KEY, taskMarksStateSchema, applyTaskMarks, validTaskName, closeTarget, normalizeName, marksOf, archivesOf, lastSurfaceAssistantSeq } from './task-marks.mjs'
@@ -53,7 +53,7 @@ import { DETAILED_CHECKPOINT_INSTRUCTION } from './fold-instruction.mjs'
 import { createFoldEngine } from './fold-engine.mjs'
 import { createArchiveDrain } from './fold-drain.mjs'
 import { todoBridgeLine, recentWorkCallCount, lastAssistantHasTodoWrite, roundsSinceFoldOutcome, shouldSuggestDecomposition, decomposeHintLine, innermostMark, taskAgeRounds, closePressureLine } from './lifecycle-nudges.mjs'
-import { lifecycleMessage, lifecycleNoticeText, planLifecycleInjection, publishedLifecycleNotice, renderLifecycleBody } from './lifecycle-injection.mjs'
+import { lifecycleMessage, planLifecycleInjection, renderLifecycleBody } from './lifecycle-injection.mjs'
 
 export default {
   name: 'compact-region',
@@ -131,6 +131,11 @@ export default {
     const closingTasks = new Map()
     const engineFor = createFoldEngine(ctx, closingTasks)
     const drain = createArchiveDrain({ ctx, engineFor, closingTasks })
+    // Per-session latch for the standalone lifecycle hint: the exact text of
+    // the last hint published to that session. In-memory on purpose — a
+    // restart loses it and may republish one hint that is still live, which is
+    // cheaper than a history scan that cannot tell "still live" from "spent".
+    const lifecycleLatch = new Map()
 
     try {
       // WATERFALL contract: a pre-step listener receives ({ agent, signal },
@@ -151,25 +156,33 @@ export default {
           // retried at the next pre-step; never wedge the step
         }
         const decision = await pass()
-        // Standalone lifecycle notice: the agent loop appends every message in
+        // Standalone lifecycle hint: the agent loop appends every message in
         // decision.messages as a persistent user/message — the same channel
-        // the host's own skill catalog uses. Publish ONLY when the rendered
-        // state changed; an unconditional push would append one message per
-        // step. A broken notice must never wedge the step.
+        // the host's own skill catalog uses. A hint is an EVENT: it publishes
+        // only when its text differs from the live one, the latch resets the
+        // moment the condition clears (so the same hint can reappear later),
+        // and nothing at all is published when no condition holds. An
+        // unconditional push would append one message per step. A broken hint
+        // must never wedge the step.
         try {
           const agent = payload !== null && typeof payload === 'object' ? payload.agent : undefined
           if (agent !== undefined && decision !== null && typeof decision === 'object' && Array.isArray(decision.messages)) {
-            const lines = lifecycleLines({ agent })
-            if (lines !== null) {
-              const body = renderLifecycleBody(lines)
-              const text = lifecycleNoticeText(body)
-              if (planLifecycleInjection(text, publishedLifecycleNotice(sessionEvents(agent.session))) === 'publish') {
-                return { ...decision, messages: [...decision.messages, lifecycleMessage(body)] }
+            const session = agent.session
+            const latchKey = session !== null && typeof session === 'object' ? session.id : undefined
+            if (latchKey !== undefined) {
+              const lines = lifecycleLines({ agent })
+              if (lines !== null) {
+                const plan = planLifecycleInjection(renderLifecycleBody(lines), lifecycleLatch.get(latchKey))
+                if (plan.last === null) lifecycleLatch.delete(latchKey)
+                else lifecycleLatch.set(latchKey, plan.last)
+                if (plan.publish) {
+                  return { ...decision, messages: [...decision.messages, lifecycleMessage(plan.last)] }
+                }
               }
             }
           }
         } catch (err) {
-          // a broken notice must never wedge the step
+          // a broken hint must never wedge the step
         }
         return decision
       })

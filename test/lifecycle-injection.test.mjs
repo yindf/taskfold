@@ -1,89 +1,88 @@
-// The standalone lifecycle-notice channel: one state message per change,
-// superseded by the next one. These tests pin the two properties the channel
-// must never lose — a notice is published ONLY when the rendered state
-// changes (otherwise the agent loop appends a message every step), and the
-// empty state is itself publishable (otherwise the last notice would stay in
-// context and keep commanding the model).
+// The standalone lifecycle hint channel: an EVENT, not a state display.
+// These tests pin the three properties the channel must never lose — a hint
+// publishes ONLY when its text changes (otherwise the agent loop appends a
+// message every step), nothing is published when no condition holds (no empty
+// state, no expiry notice), and the latch resets on clearing so the same hint
+// can legitimately reappear later.
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   LIFECYCLE_SOURCE_KIND,
-  EMPTY_LIFECYCLE_BODY,
   renderLifecycleBody,
-  lifecycleNoticeText,
-  publishedLifecycleNotice,
   planLifecycleInjection,
   lifecycleMessage
 } from '../plugins/lifecycle-injection.mjs'
 
-const injected = (seq, message) => ({ seq, type: 'user/message', data: message })
-const userText = (seq, text) => injected(seq, { id: 'u' + seq, role: 'user', content: [{ type: 'text', text }] })
-const assistant = (seq) => ({ seq, type: 'assistant/message', data: { message: { content: [{ type: 'text', text: 'step' }] } } })
-
-test('renderLifecycleBody: lines join, blanks drop, nothing becomes the empty state', () => {
+test('renderLifecycleBody: lines join, blanks drop, nothing is null', () => {
   assert.equal(renderLifecycleBody(['a', 'b']), 'a\nb')
   assert.equal(renderLifecycleBody(['a', '', '   ', 'b']), 'a\nb')
-  assert.equal(renderLifecycleBody([]), EMPTY_LIFECYCLE_BODY)
-  assert.equal(renderLifecycleBody(null), EMPTY_LIFECYCLE_BODY)
+  assert.equal(renderLifecycleBody([]), null)
+  assert.equal(renderLifecycleBody(null), null)
+  assert.equal(renderLifecycleBody(['', '  ']), null)
 })
 
-test('lifecycleNoticeText: supersession header, framed body, empty state included', () => {
-  const text = lifecycleNoticeText('Task lifecycle: close it.')
-  assert.ok(text.startsWith('<system-reminder>\n'))
-  assert.ok(text.includes('This notice replaces every earlier task-lifecycle notice in this session:'))
-  assert.ok(text.includes('<task_lifecycle>\nTask lifecycle: close it.\n</task_lifecycle>'))
-  assert.ok(text.endsWith('</system-reminder>'))
-  const empty = lifecycleNoticeText('')
-  assert.ok(empty.includes(EMPTY_LIFECYCLE_BODY))
+test('planLifecycleInjection: publish on change, nothing on no-hint', () => {
+  assert.deepEqual(planLifecycleInjection('hint', undefined), { publish: true, last: 'hint' })
+  assert.deepEqual(planLifecycleInjection('hint', 'hint'), { publish: false, last: 'hint' })
+  assert.deepEqual(planLifecycleInjection('other', 'hint'), { publish: true, last: 'other' })
+  // No condition holds: publish NOTHING, and clear the latch.
+  assert.deepEqual(planLifecycleInjection(null, 'hint'), { publish: false, last: null })
 })
 
-test('publishedLifecycleNotice: reads the newest injected notice, ignores everything else', () => {
-  const first = lifecycleMessage('first state')
-  const second = lifecycleMessage('second state')
-  const events = [
-    assistant(1),
-    userText(2, 'a plain user message'),
-    injected(3, { ...first, source: { kind: 'skill-catalog', form: 'catalog' } }),
-    injected(4, first),
-    assistant(5),
-    injected(6, second)
-  ]
-  assert.equal(publishedLifecycleNotice(events), lifecycleNoticeText('second state'))
-  assert.equal(publishedLifecycleNotice([]), null)
-  assert.equal(publishedLifecycleNotice([assistant(1), userText(2, 'x')]), null)
+test('planLifecycleInjection: a spent hint can reappear after the condition clears', () => {
+  // hint -> model complies (no hint) -> the same condition returns later.
+  const first = planLifecycleInjection('Task lifecycle: open one.', undefined)
+  assert.equal(first.publish, true)
+  const cleared = planLifecycleInjection(null, first.last)
+  assert.equal(cleared.publish, false)
+  assert.equal(cleared.last, null)
+  const again = planLifecycleInjection('Task lifecycle: open one.', cleared.last)
+  assert.equal(again.publish, true)
 })
 
-test('publishedLifecycleNotice: tolerates the nested data.message shape too', () => {
-  const text = lifecycleNoticeText('nested shape')
-  const events = [{ seq: 1, type: 'user/message', data: { message: { role: 'user', content: [{ type: 'text', text }] }, source: { kind: LIFECYCLE_SOURCE_KIND } } }]
-  assert.equal(publishedLifecycleNotice(events), text)
-})
-
-test('planLifecycleInjection: publish only on change — the every-step guard', () => {
-  const text = lifecycleNoticeText('state')
-  assert.equal(planLifecycleInjection(text, text), 'none')
-  assert.equal(planLifecycleInjection(text, null), 'publish')
-  assert.equal(planLifecycleInjection(text, lifecycleNoticeText('other')), 'publish')
-  // Clearing a notice IS a change: the empty state supersedes it.
-  assert.equal(planLifecycleInjection(lifecycleNoticeText(''), text), 'publish')
-  assert.equal(planLifecycleInjection(lifecycleNoticeText(''), lifecycleNoticeText('')), 'none')
-})
-
-test('lifecycleMessage: user role, framed text, and the task-marks source kind', () => {
-  const message = lifecycleMessage('body')
+test('lifecycleMessage: the hint text is the body, with no wrapper at all', () => {
+  const body = 'Task lifecycle: no open task during tool work — call task_begin({ name: "…" }).'
+  const message = lifecycleMessage(body)
   assert.equal(message.role, 'user')
+  assert.equal(message.content.length, 1)
   assert.equal(message.content[0].type, 'text')
-  assert.equal(message.content[0].text, lifecycleNoticeText('body'))
+  assert.equal(message.content[0].text, body)
+  assert.equal(message.content[0].text.includes('<system-reminder>'), false)
+  assert.equal(message.content[0].text.includes('<task_lifecycle>'), false)
   assert.equal(message.source.kind, LIFECYCLE_SOURCE_KIND)
-  assert.equal(message.source.form, 'state')
+  assert.equal(message.source.form, 'hint')
   assert.equal(typeof message.id, 'string')
   assert.ok(message.id.length > 0)
 })
 
-test('round trip: a published message is read back byte-identically', () => {
+test('lifecycleMessage: multi-line hints keep their own lines only', () => {
   const body = renderLifecycleBody(['Task lifecycle: one', 'Task lifecycle: two'])
-  const text = lifecycleNoticeText(body)
-  const events = [injected(9, lifecycleMessage(body))]
-  assert.equal(publishedLifecycleNotice(events), text)
-  assert.equal(planLifecycleInjection(text, publishedLifecycleNotice(events)), 'none')
+  const message = lifecycleMessage(body)
+  assert.equal(message.content[0].text, 'Task lifecycle: one\nTask lifecycle: two')
+})
+
+test('the channel as a whole: a simulated session publishes exactly the changes', () => {
+  const latch = new Map()
+  const published = []
+  const step = (lines) => {
+    const body = renderLifecycleBody(lines)
+    if (body === null) { latch.delete('s'); return }
+    const plan = planLifecycleInjection(body, latch.get('s'))
+    if (plan.last === null) latch.delete('s')
+    else latch.set('s', plan.last)
+    if (plan.publish) published.push(lifecycleMessage(plan.last))
+  }
+  const hint = 'Task lifecycle: task "x" is 20+ rounds old — close it or split it.'
+  step([hint])          // condition appears -> publish
+  step([hint])          // still holding     -> nothing
+  step([hint])          // still holding     -> nothing
+  step([])              // complied          -> nothing (no empty state)
+  step([hint])          // recurs            -> publish again
+  step(['Task lifecycle: no open task during tool work.'])
+  assert.equal(published.length, 3)
+  assert.equal(published[0].content[0].text, hint)
+  assert.equal(published[1].content[0].text, hint)
+  assert.ok(published[2].content[0].text.startsWith('Task lifecycle: no open task'))
+  assert.ok(published.every((m) => m.source.kind === LIFECYCLE_SOURCE_KIND))
+  assert.ok(published.every((m) => !m.content[0].text.includes('system-reminder')))
 })
