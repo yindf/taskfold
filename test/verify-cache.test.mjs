@@ -20,10 +20,13 @@ const fold = (seq, uncached, span, cacheRead) => ({
   data: { usage: usage(uncached, cacheRead), shadowedTokenCount: span },
 })
 
-// Measured: fold 11 (broken) and fold 12 (fixed) of the 2026-09-09 session.
+// Measured: fold 11 (broken) and fold 12 (fixed) of the 2026-09-09 session,
+// plus fold 1303 — a healthy fold whose nested fold rewrote its span's middle,
+// leaving 5655 uncached while the 19796-token span itself came from cache.
 const BROKEN = fold(1046, 11192, 5924, 80128)
 const BROKEN_SMALL_SPAN = fold(980, 8470, 3581, 88448)
 const FIXED = fold(1122, 2199, 7005, 92672)
+const HEALTHY_NESTED = fold(1303, 5655, 19796, 132736)
 
 test('decodeSessionLog: round-trips one zstd frame', () => {
   const text = '{"type":"a","seq":1}\n{"type":"b","seq":2}\n'
@@ -75,29 +78,40 @@ test('classifyFold: uncached within the instruction budget passes even when the 
   assert.equal(classifyFold(row).status, 'pass')
 })
 
-test('classifyFold: a re-paid span fails', () => {
+test('classifyFold: a re-paid span fails on the positive tail', () => {
   const row = foldRows([BROKEN])[0]
   assert.equal(row.uncached, 11192)
+  assert.equal(row.tail, 5268)
   assert.equal(classifyFold(row).status, 'fail')
-  assert.match(classifyFold(row).reason, /uncached 11192 > max-tail 3500/)
+  assert.match(classifyFold(row).reason, /uncached 11192 - span 5924 = 5268 > tail-budget 3500/)
 })
 
-test('classifyFold: a partially re-paid span still fails (uncached above the budget)', () => {
-  const row = foldRows([fold(1, 6000, 7005, 90000)])[0]
+test('classifyFold: a mid-span rewrite that lifts uncached above the instruction still passes', () => {
+  const row = foldRows([HEALTHY_NESTED])[0]
+  assert.equal(row.uncached, 5655)
+  assert.equal(row.tail, -14141)
+  assert.equal(classifyFold(row).status, 'pass', 'the span itself came from cache')
+})
+
+test('classifyFold: a partially re-paid span still fails', () => {
+  const row = foldRows([fold(1, 12000, 7005, 90000)])[0]
+  assert.equal(row.tail, 4995)
   assert.equal(classifyFold(row).status, 'fail')
 })
 
-test('classifyFold: a span below min-span is skipped as inconclusive', () => {
+test('classifyFold: a span below min-span is skipped when the guard is on', () => {
   const row = foldRows([fold(1, 2199, 900, 90000)])[0]
-  const verdict = classifyFold(row)
+  const verdict = classifyFold(row, { minSpan: 2000 })
   assert.equal(verdict.status, 'skip')
   assert.match(verdict.reason, /span 900 < min-span 2000/)
+  assert.equal(classifyFold(row).status, 'pass', 'guard is off by default')
 })
 
 test('classifyFold: thresholds are configurable', () => {
   const row = foldRows([BROKEN_SMALL_SPAN])[0]
+  assert.equal(row.tail, 4889)
   assert.equal(classifyFold(row).status, 'fail')
-  assert.equal(classifyFold(row, { maxTail: 9000 }).status, 'pass')
+  assert.equal(classifyFold(row, { tailBudget: 9000 }).status, 'pass')
   assert.equal(classifyFold(row, { minSpan: 5000 }).status, 'skip')
 })
 

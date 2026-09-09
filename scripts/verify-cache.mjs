@@ -21,11 +21,15 @@
 // fold. Run it after every dsh upgrade, and before releasing when the fold
 // envelope changed.
 //
-// PASS rule (per fold): uncached <= --max-tail. With the fix, uncached is the
-// trailing instruction alone (a few hundred to ~3k tokens) no matter how large
-// the span is; with the regression it is at least instruction + span. Folds
-// whose span is smaller than --min-span are skipped as inconclusive, because a
-// tiny span can hide inside the instruction's own cost.
+// PASS rule (per fold): uncached - span <= --tail-budget (default 3500). The
+// discriminator is the SIGN of that difference, not the absolute uncached cost:
+// a healthy fold can still leave a few thousand tokens uncached when a nested
+// fold rewrote the middle of its span (fold 1303: uncached 5655, span 19796,
+// tail -14141 — the span itself was fully cached). The regression always adds
+// the whole span to the bill, so its tail stays positive: +3974 .. +18587
+// measured across the eleven broken folds, versus -4806 / -5445 / -14141 on the
+// three healthy ones. An optional --min-span guard skips folds too small to say
+// anything.
 //
 // Usage:
 //   node scripts/verify-cache.mjs [--log <session.jsonl.zstd>] [--session <id>]
@@ -38,8 +42,8 @@ import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 const ZSTD_MAGIC = Buffer.from([0x28, 0xb5, 0x2f, 0xfd])
-const DEFAULT_MAX_TAIL = 3500
-const DEFAULT_MIN_SPAN = 2000
+const DEFAULT_TAIL_BUDGET = 3500
+const DEFAULT_MIN_SPAN = 0
 
 /** Decode a multi-frame zstd session log: scan frame magic, one-shot each frame. */
 export function decodeSessionLog(buf) {
@@ -125,18 +129,22 @@ export function foldRows(events) {
 }
 
 /**
- * Classify one fold.
- *   'pass'  — uncached fits inside the instruction budget: the span was cached
- *   'fail'  — uncached exceeds the instruction budget: the span (or part of it)
- *             was billed again
+ * Classify one fold by the sign of `uncached - span`.
+ *   'pass'  — the span (or nearly all of it) came from cache: only the trailing
+ *             instruction, plus any mid-span rewrite, was billed again
+ *   'fail'  — uncached exceeds span by more than the instruction budget: the
+ *             span was billed again, the duplicate-system regression signature
  *   'skip'  — span below --min-span: the sample cannot distinguish the two
  */
 export function classifyFold(row, opts = {}) {
-  const maxTail = opts.maxTail ?? DEFAULT_MAX_TAIL
+  const tailBudget = opts.tailBudget ?? DEFAULT_TAIL_BUDGET
   const minSpan = opts.minSpan ?? DEFAULT_MIN_SPAN
   if (row.span < minSpan) return { status: 'skip', reason: 'span ' + row.span + ' < min-span ' + minSpan }
-  if (row.uncached > maxTail) return { status: 'fail', reason: 'uncached ' + row.uncached + ' > max-tail ' + maxTail }
-  return { status: 'pass', reason: 'uncached ' + row.uncached + ' <= max-tail ' + maxTail }
+  const tail = row.uncached - row.span
+  if (tail > tailBudget) {
+    return { status: 'fail', reason: 'uncached ' + row.uncached + ' - span ' + row.span + ' = ' + tail + ' > tail-budget ' + tailBudget }
+  }
+  return { status: 'pass', reason: 'uncached ' + row.uncached + ' - span ' + row.span + ' = ' + tail + ' <= tail-budget ' + tailBudget }
 }
 
 /** Seq of the newest `request/header reason=resume` (the last host restart), or null. */
@@ -191,14 +199,14 @@ export function findNewestLog(home = process.env.DSH_HOME) {
 }
 
 function parseArgs(argv) {
-  const opts = { maxTail: DEFAULT_MAX_TAIL, minSpan: DEFAULT_MIN_SPAN }
+  const opts = { tailBudget: DEFAULT_TAIL_BUDGET, minSpan: DEFAULT_MIN_SPAN }
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]
     if (arg === '--log') opts.log = argv[++i]
     else if (arg === '--session') opts.session = argv[++i]
     else if (arg === '--last') opts.last = Number(argv[++i])
     else if (arg === '--since-restart') opts.sinceRestart = true
-    else if (arg === '--max-tail') opts.maxTail = Number(argv[++i])
+    else if (arg === '--tail-budget') opts.tailBudget = Number(argv[++i])
     else if (arg === '--min-span') opts.minSpan = Number(argv[++i])
     else if (arg === '--require') opts.require = true
     else if (arg === '--json') opts.json = true
@@ -237,8 +245,8 @@ const HELP = `Verify fold summarizer cache reuse from a live dsh session log.
   --last <n>        judge only the last n folds
   --since-restart   judge only folds after the newest reason=resume request
                     header — the right scope right after a dsh upgrade
-  --max-tail <n>    pass when uncached <= n (default ${DEFAULT_MAX_TAIL})
-  --min-span <n>    skip folds whose span < n (default ${DEFAULT_MIN_SPAN})
+  --tail-budget <n> pass when uncached - span <= n (default ${DEFAULT_TAIL_BUDGET})
+  --min-span <n>    skip folds whose span < n (default ${DEFAULT_MIN_SPAN}: none)
   --require         exit 1 when the log holds no fold to judge
   --json            machine-readable output
 
@@ -266,7 +274,7 @@ function main() {
     console.log(JSON.stringify({ log, verdict, rows, failures: failures.length, skipped: skipped.length }, null, 2))
   } else {
     console.log('log: ' + log)
-    console.log('fold  seq    hit%    cacheRead   uncached      span    status')
+    console.log('fold  seq    hit%    cacheRead   uncached      span        tail    status')
     rows.forEach((r, i) => {
       console.log(
         String(i + 1).padStart(4),
@@ -275,6 +283,7 @@ function main() {
         String(r.cacheRead).padStart(11),
         String(r.uncached).padStart(10),
         String(r.span).padStart(9),
+        String(r.tail).padStart(11),
         '   ' + r.status,
       )
     })
