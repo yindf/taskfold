@@ -101,6 +101,30 @@ export function opensWithSectionHeading(blocks) {
 }
 
 /**
+ * Drop the host's duplicated leading system message when the prefix envelope
+ * already replays it. dsh >= 0.1.5-alpha.1's buildSummarizationInput moved the
+ * surface-node-0 system prompt OUT of the separate `system` field and INTO
+ * `messages[0]`; the prefix envelope below already prepends that same derived
+ * node, so both together inserted a second system message immediately before
+ * the span — exactly where the provider's prefix cache then broke, re-billing
+ * the whole span at full price (measured on 0.1.5-alpha.1: cacheRead == the
+ * pre-span prefix on all five folds of one session, ~112k tokens re-billed;
+ * 0.1.2-rc.1 kept system in its own field and never hit this). Detection is
+ * structural, never a version check: the head is dropped only when a
+ * byte-identical system message already appears earlier in the request, so a
+ * host sending a system prompt we do NOT replay keeps it.
+ */
+export function dropDuplicateLeadingSystem(prefixMessages, regionMessages) {
+  if (!Array.isArray(prefixMessages) || prefixMessages.length === 0) return regionMessages
+  if (!Array.isArray(regionMessages) || regionMessages.length === 0) return regionMessages
+  const head = regionMessages[0]
+  if (head === null || typeof head !== 'object' || head.role !== 'system') return regionMessages
+  const serialized = JSON.stringify(head)
+  const duplicated = prefixMessages.some((m) => m !== null && typeof m === 'object' && m.role === 'system' && JSON.stringify(m) === serialized)
+  return duplicated ? regionMessages.slice(1) : regionMessages
+}
+
+/**
  * Build the scoped engine once. `closingTasks` is the per-session Map the
  * fold drain writes the closing declaration into ({ name, startSeq, endSeq },
  * keyed by sessionId): the name DECLARES the completion (the span's own
@@ -177,7 +201,12 @@ async function buildScopedEngine(ctx, closingTasks) {
       // mechanism = copy-the-visible-number). The index rides in the
       // always-fresh instruction message — the span bytes stay untouched,
       // so the prefix-cache anchor is preserved.
-      const messages = [...prefixMessages, ...input.messages, {
+      // The host may prepend the surface-node-0 system prompt into
+      // input.messages (dsh >= 0.1.5-alpha.1); the prefix envelope already
+      // replays it, so keep exactly one copy. input.messages itself stays
+      // untouched: it is the true span the artifact and archive describe.
+      const regionMessages = dropDuplicateLeadingSystem(prefixMessages, input.messages)
+      const messages = [...prefixMessages, ...regionMessages, {
         role: 'user',
         content: [{
           type: 'text',
