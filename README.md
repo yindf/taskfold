@@ -12,6 +12,7 @@
 
 <p align="center">
   <a href="https://github.com/yindf/taskfold/releases/latest"><img src="https://img.shields.io/github/v/release/yindf/taskfold?style=flat-square&color=4c8dff" alt="Latest release"></a>
+  <a href="https://www.npmjs.com/package/dsh-taskfold"><img src="https://img.shields.io/npm/v/dsh-taskfold?style=flat-square&color=cb3837" alt="npm"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="MIT license"></a>
   <a href="https://github.com/topics/dsh-plugin"><img src="https://img.shields.io/badge/DeepSeek%20Harness-plugin-4c8dff?style=flat-square" alt="DeepSeek Harness plugin"></a>
 </p>
@@ -23,8 +24,10 @@ For [DeepSeek Harness](https://www.npmjs.com/package/@deepseek-ai/dsh) (DSH).
 ## Quickstart
 
 ```sh
-dsh plugin --profile <your-profile> add github:yindf/taskfold
+dsh plugin --profile <your-profile> add dsh-taskfold
 ```
+
+Published on npm as [`dsh-taskfold`](https://www.npmjs.com/package/dsh-taskfold) — prebuilt, so it skips dsh's `allowBuilds` build approval. Straight from GitHub also works: `add github:yindf/taskfold`.
 
 Restart dsh — every session on that profile gets the tools. The agent then wraps its work in named tasks:
 
@@ -96,7 +99,7 @@ Four agent tools (plus the reminders above):
 
 ## Other ways to install
 
-Every release attaches a prebuilt `dsh-taskfold-<version>.tgz`. Plugin storefronts offer that asset instead of the build-from-source command, which also skips dsh's `allowBuilds` approval step — see the [latest release](https://github.com/yindf/taskfold/releases/latest).
+Every release attaches a prebuilt `dsh-taskfold-<version>.tgz`. Plugin storefronts offer that asset — or the npm package — instead of the build-from-source command, which also skips dsh's `allowBuilds` approval step — see the [latest release](https://github.com/yindf/taskfold/releases/latest).
 
 ## Supported dsh versions
 

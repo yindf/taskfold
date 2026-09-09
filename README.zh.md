@@ -12,6 +12,7 @@
 
 <p align="center">
   <a href="https://github.com/yindf/taskfold/releases/latest"><img src="https://img.shields.io/github/v/release/yindf/taskfold?style=flat-square&color=4c8dff" alt="最新版本"></a>
+  <a href="https://www.npmjs.com/package/dsh-taskfold"><img src="https://img.shields.io/npm/v/dsh-taskfold?style=flat-square&color=cb3837" alt="npm"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="MIT 许可"></a>
   <a href="https://github.com/topics/dsh-plugin"><img src="https://img.shields.io/badge/DeepSeek%20Harness-plugin-4c8dff?style=flat-square" alt="DeepSeek Harness 插件"></a>
 </p>
@@ -23,8 +24,10 @@
 ## 快速开始
 
 ```sh
-dsh plugin --profile <你的profile> add github:yindf/taskfold
+dsh plugin --profile <你的profile> add dsh-taskfold
 ```
+
+已发布到 npm：[`dsh-taskfold`](https://www.npmjs.com/package/dsh-taskfold)——预构建包，免去 dsh 的 `allowBuilds` 构建授权。也可以直接从 GitHub 安装：`add github:yindf/taskfold`。
 
 重启 dsh——该 profile 下的每个会话都拥有这些工具。之后智能体用命名任务包住自己的工作：
 
@@ -96,7 +99,7 @@ taskfold 用“好笔记本”的方式解决：干活前，智能体先用 `tas
 
 ## 其他安装方式
 
-每个 Release 都附带预构建的 `dsh-taskfold-<版本>.tgz`。插件市场会优先提供该资产而不是源码构建命令，同时也免去 dsh 的 `allowBuilds` 构建授权——见[最新 Release](https://github.com/yindf/taskfold/releases/latest)。
+每个 Release 都附带预构建的 `dsh-taskfold-<版本>.tgz`。插件市场会优先提供该资产（或 npm 包）而不是源码构建命令，同时也免去 dsh 的 `allowBuilds` 构建授权——见[最新 Release](https://github.com/yindf/taskfold/releases/latest)。
 
 ## 支持的 dsh 版本
 
