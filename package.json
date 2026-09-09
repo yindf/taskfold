@@ -4,6 +4,30 @@
   "description": "Keeps long coding-agent sessions lean: wrap work in named tasks and, when one is done, fold its whole span into a short titled summary. The conversation stays readable, context costs stay low, and every fold's original content can be read back on demand. For DeepSeek Harness.",
   "type": "module",
   "license": "MIT",
+  "author": "yindf",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yindf/taskfold.git"
+  },
+  "homepage": "https://github.com/yindf/taskfold#readme",
+  "bugs": {
+    "url": "https://github.com/yindf/taskfold/issues"
+  },
+  "keywords": [
+    "deepseek",
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "ai-agent",
+    "coding-agent",
+    "context-window",
+    "context-management",
+    "token-optimization",
+    "prompt-caching",
+    "llm",
+    "compaction",
+    "agent-memory"
+  ],
   "main": "plugins/compact-region.mjs",
   "scripts": {
     "release": "node scripts/release.mjs",
@@ -17,6 +41,9 @@
     "README.zh.md",
     "LICENSE"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
