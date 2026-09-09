@@ -3,6 +3,44 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.31.0 — lifecycle hints get their own channel, and target the innermost task (2026-09-09)
+
+- **Guardrail hints no longer ride the host's runtime-context snapshot.** The
+  `todo-bridge` system-prompt context is gone; hints are now published as their
+  own `user/message` from an `agent/pre-step` handler, exactly the way
+  `dsh-tool-skill` publishes its catalog (`source.kind =
+  'task-marks:lifecycle'`, `form = 'hint'`). The snapshot is assembled by the
+  host from every registered contribution, so one hint change re-sent the whole
+  snapshot — including `sandbox:policy` and `approval:policy`, ~1.2k tokens of
+  unchanged text. Live check after the switch: exactly one lifecycle message
+  after the restart, zero new snapshots, zero consecutive duplicates.
+- **Nested tasks are now nagged about the right task (reported live).** The
+  close-pressure nudge scanned every open mark and held the OLDEST, so opening
+  a nested subtask still produced "task 'parent' is 20+ rounds old — close it"
+  while the parent was structurally blocked by its own child, and the parent's
+  clock never moved. It now targets the innermost open mark, and a mark's age
+  anchor advances on any nested `Task begun:` / `Task ended:` / `Task folded:`
+  result, so a fresh subtask resets the parent's counter. The wording also
+  offers both exits now — wrap the remaining distinct parts as nested subtasks,
+  or close the task — instead of only pushing to close. The regression is
+  pinned offline by a test named after the live bug (`a fresh nested begin
+  resets the parent clock`); both this nudge and the 8–19 round decomposition
+  hint then fired live against the innermost task.
+- **A hint is an event, not a state.** No empty "nothing applies right now"
+  notice, no expiry notice, no `<system-reminder>` / `<task_lifecycle>` wrapper
+  and no supersession preamble: the message body is the hint line itself. That
+  removes the mechanism that used to retract a satisfied hint — the model
+  knows it opened a task when it opened one. The dedupe guard is therefore a
+  per-session latch rather than a history scan: `renderLifecycleBody` returns
+  `null` when nothing applies, which clears the latch, so the same hint can
+  legitimately fire again the next time its condition appears, while an
+  unchanged held hint stays silent.
+- **Verification.** 117 assertions across 9 test files, all green, including a
+  simulated session that publishes exactly the three hints it should and a
+  negative assertion that the message carries no framing tags. The cache gate
+  (`scripts/verify-cache.mjs --since-restart`) passes 3/3 on the live log
+  (hit 98.8 / 99.0 / 98.2%, tails −10,173 / −1,730 / −15,413).
+
 ## 0.30.0 — gate fold cache reuse with verify-cache.mjs (2026-09-09)
 
 - **The fold cache regression that 0.29.3 fixed can no longer come back
