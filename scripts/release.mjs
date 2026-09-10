@@ -20,6 +20,7 @@ import { readFileSync, writeFileSync, openSync, closeSync, unlinkSync } from 'no
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { renderBundle, clientBundlePath } from './build-client.mjs'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const changelogPath = path.join(repoRoot, 'CHANGELOG.md')
@@ -277,6 +278,7 @@ function cmdDraft(opts) {
     version = opts.version
   }
   const title = commits.length === 0 ? '(no changes)' : summarizeTitle(commits)
+  assertClientBundleFresh()
   insertDraft(renderEntry(version, title, today(), groups))
   console.log('Draft ' + version + ' written to CHANGELOG.md — review/edit it, then run: node scripts/release.mjs release')
   console.log('Reminder: after a dsh upgrade (or any change to the fold envelope), run "node scripts/verify-cache.mjs --since-restart" against a live session log and record the numbers in the CHANGELOG entry — it exits non-zero when a fold re-pays its span.')
@@ -300,6 +302,19 @@ function remoteHasTag(version) {
   }
 }
 
+/**
+ * Ship-guard: the browser bundle is a COMMITTED generated artifact (the host
+ * serves its raw bytes), so a stale one would ship silently. Every release
+ * path must fail before writing anything when the committed bytes differ from
+ * a fresh render of plugins/task-stack-ui.mjs through the envelope template.
+ */
+function assertClientBundleFresh() {
+  const current = readFileSync(clientBundlePath(), 'utf8')
+  if (current !== renderBundle()) {
+    throw new Error('plugins/taskfold-client.mjs is stale — run `node scripts/build-client.mjs` and commit the regenerated bundle first')
+  }
+}
+
 function cmdRelease() {
   let st = gatherState(undefined)
   if (st.state === 'CLEAN') {
@@ -318,6 +333,7 @@ function cmdRelease() {
     process.exit(1)
   }
   const version = st.version
+  assertClientBundleFresh()
   // Non-blocking guard: both READMEs must declare the supported-dsh section.
   for (const readme of ['README.md', 'README.zh.md']) {
     const text = readFileSync(path.join(repoRoot, readme), 'utf8')
