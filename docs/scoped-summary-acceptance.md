@@ -25,6 +25,27 @@ contradict the close.
   boundary right after a turn-final deliverable, while the provider prefix
   cache is still hot) use the scoped instance. The durable lock
   through the event log keeps them mutually exclusive.
+- Region boundaries are resolved by surface POSITION, never by seq magnitude:
+  the span is the position-contiguous slice `nodes[startIdx..endIdx]` — exactly
+  what the host validates as `shadowedSeqs` and what `fold_recall` rebuilds.
+  This matters because `surface.nodes` is a position list, not a sorted one: a
+  committed fold re-inserts its summary node AT the position of the region it
+  shadowed while that node carries a seq from the log's end. The region opens
+  at the first node AFTER the folded task's own `Task begun` result and ends at
+  the close result, so the begin call (with its opening reasoning) and the
+  `Task begun` result stay live as the bookmark.
+- What the sweep therefore does NOT promise: anything the span covers in
+  between is folded with it. A nested subtask's `task_begin` pair, and the
+  resident summary node of a fold committed inside the span, are both inside a
+  parent's region and leave the surface when the parent folds — while a task
+  finished before the parent closed has its leftovers swept by the parent's
+  span. Their content is never lost (the summary node stays in the event log,
+  `list_folds` numbers every fold, `fold_recall` regenerates any of them), but
+  the "bookmark stays live" rule is a promise about the folded task's OWN
+  begin/close pair, not about every marker that happens to lie inside the span.
+  Audit 2026-09-10 on dsh 0.1.5-rc.1, all 15 folds of one session log: 14 opened
+  after their own begin result; the single one that opened before it (a
+  0.32.0-era fold) is the defect 0.32.1 fixed.
 - Two envelopes, chosen per fold: span-only (the request carries exactly the
   span) and prefix-anchored (surface prefix + span + a scoping instruction
   that brackets the region by its explicit lifecycle markers — a strict

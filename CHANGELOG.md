@@ -18,24 +18,38 @@ unaffected.
   shrink target as `max{ s : start <= s < end }`, so on any post-fold surface
   both could land EARLIER on the surface than the intended node. Live evidence
   (this session, fold #3 at seq 240): its region opened at 183 — an EARLIER
-  fold's summary node — swallowing the task's own `task_begin` call, its
-  opening reasoning, the `Task begun` result, a nested subtask's begin pair and
-  two already-committed summary nodes, i.e. exactly the "the bookmark stays
-  live" promise made by the README, both tool descriptions and
-  `docs/scoped-summary-acceptance.md`, plus cross-task contamination of the
-  summary. Both sites now resolve the region by INDEX (`posOf`,
-  `nodes[floorPos + 1]`, `endPos -= 1` with `endPos`/`startPos` guards), and the
-  drain's walk is index-driven end to end (the old `end >= startSeq` NUMERIC
-  loop guard could stop a walk that still had room — silently closing a task
-  unfolded through the tooSmall path). Seq comparisons remain only over the
-  event log, which is seq-ordered by construction. Both halves were then
-  re-checked against the session log's own record of that fold: replayed over
-  the recorded region (`shadowedSeqs = [183,177,179,187,…,220,214,216]`) the OLD
-  numeric scan returns startSeq 183 — bit-identical to the region the host
-  actually committed, which is the bug reproduced from data — while the fixed
-  positional scan returns 187, the node immediately after the `Task begun`
-  result. Regression tests drive
-  a real post-fold surface both in the plan and through the drain's shrink walk.
+  fold's resident summary node, three nodes ahead of where it belonged —
+  swallowing the task's own `task_begin` call (with its opening reasoning), the
+  `Task begun` result and that earlier fold's summary node: exactly the "the
+  bookmark stays live" promise made by the README, both tool descriptions and
+  `docs/scoped-summary-acceptance.md`. Both sites now resolve the region by
+  INDEX (`posOf`, `nodes[floorPos + 1]`, `endPos -= 1` with `endPos`/`startPos`
+  guards), and the drain's walk is index-driven end to end (the old
+  `end >= startSeq` NUMERIC loop guard could stop a walk that still had room —
+  silently closing a task unfolded through the tooSmall path). Seq comparisons
+  remain only over the event log, which is seq-ordered by construction. Both
+  halves were then re-checked against the session log's own record of that fold:
+  replayed over the recorded region
+  (`shadowedSeqs = [183,177,179,187,…,220,214,216]`) the OLD numeric scan
+  returns startSeq 183 — bit-identical to the region the host actually
+  committed, which is the bug reproduced from data — while the fixed positional
+  scan returns 187, the node immediately after the `Task begun` result.
+  Regression tests drive a real post-fold surface both in the plan and through
+  the drain's shrink walk.
+  **CORRECTION (post-release re-audit, dsh 0.1.5-rc.1, 2026-09-10)** — the first
+  published version of this entry described the damage more broadly, listing a
+  nested subtask's begin pair and two already-committed summary nodes as
+  swallowed and calling the summary cross-task contaminated. The correct
+  criterion is "is the region's first node positionally BEFORE this fold's own
+  `Task begun` result"; replayed against all 15 folds of that session log,
+  exactly ONE fold met it — this one — and its bug-caused prefix is the three
+  nodes above. The nested subtask's begin pair and a later fold's resident
+  summary node lie AFTER this fold's own begin result, so ANY
+  position-contiguous region contains them: that is the by-design span sweep,
+  now documented in `docs/scoped-summary-acceptance.md`, not fallout of this
+  bug. The fix itself is unaffected and was re-verified live on 0.1.5-rc.1:
+  0.32.1-produced folds carry no pre-begin prefix, and
+  `verify-cache --since-restart` passes 4/4.
 - **Fix (high) — the span index, the artifact and the resident footer were
   numbered in the REQUEST's coordinate while `fold_recall` rebuilds the SPAN's.**
   The host prepends the surface-head system prompt into `input.messages`
