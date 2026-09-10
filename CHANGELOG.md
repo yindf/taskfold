@@ -3,7 +3,7 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
-## 0.32.1 — fold regions follow surface POSITION, and one coordinate for index, artifact and recall (unreleased draft 2026-09-10)
+## 0.32.1 — fold regions follow surface POSITION, and one coordinate for index, artifact and recall (2026-09-10)
 
 Review pass over every plugin module, script and test against a live session
 log; five real defects and a retry-budget hole. No envelope change: the
