@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import path from 'node:path'
 import { test } from 'node:test'
 import {
   parseEntryHeader,
@@ -13,6 +14,7 @@ import {
   releaseNotes,
   ghReleaseArgs,
   manualAssetHint,
+  ghCandidates,
 } from '../scripts/release.mjs'
 
 // ── cmpSemver ─────────────────────────────────────────────────────────────
@@ -184,4 +186,18 @@ test('manualAssetHint: names the tag, the asset and both recovery routes', () =>
   assert.ok(hint.includes('dsh-taskfold-0.34.0.tgz'))
   assert.ok(hint.includes('gh release create'))
   assert.ok(hint.includes('release.mjs assets'))
+})
+
+test('ghCandidates: PATH first, then the platform install locations', () => {
+  const win = ghCandidates('win32', { ProgramFiles: 'C:\\PF', 'ProgramFiles(x86)': 'C:\\PF86' })
+  assert.equal(win[0], 'gh')
+  assert.ok(win.includes(path.join('C:\\PF', 'GitHub CLI', 'gh.exe')))
+  assert.ok(win.includes(path.join('C:\\PF86', 'GitHub CLI', 'gh.exe')))
+  // Missing env vars fall back to the conventional defaults rather than undefined.
+  assert.ok(ghCandidates('win32', {}).every((c) => typeof c === 'string' && c.length > 0))
+  const mac = ghCandidates('darwin', {})
+  assert.equal(mac[0], 'gh')
+  assert.ok(mac.includes('/opt/homebrew/bin/gh'))
+  const linux = ghCandidates('linux', {})
+  assert.ok(linux.includes('/usr/bin/gh'))
 })

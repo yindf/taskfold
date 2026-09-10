@@ -150,13 +150,17 @@ export function classifyState({ top, packageVersion, tagVersion, dirty, remoteHa
 // the non-zero status is the error signal. Shared by git, npm and gh so every
 // external tool degrades the same way.
 function spawnCaptured(file, args, opts) {
-  const r = spawnSync(file, args, { cwd: repoRoot, encoding: 'utf8' })
+  const useShell = !!(opts && opts.shell)
+  const r = spawnSync(file, args, { cwd: repoRoot, encoding: 'utf8', shell: useShell })
+  // Discovery probes opt out: re-running a missing tool through the fallback
+  // below cannot fix an ENOENT, it only hides it.
+  if (opts && opts.probe) return r
   if (r.error && (r.error.code === 'EPERM' || r.error.code === 'ENOENT')) {
     const tmp = path.join(os.tmpdir(), 'dsh-release-' + Date.now() + '-' + Math.random().toString(36).slice(2) + '.out')
     let fd
     try {
       fd = openSync(tmp, 'w')
-      const s = spawnSync(file, args, { cwd: repoRoot, stdio: ['ignore', fd, 'ignore'] })
+      const s = spawnSync(file, args, { cwd: repoRoot, stdio: ['ignore', fd, 'ignore'], shell: useShell })
       closeSync(fd); fd = undefined
       const stdout = readFileSync(tmp, 'utf8')
       return { status: s.status, stdout, stderr: '' }
@@ -294,12 +298,41 @@ export function manualAssetHint(version, tarballName) {
   ].join('\n')
 }
 
-function ghAvailable() {
-  try {
-    return spawnCaptured('gh', ['--version'], { okNonZero: true }).status === 0
-  } catch (err) {
-    return false
+/**
+ * Where to look for the GitHub CLI: PATH first, then the usual install
+ * locations — a script launched by the host does not always inherit the
+ * interactive shell's PATH.
+ */
+export function ghCandidates(platform = process.platform, env = process.env) {
+  const list = ['gh']
+  if (platform === 'win32') {
+    const pf = env.ProgramFiles || 'C:\\Program Files'
+    const pf86 = env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)'
+    list.push(path.join(pf, 'GitHub CLI', 'gh.exe'), path.join(pf86, 'GitHub CLI', 'gh.exe'))
+  } else {
+    list.push('/usr/local/bin/gh', '/opt/homebrew/bin/gh', '/usr/bin/gh')
   }
+  return list
+}
+
+function resolveGh() {
+  for (const cand of ghCandidates()) {
+    if (spawnCaptured(cand, ['--version'], { okNonZero: true, probe: true }).status === 0) return cand
+  }
+  return undefined
+}
+
+/**
+ * Run `npm`. On Windows npm is a .cmd shim and Node refuses to spawn .cmd/.bat
+ * without a shell (ENOENT for `npm`, EINVAL for `npm.cmd` — both verified), so
+ * we run npm's own CLI through the current node binary instead: no shell, no
+ * argument escaping, no deprecation warning. POSIX spawns `npm` directly.
+ */
+function npmSpawn(args) {
+  if (process.platform !== 'win32') return spawnCaptured('npm', args, { okNonZero: true })
+  const cli = path.join(path.dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js')
+  if (existsSync(cli)) return spawnCaptured(process.execPath, [cli, ...args], { okNonZero: true })
+  return spawnCaptured('npm.cmd', args, { okNonZero: true, shell: true })
 }
 
 function warnAssets(version, tarballName, detail) {
@@ -323,20 +356,21 @@ export function publishReleaseAssets(version) {
   }
   const dir = mkdtempSync(path.join(os.tmpdir(), 'dsh-taskfold-assets-'))
   try {
-    const packed = spawnCaptured('npm', ['pack', '--pack-destination', dir], { okNonZero: true })
+    const packed = npmSpawn(['pack', '--pack-destination', dir])
     const tarball = path.join(dir, tarballName)
     if (packed.status !== 0 || !existsSync(tarball)) {
       warnAssets(version, tarballName, '`npm pack` did not produce ' + tarballName + '.')
       return false
     }
-    if (!ghAvailable()) {
+    const gh = resolveGh()
+    if (gh === undefined) {
       warnAssets(version, tarballName, 'the GitHub CLI (`gh`) is missing or not logged in.')
       return false
     }
     const notesFile = path.join(dir, 'release-notes.md')
     writeFileSync(notesFile, releaseNotes(section, tarballName))
-    const exists = spawnCaptured('gh', ['release', 'view', 'v' + version], { okNonZero: true }).status === 0
-    const r = spawnCaptured('gh', ghReleaseArgs({ version, tarball, notesFile, exists }), { okNonZero: true })
+    const exists = spawnCaptured(gh, ['release', 'view', 'v' + version], { okNonZero: true }).status === 0
+    const r = spawnCaptured(gh, ghReleaseArgs({ version, tarball, notesFile, exists }), { okNonZero: true })
     if (r.status !== 0) {
       warnAssets(version, tarballName, '`gh release ' + (exists ? 'upload' : 'create') + '` failed: ' + String(r.stderr || '').trim())
       return false
