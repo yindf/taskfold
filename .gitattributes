@@ -1,0 +1,18 @@
+# Keep every checkout byte-identical to the committed blobs.
+#
+# Why this matters: `npm pack` (and therefore the tarball attached to every
+# GitHub Release) packs the WORKING TREE, not the blobs. With a developer's
+# core.autocrlf=true, the working tree holds CRLF for text files while the
+# blobs hold LF, so the packed asset differs from the tagged content even
+# though nothing about the source changed. Pinning `eol=lf` here overrides
+# core.autocrlf and makes the packed asset byte-for-byte reproducible.
+* text=auto eol=lf
+
+# Binary assets must never be EOL-normalized or charset-converted.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.gif binary
+*.ico binary
+*.tgz binary
