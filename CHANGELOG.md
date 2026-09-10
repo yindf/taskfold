@@ -3,6 +3,76 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.34.0 — the live task stack in a Web GUI dock, and archive closure on the close-result witness (2026-09-10)
+
+An open-task stack was only ever visible as prose: every `task_begin`/`task_end`
+result names the depth, and the lifecycle hints name the task they nag about —
+but nothing showed the STACK itself. Meanwhile a real session was carrying six
+permanent `folding…` rows for tasks that had ended long before: the reducer
+closed a queued archive only when a committed fold shadowed its BEGIN anchor,
+and a fold region deliberately STARTS AFTER the `Task begun` result so that
+anchor always survives — the witness could never fire, and a restart replayed to
+the same verdict. Both halves are fixed here, and the dock is what made the
+second one visible at all.
+
+- **The open-task stack is now a live dock above the composer.** `taskMarks`
+  gains a `wire` view (mirroring the `todos` projection) so the browser can read
+  it, and `plugins/task-stack-ui.mjs` renders it: outermost task first, the
+  innermost highlighted, one row per closing task, pending `task_begin` /
+  `task_end` calls as counts, and NOTHING at all when the stack is empty. Every
+  number comes from the session's own projection — the dock appends no events
+  and costs the model no context. Layout is the host's composer-card recipe
+  (aligned width, hairline border, 13px rows) with the stylesheet injected by
+  the bundle, and the panel collapses to its one-line summary on click.
+- **`stateVersion` 9 → 10: archives close on the close RESULT, not only the
+  begin anchor.** A committed fold shadows a range that ENDS AT the close result
+  and starts after the `Task begun` result, so the close result is the witness
+  every successful fold leaves behind. Either witness present now drops the row
+  (rows persisted before `foldResultSeq` existed keep the anchor-only rule), and
+  the version bump forces the full replay that converges sessions already
+  carrying ghost rows — observed live: six `folding…` rows before, `[]` after,
+  with the one genuinely open task untouched.
+- **The drain settles in the pass that removed the row — and only then.** A fold
+  whose region had to shrink BELOW the close result leaves the row queued AND
+  unsettled on purpose: unconditional settling would have eaten the "shrink at
+  an END boundary needs a re-plan" semantics and stopped the walk early.
+- **The lifecycle hint now carries the whole stack on one line:**
+  `Task lifecycle: task stack — 3 open, outermost first: "a" > "b" > "c";
+  2 folding, 1 end pending.` (or `empty`). Shape only — names in stack order
+  plus the counts, no round ages and no seqs — because the hint channel compares
+  published text verbatim: a number that drifted per round would re-inject
+  context every round. It is appended to a live hint and never emitted as a
+  standing state line, so it re-publishes exactly when the stack moves.
+- **The browser bundle stays a COMMITTED artifact with a freshness gate.**
+  `plugins/task-stack-ui.mjs` is the single source of truth;
+  `scripts/build-client.mjs` strips its ESM keywords and splices it into
+  `scripts/taskfold-client.template.mjs`, emitting `plugins/taskfold-client.mjs`
+  as a loader-factory classic script — no bundler, no build step in the repo.
+  `test/client-bundle.test.mjs` byte-compares the committed file against a fresh
+  render, and the release flow refuses to draft or publish a stale one.
+- **Fix — the release freshness guard never actually ran.** It called
+  `clientBundlePath()` / `renderBundle()` with no arguments while only
+  `buildClient` carried the repo-root default, so it threw a TypeError instead
+  of comparing anything. Both sides now default to this repo through
+  `repoBundleText(root)`, and two tests cover the exact default-root call the
+  release makes plus a stale artifact in a temp tree, which must fail with
+  "is stale" rather than crash.
+- **Manifest:** `exports["./client"]` + `dsh.client.platform = "web"` make the
+  bundle discoverable, while `"."` and `"./plugins/*"` keep the existing
+  path-mounted rows and legacy subpath imports working.
+- **Docs:** two store screenshots — `assets/screenshot-tasks.png` and
+  `assets/screenshot-tasks-collapsed.png`, both 1280×720 — rendered from the
+  shipped component with the host's real theme tokens, listed in
+  `screenshots.json` and embedded in both READMEs.
+- Live verification on the running host (dsh 0.1.5-rc.1): the persisted
+  projection cache shows `taskMarks` at `ver: 10` with `pendingArchives: []`;
+  the lifecycle event renders the new stack line (byte-stable across two
+  consecutive injections); the served client bundle is byte-identical to the
+  committed artifact. `verify-cache --since-restart` judges the folds committed
+  after the session's restart: **2/2 pass**, prefix-cache hit 96.5% and 96.2%
+  (uncached 2,309 / 1,918 tokens against spans of 20,254 / 3,390). Offline
+  suite: **156 tests, 12 suites, 0 fail**.
+
 ## 0.33.0 — escalate close-pressure nudges in 20+/50+/100+ buckets (2026-09-10)
 
 Live evidence (a real session): a mark stayed innermost for 200+ rounds;
