@@ -47,10 +47,10 @@ test('latestNestedOutcomeSeq: a nested begin/end advances the anchor, other resu
   assert.equal(latestNestedOutcomeSeq(null, 7), 7)
 })
 
-test('taskAgeRounds: counts rounds after the anchor, capped at 21', () => {
+test('taskAgeRounds: counts rounds after the anchor, capped at 101', () => {
   const events = [result(11, 'Task begun: outer')]
-  for (let i = 0; i < 25; i++) events.push(assistant(20 + i))
-  assert.equal(taskAgeRounds(events, mark(10, 'outer')), 21, 'cap keeps the wording byte-stable at "20+"')
+  for (let i = 0; i < 120; i++) events.push(assistant(20 + i))
+  assert.equal(taskAgeRounds(events, mark(10, 'outer')), 101, 'cap keeps the wording byte-stable at "100+"')
   assert.equal(taskAgeRounds(events, null), 0)
   assert.equal(taskAgeRounds(events, { name: 'no seq' }), 0)
 })
@@ -60,7 +60,7 @@ test('taskAgeRounds: the live bug — a fresh nested begin resets the parent clo
   const events = [result(11, 'Task begun: add cache-hit verification')]
   for (let i = 0; i < 25; i++) events.push(assistant(20 + i))
   const parent = mark(10, 'add cache-hit verification')
-  assert.equal(taskAgeRounds(events, parent), 21)
+  assert.equal(taskAgeRounds(events, parent), 25)
 
   // The child begins (seq 60) and three rounds follow: the parent is no
   // longer "20+ rounds of idle" — the child IS the progress.
@@ -72,16 +72,24 @@ test('taskAgeRounds: the live bug — a fresh nested begin resets the parent clo
   assert.equal(taskAgeRounds(events, innermost) < 20, true, 'so no close pressure fires')
 })
 
-test('closePressureLine: offers BOTH exits and stays byte-stable', () => {
+test('closePressureLine: escalating 20+/50+/100+ buckets, byte-stable inside each', () => {
+  // The injection latch publishes on TEXT CHANGE: byte-stability inside a
+  // bucket makes one event per bucket; the boundary crossings re-arm it.
   const line = closePressureLine('big task')
-  assert.equal(line.includes('20+ rounds'), true)
+  assert.equal(line.includes('20+ rounds'), true, 'age omitted -> lowest bucket')
+  assert.equal(closePressureLine('big task', 20), closePressureLine('big task', 49), '20..49 same bytes')
+  assert.equal(closePressureLine('big task', 50), closePressureLine('big task', 99), '50..99 same bytes')
+  assert.equal(closePressureLine('big task', 100), closePressureLine('big task', 250), '100+ same bytes')
+  assert.notEqual(closePressureLine('big task', 49), closePressureLine('big task', 50), 'bucket crossing changes text -> latch re-fires')
+  assert.notEqual(closePressureLine('big task', 99), closePressureLine('big task', 100))
+  assert.equal(closePressureLine('big task', 50).includes('50+ rounds'), true)
+  assert.equal(closePressureLine('big task', 100).includes('100+ rounds'), true)
+  assert.equal(closePressureLine('big task', 30).includes('23'), false, 'no drifting numbers inside a bucket')
   assert.equal(line.includes('nested subtasks'), true, 'exit 1: decompose')
   assert.equal(line.includes('task_end({ name: "big task" })'), true, 'exit 2: close')
   assert.equal(line.includes('waiting on a job or reply'), true, 'exit 3: legitimately blocked')
-  assert.equal(line, closePressureLine('big task'), 'same input, same bytes')
-  assert.equal(line.includes('23'), false, 'no drifting numbers past the threshold')
-  assert.equal(closePressureLine('a "quoted" name').includes('"a \'quoted\' name"'), true, 'quotes neutralized')
-  assert.equal(closePressureLine(undefined).includes('task ""'), true, 'total on garbage')
+  assert.equal(closePressureLine('a "quoted" name', 60).includes('"a \'quoted\' name"'), true, 'quotes neutralized')
+  assert.equal(closePressureLine(undefined, 60).includes('task ""'), true, 'total on garbage')
 })
 
 test('decomposeHintLine: byte-stable and quote-safe', () => {

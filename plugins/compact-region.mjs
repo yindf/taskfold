@@ -53,7 +53,7 @@ import { TASK_MARKS_KEY, taskMarksStateSchema, applyTaskMarks, validTaskName, cl
 import { DETAILED_CHECKPOINT_INSTRUCTION } from './fold-instruction.mjs'
 import { createFoldEngine } from './fold-engine.mjs'
 import { createArchiveDrain } from './fold-drain.mjs'
-import { todoBridgeLine, recentWorkCallCount, lastAssistantHasTodoWrite, roundsSinceFoldOutcome, shouldSuggestDecomposition, decomposeHintLine, innermostMark, taskAgeRounds, closePressureLine } from './lifecycle-nudges.mjs'
+import { todoBridgeLine, recentWorkCallCount, lastAssistantHasTodoWrite, roundsSinceFoldOutcome, shouldSuggestDecomposition, decomposeHintLine, innermostMark, taskAgeRounds, closePressureLine, CLOSE_PRESSURE_MIN_ROUNDS } from './lifecycle-nudges.mjs'
 import { lifecycleMessage, planLifecycleInjection, renderLifecycleBody } from './lifecycle-injection.mjs'
 
 export default {
@@ -412,13 +412,15 @@ export default {
       // activity anchor, which nested begins/ends advance — a parent that
       // just gained a child is therefore NOT flagged (live bug: parent
       // 'add cache-hit …' was flagged 20+ in the snapshot right after its
-      // child 'wire verify:cache …' began). Wording is byte-stable past the
-      // threshold ("20+ rounds", never "~23") and offers both exits.
+      // child 'wire verify:cache …' began). Wording is byte-stable WITHIN
+      // each escalation bucket (20+/50+/100+ rounds) — the injection
+      // latch fires one fresh event per bucket crossing instead of a
+      // single one-shot alarm — and it always offers both exits.
       if (ownDepth > 0) {
         const target = innermostMark(marks)
         const targetAge = taskAgeRounds(events, target)
-        if (target !== null && targetAge >= 20) {
-          lines.push(closePressureLine(target.name))
+        if (target !== null && targetAge >= CLOSE_PRESSURE_MIN_ROUNDS) {
+          lines.push(closePressureLine(target.name, targetAge))
         }
         // ── Nudge 3: decomposition while a big task is actively worked ──
         // Covers the GAP between "just began" (nothing to decompose) and

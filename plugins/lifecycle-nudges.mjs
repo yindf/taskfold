@@ -85,22 +85,37 @@ export function latestNestedOutcomeSeq(events, seq) {
   return anchor
 }
 
-/** Rounds (assistant messages) since the mark's activity anchor, capped. */
+/**
+ * Rounds (assistant messages) since the mark's activity anchor, capped.
+ * Cap 101: the close-pressure wording tops out at "100+ rounds", so the
+ * backward scan never needs an exact count past 100 — bounded cost, exact
+ * enough text.
+ */
 export function taskAgeRounds(events, mark) {
   if (mark === null || typeof mark !== 'object' || !Number.isInteger(mark.seq)) return 0
-  return countAssistantSince(events, latestNestedOutcomeSeq(events, mark.seq), 21)
+  return countAssistantSince(events, latestNestedOutcomeSeq(events, mark.seq), 101)
 }
 
+export const CLOSE_PRESSURE_MIN_ROUNDS = 20
+
 /**
- * Close-pressure line (20+ rounds). Byte-stable past the threshold, and it
- * states BOTH exits — decompose into nested parts, or close — because a task
- * open this long is as often under-structured as it is finished. The waiting
- * escape stays last so a genuinely blocked task is never pushed into a bogus
- * close.
+ * Close-pressure line, escalating in byte-stable buckets (20+ / 50+ /
+ * 100+ rounds). Within a bucket the wording never changes (no "~23"
+ * drift), so the injection latch publishes it exactly once; crossing
+ * into the next bucket changes the text, which re-arms the latch and
+ * fires one fresh event per milestone — sustained pressure on a stuck
+ * task without per-round spam (the pre-bucket single "20+" line fired
+ * once and then went silent for 180+ observed rounds). The line states
+ * BOTH exits — decompose into nested parts, or close — because a task
+ * open this long is as often under-structured as it is finished. The
+ * waiting escape stays last so a genuinely blocked task is never pushed
+ * into a bogus close.
  */
-export function closePressureLine(name) {
+export function closePressureLine(name, age) {
   const safe = typeof name === 'string' ? name.replace(/"/g, "'") : ''
-  return 'Task lifecycle: task "' + safe + '" has been open 20+ rounds — either wrap the remaining distinct parts as nested subtasks (task_begin each part, task_end it when that part\u0027s outcome is verifiable), or, if the task is done, call task_end({ name: "' + safe + '" }). If it is genuinely waiting on a job or reply, leave it open.'
+  const rounds = Number.isInteger(age) ? age : CLOSE_PRESSURE_MIN_ROUNDS
+  const label = rounds >= 100 ? '100+' : rounds >= 50 ? '50+' : '20+'
+  return 'Task lifecycle: task "' + safe + '" has been open ' + label + ' rounds — either wrap the remaining distinct parts as nested subtasks (task_begin each part, task_end it when that part\u0027s outcome is verifiable), or, if the task is done, call task_end({ name: "' + safe + '" }). If it is genuinely waiting on a job or reply, leave it open.'
 }
 
 /** Count non-task tool calls in the last 10 assistant messages. */
