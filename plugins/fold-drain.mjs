@@ -1,5 +1,10 @@
 /**
- * Full-deferred archive machinery (v9): the deliverable-gated auto-folder.
+ * Full-deferred archive machinery (v9): the message-gated auto-folder.
+ * Since 0.31.3 the gate opens at the FIRST assistant message after the
+ * close result — any content counts (the old text-only requirement held
+ * folds open through tool-call-only steps), and the successor-anchor
+ * defer is gone (unreachable once anchors are begin-message seqs; see
+ * the history note in task-marks.mjs).
  *
  * settledArchives: per-session Set of begin-anchor seqs whose archive is
  * DONE without a fold (too-small at fold time, or dropped by the plan).
@@ -11,7 +16,7 @@
  * condition stands.
  */
 import { sessionEvents } from './events.mjs'
-import { deferredArchivePlan, marksOf, archivesOf } from './task-marks.mjs'
+import { deferredArchivePlan, archivesOf } from './task-marks.mjs'
 
 function errText(err) {
   return err !== null && typeof err === 'object' && err.message ? String(err.message) : String(err)
@@ -95,12 +100,13 @@ async function foldRegion(session, agent, engine, name, startSeq, endSeq, signal
  * serialized by the host loop; the running guard below covers cross-session
  * reentry (subagent sessions share this process).
  *
- * At every agent step boundary, drain queue entries whose deliverable has
- * landed (deferredArchivePlan gate), innermost (highest seq) first. Serial
+ * At every agent step boundary, drain queue entries whose post-close
+ * assistant message has landed (deferredArchivePlan gate), innermost
+ * (highest seq) first. Serial
  * by construction; the projection state is re-read before EACH entry
  * because a committed fold rewrites the surface (the previous entry's
  * summary may shadow the next entry's anchor — the reducer then drops it
- * and the re-read no longer lists it). A 'wait'/'defer' verdict skips that
+ * and the re-read no longer lists it). A 'wait' verdict skips that
  * entry for the REST of the pass instead of aborting the drain: one blocked
  * newest entry must not starve the older entries that are already
  * foldable. The skip set dies with the pass — the next boundary retries
@@ -138,7 +144,7 @@ export function createArchiveDrain({ ctx, engineFor, closingTasks }) {
     drainRunning = true
     try {
       const session = agent.session
-      // Entries passed over this pass ('wait'/'defer'): skipped, not fatal.
+      // Entries passed over this pass ('wait'): skipped, not fatal.
       // Reset when the pass ends so the next boundary re-tries them.
       const skipped = new Set()
       for (;;) {
@@ -147,23 +153,14 @@ export function createArchiveDrain({ ctx, engineFor, closingTasks }) {
         if (entries.length === 0) return
         entries.sort((a, b) => b.seq - a.seq)
         const entry = entries[0]
-        // Successor anchors: every begin anchor that is still OPEN or still
-        // QUEUED and sits after this entry's close — the region must end
-        // before the first of them. Settled rows are NOT successors: a
-        // committed fold never shadows its OWN begin anchor (the archive
-        // opens after the "Task begun" result, which stays live), so the
-        // row survives its own commit until a later, wider fold shadows
-        // the anchor. Counting that ghost as a pending successor defers
-        // every older entry whose deliverable sits after it — permanently,
-        // because the only folds that could retire the ghost are themselves
-        // deferred by it (found live on the MasterGoUI session: five closed
-        // tasks never folded).
-        const anchors = marksOf(ctx, session).map((m) => m.seq)
-          .concat(archivesOf(ctx, session)
-            .filter((q) => q.seq !== entry.seq && !isSettledArchive(session, q.seq))
-            .map((q) => q.seq))
-        const plan = deferredArchivePlan(entry, session.surface.nodes, sessionEvents(session), anchors)
-        if (plan.action === 'wait' || plan.action === 'defer') {
+        // Successor-anchor machinery is gone (0.31.3): the region is
+        // [begin result + 1 .. close result] and successors' begin anchors
+        // sit after the close by construction, so no region can cross one,
+        // and with anchors being begin-message seqs the first post-close
+        // assistant message can never sit after the earliest successor
+        // anchor anyway — the old defer branch was unreachable.
+        const plan = deferredArchivePlan(entry, session.surface.nodes, sessionEvents(session))
+        if (plan.action === 'wait') {
           skipped.add(entry.seq)
           continue
         }

@@ -1,10 +1,11 @@
-// Offline tests for the deferred-archive drain (createArchiveDrain): the
-// ghost-anchor fix and the wait/defer anti-starvation skip. Found live on a
-// real session: five task_end calls never folded because a committed fold's
-// own queue row (whose begin anchor survives its own commit by design) was
-// still counted as a pending SUCCESSOR anchor, deferring every older entry
-// forever; and one 'wait'/'defer' verdict aborted the whole drain pass,
-// starving older foldable entries behind it.
+// Offline tests for the deferred-archive drain (createArchiveDrain) under
+// the 0.31.3 message gate: the fold fires once ONE assistant message
+// follows the close result — any content counts (the old text-only
+// requirement held folds open through a straight task_begin handoff, found
+// live on the MasterGoUI session as the 插件侧源码审查 → up 仓库 handoff).
+// The successor-anchor defer is gone entirely (the region is begin..close;
+// anchors are begin-message seqs, so the defer branch was unreachable),
+// and a 'wait' verdict skips the entry instead of aborting the pass.
 // Run in-process (the sandbox blocks node --test child processes):
 //   node test/fold-drain.test.mjs
 import test from 'node:test'
@@ -48,8 +49,8 @@ const ENDED = (n, rest) => 'Task ended: ' + n + ' — ' + rest
  * compactRegion SHADOWS the region and feeds the synthetic compaction/
  * summary through the reducer — exactly what the host does on a real
  * commit (the reducer then drops queue rows whose begin anchor was
- * shadowed). replaceState() lets a test advance the log between drain
- * passes the way later turns would.
+ * shadowed). append() lets a test advance the log between drain passes
+ * the way later turns would.
  */
 function harness(events) {
   let state = null
@@ -83,49 +84,49 @@ function harness(events) {
   }
 }
 
-// The MasterGoUI shape: outer A open across everything; B closes BEFORE a
-// later sibling C even begins; one shared deliverable text lands after C's
-// own close. C is innermost-last and folds; its queue row (begin anchor 50,
-// deliberately never shadowed by its own fold) must then NOT count as B's
-// pending successor — otherwise B (deliverable after 50) defers forever and
-// A starves behind B. This test fails on the pre-fix drain.
-test('settled ghost row is not a successor anchor: older siblings still fold', async () => {
+// The 0.31.3 headline shape: elder closes with its report text riding the
+// SAME message as the task_end call (before the result — too early), and
+// the first assistant message after the close is the successor's bare
+// task_begin call, no text at all. Under the old text gate + successor
+// defer this elder waited two extra steps and folded only AFTER the
+// successor; now both fold in one pass.
+test('tool-call-only handoff opens the gate: elder folds without waiting for text', async () => {
   const h = harness([
     assistantCall(10, [{ id: 'a1', name: 'task_begin' }]),
-    toolResult(11, 'a1', BEGUN('outer', '1 open.')),
-    assistantCall(20, [{ id: 'b1', name: 'task_begin' }]),
-    toolResult(21, 'b1', BEGUN('older sibling', '2 open.')),
+    toolResult(11, 'a1', BEGUN('elder', '1 open.')),
+    assistantCall(20, [{ id: 'a2', name: 'task_end' }]),
+    toolResult(21, 'a2', ENDED('elder', 'all closed. Archival queued.')),
+    // The handoff: first assistant message after the close is a bare
+    // task_begin — no text anywhere.
+    assistantCall(30, [{ id: 'b1', name: 'task_begin' }]),
+    toolResult(31, 'b1', BEGUN('younger', '1 open.')),
+    // The elder's actual report text, stranded inside the successor's span.
+    assistantText(35, 'elder report stranded between the successor begin and its close'),
     assistantCall(40, [{ id: 'b2', name: 'task_end' }]),
-    toolResult(41, 'b2', ENDED('older sibling', '1 open: outer. Archival queued.')),
-    assistantCall(50, [{ id: 'c1', name: 'task_begin' }]),
-    toolResult(51, 'c1', BEGUN('younger sibling', '2 open.')),
-    assistantCall(60, [{ id: 'c2', name: 'task_end' }]),
-    toolResult(61, 'c2', ENDED('younger sibling', '1 open: outer. Archival queued.')),
-    assistantText(65, 'deliverable for both siblings'),
-    assistantCall(70, [{ id: 'a2', name: 'task_end' }]),
-    toolResult(71, 'a2', ENDED('outer', 'all closed. Archival queued.')),
-    assistantText(75, 'deliverable for outer')
+    toolResult(41, 'b2', ENDED('younger', 'all closed. Archival queued.')),
+    assistantText(45, 'younger deliverable')
   ])
   await h.drain.processDeferredArchives(h.agent, undefined)
 
-  // C folded first (innermost-last), then B unblocked, then the outer fold
-  // swept the sibling anchors — the reducer dropped both queued rows.
-  assert.deepEqual(h.folds, [[60, 61], [40, 41], [20, 71]])
-  assert.equal(h.state().pendingArchives.length, 1, 'only the outermost row persists (its anchor is never shadowed)')
-  assert.equal(h.state().pendingArchives[0].name, 'outer')
-  assert.ok(h.drain.isSettledArchive(h.session, 10), 'outer row settled in memory')
+  // Younger (innermost-last) folded first and swept the stranded elder
+  // report; elder folded right after in the SAME pass — no defer, no wait.
+  assert.deepEqual(h.folds, [[35, 41], [20, 21]])
+  // Both rows persist (their begin-message anchors 10/30 are never
+  // shadowed by design) but both settle in memory via the drop path.
+  assert.deepEqual(h.state().pendingArchives.map((p) => p.name), ['elder', 'younger'])
+  assert.ok(h.drain.isSettledArchive(h.session, 10) && h.drain.isSettledArchive(h.session, 30), 'both rows settled in memory')
 
   // Restart: a fresh drain instance (settled memory lost) must NOT re-fold
-  // — the shadowed close result routes the row through 'drop' again.
+  // — the shadowed close results route the replayed rows through 'drop'.
   const drain2 = createArchiveDrain({ ctx: h.ctx, engineFor: async () => h.engine, closingTasks: new Map() })
   await drain2.processDeferredArchives(h.agent, undefined)
-  assert.equal(h.folds.length, 3, 'restart settles via drop, no duplicate fold')
+  assert.equal(h.folds.length, 2, 'restart settles via drop, no duplicate fold')
 })
 
-// A newest entry whose deliverable has not landed yet ('wait') must not
-// abort the pass: the older, already-foldable entry still folds. This test
-// fails on the pre-fix drain (single 'wait' → return).
-test('wait/defer skips the entry instead of starving older foldable ones', async () => {
+// A newest entry whose post-close assistant message has not landed yet
+// ('wait') must not abort the pass: the older, already-foldable entry
+// still folds.
+test('wait skips the entry instead of starving older foldable ones', async () => {
   const h = harness([
     assistantCall(10, [{ id: 'a1', name: 'task_begin' }]),
     toolResult(11, 'a1', BEGUN('ready', '1 open.')),
@@ -136,7 +137,7 @@ test('wait/defer skips the entry instead of starving older foldable ones', async
     toolResult(31, 'd1', BEGUN('pending deliverable', '1 open.')),
     assistantCall(40, [{ id: 'd2', name: 'task_end' }]),
     toolResult(41, 'd2', ENDED('pending deliverable', 'all closed. Archival queued.'))
-    // no assistant text after 41: the newest entry 'wait's
+    // no assistant message after 41: the newest entry 'wait's
   ])
   await h.drain.processDeferredArchives(h.agent, undefined)
 
@@ -145,34 +146,23 @@ test('wait/defer skips the entry instead of starving older foldable ones', async
   assert.ok(!h.drain.isSettledArchive(h.session, 30), 'waiting entry not settled — retried next boundary')
 })
 
-// The skip set must die with the pass: a deferred entry is retried on the
-// NEXT boundary, so a successor that closes later releases it for good.
-// Ordering per the gate's semantics: outer closes FIRST, the successor
-// begins after the close, and outer's deliverable lands after the
-// successor's begin anchor → defer.
-test('skipped defer is retried on the next drain pass', async () => {
+// A 'wait' is a retry, not a verdict: the skip set dies with the pass, so
+// the entry folds on the very next boundary once ANY assistant message
+// lands — here, again, a bare task_begin handoff.
+test('a waiting entry folds on the next pass once a message lands', async () => {
   const h = harness([
     assistantCall(10, [{ id: 'a1', name: 'task_begin' }]),
-    toolResult(11, 'a1', BEGUN('outer', '1 open.')),
-    assistantCall(30, [{ id: 'a2', name: 'task_end' }]),
-    toolResult(31, 'a2', ENDED('outer', 'all closed. Archival queued.')),
-    assistantCall(40, [{ id: 's1', name: 'task_begin' }]),
-    toolResult(41, 's1', BEGUN('successor', '1 open.'))
+    toolResult(11, 'a1', BEGUN('elder', '1 open.')),
+    assistantCall(20, [{ id: 'a2', name: 'task_end' }]),
+    toolResult(21, 'a2', ENDED('elder', 'all closed. Archival queued.'))
+    // nothing after the close yet
   ])
   await h.drain.processDeferredArchives(h.agent, undefined)
-  assert.deepEqual(h.folds, [], 'no deliverable yet: outer waits, nothing folds')
+  assert.deepEqual(h.folds, [], 'no assistant message after the close: wait')
+  assert.ok(!h.drain.isSettledArchive(h.session, 10), 'waiting entry not settled')
 
-  h.append(assistantText(45, 'outer deliverable after the successor began'))
+  h.append(assistantCall(30, [{ id: 'b1', name: 'task_begin' }]))
+  h.append(toolResult(31, 'b1', BEGUN('younger', '1 open.')))
   await h.drain.processDeferredArchives(h.agent, undefined)
-  assert.deepEqual(h.folds, [], 'deliverable after the open successor anchor still defers')
-  assert.ok(!h.drain.isSettledArchive(h.session, 10), 'deferred entry not settled')
-
-  h.append(assistantCall(50, [{ id: 's2', name: 'task_end' }]))
-  h.append(toolResult(51, 's2', ENDED('successor', 'all closed. Archival queued.')))
-  h.append(assistantText(55, 'successor deliverable'))
-  await h.drain.processDeferredArchives(h.agent, undefined)
-  // Successor's region [45..51] also swallows outer's stranded deliverable
-  // (45, sitting between successor's begin result and its close) — the
-  // documented leftover-sweep behavior — then the retried outer folds.
-  assert.deepEqual(h.folds, [[45, 51], [30, 31]], 'successor folds, then the previously deferred outer folds in the same pass')
+  assert.deepEqual(h.folds, [[20, 21]], 'the bare task_begin handoff opens the gate on the next pass')
 })

@@ -311,63 +311,57 @@ function toolResultEvent(seq, text) {
   return { seq, type: 'tool/result', data: { message: { content: [{ type: 'tool-result', toolCallId: 'r' + seq, content: [{ type: 'text', text }] }] } } }
 }
 
-test('deferredArchivePlan: the deliverable gate (wait / fold / defer / drop)', () => {
+test('deferredArchivePlan: the message gate (wait / fold / drop)', () => {
   const p = { seq: 10, name: 'alpha', foldResultSeq: 25 }
   const begun = toolResultEvent(11, 'Task begun: alpha — 1 open.')
   const nodes = [10, 11, 15, 20, 25, 30, 35]
-  // ① No deliverable after the close → never fold (reasoning and tool calls
-  // do NOT count as deliverables).
-  const reasoningOnly = [begun, assistantMsg(30, [{ type: 'reasoning', text: 'thinking…' }, { type: 'tool-call', id: 'c', name: 'read', arguments: '{}' }])]
-  assert.equal(deferredArchivePlan(p, nodes, reasoningOnly, []).action, 'wait', 'reasoning/tool-call steps are not deliverables')
-  // ② Deliverable text landed, no successor anchor → fold. The span opens
-  // at the first surface node AFTER the "Task begun" result (a region
-  // starting AT the result would split the begin call/result pair — the
-  // engine rejects unbalanced leading cuts) and closes at the close
-  // result's own seq; the begin CALL (seq 10) and the begun result (11)
-  // both stay on the surface, and so does everything after the end.
-  const delivered = [...reasoningOnly, assistantMsg(35, [{ type: 'text', text: 'final report' }])]
-  const plan = deferredArchivePlan(p, nodes, delivered, [])
-  assert.equal(plan.action, 'fold')
+  // ① No assistant MESSAGE after the close (tool results and user messages
+  // only) → never fold.
+  const noMessage = [begun, toolResultEvent(30, '3 matches'), { seq: 32, type: 'user/message', data: { message: { content: [{ type: 'text', text: 'hm' }] } } }]
+  assert.equal(deferredArchivePlan(p, nodes, noMessage).action, 'wait', 'non-assistant events after the close do not open the gate')
+  // ② ANY assistant message after the close opens the gate — a
+  // reasoning/tool-call-only step included (0.31.3: the old text-only
+  // requirement held folds open through a straight task_begin handoff).
+  // The span opens at the first surface node AFTER the "Task begun" result
+  // (a region starting AT the result would split the begin call/result
+  // pair — the engine rejects unbalanced leading cuts) and closes at the
+  // close result's own seq; the begin CALL (seq 10) and the begun result
+  // (11) both stay on the surface, and so does everything after the end.
+  const toolCallStep = [begun, assistantMsg(30, [{ type: 'reasoning', text: 'thinking…' }, { type: 'tool-call', id: 'c', name: 'read', arguments: '{}' }])]
+  const plan = deferredArchivePlan(p, nodes, toolCallStep)
+  assert.equal(plan.action, 'fold', 'a tool-call-only message opens the gate')
   assert.equal(plan.startSeq, 15, 'span opens just after the "Task begun" result — never at it (unbalanced cut)')
-  assert.equal(plan.endSeq, 25, 'span closes at the close result — never the deliverable')
-  // ③ Successor anchor open with deliverable before it → same
-  // result..result region (successors sit after the end by construction).
-  const trimNodes = [10, 11, 15, 20, 25, 28, 30, 35]
-  const earlyDeliverable = [begun, assistantMsg(28, [{ type: 'text', text: 'final report' }])]
-  const withSuccessor = deferredArchivePlan(p, trimNodes, earlyDeliverable, [30])
-  assert.equal(withSuccessor.action, 'fold')
-  assert.equal(withSuccessor.endSeq, 25, 'region still ends at the close result')
-  // ④ Deliverable AFTER the successor anchor (out-of-order close) → defer.
-  const lateDeliverable = [begun, assistantMsg(40, [{ type: 'text', text: 'late report' }])]
-  assert.equal(deferredArchivePlan(p, [...trimNodes, 40], lateDeliverable, [30]).action, 'defer')
-  // ⑤ Anchor shadowed (AUTO compaction took seq 10 off the surface) → drop.
-  assert.equal(deferredArchivePlan(p, [11, 15, 20, 25, 30], delivered, []).action, 'drop')
-  // ⑥ Close result shadowed (AUTO compaction took seq 25 off the surface) →
+  assert.equal(plan.endSeq, 25, 'span closes at the close result — never the gate message')
+  const delivered = [...toolCallStep, assistantMsg(35, [{ type: 'text', text: 'final report' }])]
+  // ③ Whitespace-only text still opens the gate — existence counts, not
+  // content.
+  const blank = [begun, assistantMsg(30, [{ type: 'text', text: '   ' }])]
+  assert.equal(deferredArchivePlan(p, nodes, blank).action, 'fold', 'whitespace-only message opens the gate')
+  // ④ Anchor shadowed (AUTO compaction took seq 10 off the surface) → drop.
+  assert.equal(deferredArchivePlan(p, [11, 15, 20, 25, 30], delivered).action, 'drop')
+  // ⑤ Close result shadowed (AUTO compaction took seq 25 off the surface) →
   // the span's end is gone; drop rather than fold a truncated region.
-  assert.equal(deferredArchivePlan(p, [10, 11, 15, 20, 30, 35], delivered, []).action, 'drop')
-  // ⑦ "Task begun" result shadowed while the call is still on the surface →
+  assert.equal(deferredArchivePlan(p, [10, 11, 15, 20, 30, 35], delivered).action, 'drop')
+  // ⑥ "Task begun" result shadowed while the call is still on the surface →
   // fall back to the v0.18 region (fold from the call) rather than drop.
-  const fallback = deferredArchivePlan(p, [10, 15, 20, 25, 30, 35], delivered, [])
+  const fallback = deferredArchivePlan(p, [10, 15, 20, 25, 30, 35], delivered)
   assert.equal(fallback.action, 'fold')
   assert.equal(fallback.startSeq, 10, 'shadowed begin result folds from the call itself')
-  // ⑧ Legacy events without any "Task begun" result → same fallback.
-  const legacy = deferredArchivePlan(p, nodes, delivered.filter((e) => e !== begun), [])
+  // ⑦ Legacy events without any "Task begun" result → same fallback.
+  const legacy = deferredArchivePlan(p, nodes, delivered.filter((e) => e !== begun))
   assert.equal(legacy.action, 'fold')
   assert.equal(legacy.startSeq, 10, 'legacy spans fold from the call, exactly like v0.18')
-  // ⑨ Nothing between the begun result and the close → the after-result
+  // ⑧ Nothing between the begun result and the close → the after-result
   // region would be empty; fall back to the call-anchored region.
-  const tight = deferredArchivePlan(p, [10, 11, 25, 30, 35], delivered, [])
+  const tight = deferredArchivePlan(p, [10, 11, 25, 30, 35], delivered)
   assert.equal(tight.action, 'fold')
   assert.equal(tight.startSeq, 10, 'no node after the begun result folds from the call')
-  // Empty-text deliverables do not count.
-  const blank = [begun, assistantMsg(30, [{ type: 'text', text: '   ' }])]
-  assert.equal(deferredArchivePlan(p, nodes, blank, []).action, 'wait', 'whitespace-only text is not a deliverable')
-  // ⑩ Inconsistent persisted row (close seq not locatable after the
+  // ⑨ Inconsistent persisted row (close seq not locatable after the
   // anchor): waiting would be permanent — the plan drops instead, so the
   // drain settles the entry and moves on.
   const corrupt = { seq: 10, name: 'alpha' }
-  assert.equal(deferredArchivePlan(corrupt, nodes, delivered, []).action, 'drop', 'missing foldResultSeq drops, never waits')
-  assert.equal(deferredArchivePlan({ seq: 10, name: 'alpha', foldResultSeq: 5 }, nodes, delivered, []).action, 'drop',
+  assert.equal(deferredArchivePlan(corrupt, nodes, delivered).action, 'drop', 'missing foldResultSeq drops, never waits')
+  assert.equal(deferredArchivePlan({ seq: 10, name: 'alpha', foldResultSeq: 5 }, nodes, delivered).action, 'drop',
     'close seq before the begin anchor is inconsistent — drop')
 })
 
@@ -389,23 +383,23 @@ test('deferredArchivePlan: parallel-begin guard — the start skips the partner 
   // ① Partner result AFTER the begun result: the span must open past BOTH
   // results (node 15), never at the partner result (node 12).
   const nodes = [10, 11, 12, 15, 20, 25, 30, 35]
-  const plan = deferredArchivePlan(p, nodes, [beginMsg, begun, partner, deliverable], [])
+  const plan = deferredArchivePlan(p, nodes, [beginMsg, begun, partner, deliverable])
   assert.equal(plan.action, 'fold')
   assert.equal(plan.startSeq, 15, 'parallel partner results are skipped — a cut at 12 would split the grep pair')
   assert.equal(plan.endSeq, 25)
   // ② Partner result BEFORE the begun result: the begun result is already
   // the last of the batch; identical outcome.
-  const swapped = deferredArchivePlan(p, nodes, [beginMsg, { ...partner, seq: 11 }, { ...begun, seq: 12 }, deliverable], [])
+  const swapped = deferredArchivePlan(p, nodes, [beginMsg, { ...partner, seq: 11 }, { ...begun, seq: 12 }, deliverable])
   assert.equal(swapped.startSeq, 15, 'order inside the parallel batch does not matter — the floor is the max result seq')
   // ③ A partner that never produced a result (interrupted step) must not
   // wedge the plan: the floor falls back to the begun result alone, and the
   // next node opens the span exactly like the single-call case.
-  const interrupted = deferredArchivePlan(p, nodes, [beginMsg, begun, deliverable], [])
+  const interrupted = deferredArchivePlan(p, nodes, [beginMsg, begun, deliverable])
   assert.equal(interrupted.startSeq, 12, 'missing partner result degrades to the first node after the begun result')
   // ④ A single-call begin keeps the exact pre-guard choice.
   const single = deferredArchivePlan(p, [10, 11, 15, 20, 25, 30, 35], [
     assistantMsg(10, [{ type: 'tool-call', id: 'b1', name: 'task_begin', arguments: '{}' }]), begun, deliverable
-  ], [])
+  ])
   assert.equal(single.startSeq, 15, 'single-call begin is byte-identical to the old behavior')
   // ⑤ The guard only skips results of the BEGIN message's own calls — a
   // later step's unrelated result (different call id, same shape) still
@@ -413,7 +407,7 @@ test('deferredArchivePlan: parallel-begin guard — the start skips the partner 
   const laterStep = { seq: 12, type: 'tool/result', data: { message: { content: [{ type: 'tool-result', toolCallId: 'other-message-call', content: [{ type: 'text', text: 'x' }] }] } } }
   const foreign = deferredArchivePlan(p, nodes, [
     assistantMsg(10, [{ type: 'tool-call', id: 'b1', name: 'task_begin', arguments: '{}' }]), begun, laterStep, deliverable
-  ], [])
+  ])
   assert.equal(foreign.startSeq, 12, 'unrelated later results are span content, not floor candidates')
 })
 

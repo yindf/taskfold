@@ -141,29 +141,17 @@ export function closeTarget(marks, name) {
 }
 
 /**
- * Deliverable detection: does an assistant/message event at seq > fromSeq
- * contain a non-empty TEXT block? Reasoning blocks and tool-call blocks
- * deliberately do NOT count — reasoning trails every step, so counting it
- * would make the gate always-true and defeat deliverable-gating.
- */
-function hasDeliverableText(event) {
-  if (event === null || typeof event !== 'object' || event.type !== 'assistant/message') return false
-  return blocksOf(messageOf(event)).some((b) => b !== null && typeof b === 'object' && b.type === 'text'
-    && typeof b.text === 'string' && b.text.trim().length > 0)
-}
-
-/**
  * Deferred-archive plan for ONE pendingArchive entry (v9 full-deferred
- * folds; pure and offline-testable). The deliverable gate (product owner's
- * G2 ruling) folds a task only after its closing task_end has been followed
- * by a deliverable text, AND only while that deliverable precedes any
- * successor task anchor that is still open or pending. Returns:
- *   { action:'wait' }                no deliverable text yet — never fold
- *   { action:'defer' }               deliverable sits AFTER the successor
- *                                     anchor (out-of-order close): postpone;
- *                                     once the successor closes and folds,
- *                                     the trim point moves up and the
- *                                     deliverable lands inside the span
+ * folds; pure and offline-testable). The message gate (product owner's
+ * 0.31.3 ruling, superseding G2's text requirement) folds a task as soon
+ * as ONE more assistant message follows the closing task_end result — any
+ * content counts (report text, a tool-call-only step, reasoning-only).
+ * The lifecycle discipline directs the model to deliver its report in
+ * that message; the gate only verifies the message EXISTS, so a close
+ * handed straight to the next task_begin no longer holds the fold open
+ * waiting for text that may never come. Returns:
+ *   { action:'wait' }                no assistant message after the close
+ *                                     yet — never fold
  *   { action:'drop' }                nothing foldable remains — either the
  *                                     begin anchor or the close result is no
  *                                     longer on the surface (AUTO compaction
@@ -186,11 +174,18 @@ function hasDeliverableText(event) {
  *                                     bookmark; everything after the end
  *                                     stays on the surface too
  *
- * successorAnchors = seqs of begin anchors opened AFTER this entry's
- * foldResultSeq that are STILL open or pending (caller derives from
- * live marks + pendingArchives).
+ * History: v0.14's G2 gate also deferred while the deliverable sat after
+ * a still-open/pending successor anchor — under the then-design the region
+ * ran to the last surface node trimmed AT that anchor, so folding could
+ * strand the deliverable outside the span. v0.16.0 pinned the region to
+ * begin..close exactly (deliverable stays on the surface; a later task's
+ * region sweeps it), voiding that rationale; and since anchors are
+ * begin-message seqs, the first post-close assistant message can never
+ * sit after the earliest successor anchor — the defer branch had become
+ * unreachable. Removed in 0.31.3 together with the successorAnchors
+ * parameter.
  */
-export function deferredArchivePlan(entry, surfaceNodes, events, successorAnchors) {
+export function deferredArchivePlan(entry, surfaceNodes, events) {
   const nodes = Array.isArray(surfaceNodes) ? surfaceNodes : []
   const list = Array.isArray(events) ? events : []
   const foldResultSeq = Number.isInteger(entry.foldResultSeq) ? entry.foldResultSeq : 0
@@ -200,20 +195,17 @@ export function deferredArchivePlan(entry, surfaceNodes, events, successorAnchor
   // deliverable scan — waiting would be permanent. Drop: the close already
   // popped the mark, so settle and move on.
   if (foldResultSeq < entry.seq) return { action: 'drop' }
-  // ① deliverable: first assistant text after the close result.
+  // ① message gate: the first assistant MESSAGE after the close result —
+  // any content. Anchors are begin-message seqs, so this message can never
+  // sit after a successor anchor; no ordering check remains (history note
+  // above).
   let deliverableSeq = null
   for (const e of list) {
     if (e === null || typeof e !== 'object' || !Number.isInteger(e.seq)) continue
     if (e.seq <= foldResultSeq) continue
-    if (hasDeliverableText(e)) { deliverableSeq = e.seq; break }
-  }
-  // ② successor anchor: first still-open/pending begin anchor after the close.
-  let successor = null
-  for (const s of Array.isArray(successorAnchors) ? successorAnchors : []) {
-    if (Number.isInteger(s) && s > foldResultSeq && (successor === null || s < successor)) successor = s
+    if (e.type === 'assistant/message') { deliverableSeq = e.seq; break }
   }
   if (deliverableSeq === null) return { action: 'wait' }
-  if (successor !== null && deliverableSeq > successor) return { action: 'defer' }
   if (nodes.indexOf(entry.seq) === -1) return { action: 'drop' }
   // END: the close result itself (the cut AFTER a completed call/result
   // pair is balanced). START: the first surface node AFTER the "Task begun"
@@ -384,7 +376,7 @@ export function applyTaskMarks(state, event) {
         // on purpose (old-log replay); the tool layer enforces LIFO before
         // any of these events can be written. v9 full-deferred: a successful
         // close ALSO queues the archive {seq, name, foldResultSeq} — the
-        // pre-step handler folds it after the deliverable lands. Old-log
+        // drain folds it once the next assistant message lands. Old-log
         // replays (inline folds) queue too, but their spans' compaction/
         // summary events immediately drop the entries again (shadowedSeqs).
         for (let i = next.marks.length - 1; i >= 0; i -= 1) {
