@@ -49,11 +49,11 @@
  *   lifecycle-injection.mjs the event-only lifecycle hint channel
  */
 import { sessionEvents } from './events.mjs'
-import { TASK_MARKS_KEY, taskMarksStateSchema, applyTaskMarks, validTaskName, closeTarget, normalizeName, marksOf, archivesOf, lastSurfaceAssistantSeq } from './task-marks.mjs'
+import { TASK_MARKS_KEY, taskMarksStateSchema, applyTaskMarks, validTaskName, closeTarget, normalizeName, marksOf, archivesOf, pendingOf, lastSurfaceAssistantSeq } from './task-marks.mjs'
 import { DETAILED_CHECKPOINT_INSTRUCTION } from './fold-instruction.mjs'
 import { createFoldEngine } from './fold-engine.mjs'
 import { createArchiveDrain } from './fold-drain.mjs'
-import { todoBridgeLine, recentWorkCallCount, lastAssistantHasTodoWrite, roundsSinceFoldOutcome, shouldSuggestDecomposition, decomposeHintLine, innermostMark, taskAgeRounds, closePressureLine, CLOSE_PRESSURE_MIN_ROUNDS } from './lifecycle-nudges.mjs'
+import { todoBridgeLine, taskStackLine, recentWorkCallCount, lastAssistantHasTodoWrite, roundsSinceFoldOutcome, shouldSuggestDecomposition, decomposeHintLine, innermostMark, taskAgeRounds, closePressureLine, CLOSE_PRESSURE_MIN_ROUNDS } from './lifecycle-nudges.mjs'
 import { lifecycleMessage, planLifecycleInjection, renderLifecycleBody } from './lifecycle-injection.mjs'
 
 export default {
@@ -112,16 +112,22 @@ export default {
       }
     } catch (err) { /* llm service absent: nothing to detail */ }
     // Native-event derivation folds into this projection; the registration's
-    // disposer rides the plugin fiber, so it unloads with us. stateVersion 9
-    // discards persisted rows from earlier reducer generations (v8 predates
-    // pendingArchives; the host treats a version mismatch as a full replay,
-    // not a load failure — old logs replay byte-identically through v9).
+    // disposer rides the plugin fiber, so it unloads with us. stateVersion 10
+    // discards persisted rows from earlier reducer generations (v9 keyed
+    // archive closure on the BEGIN anchor — a witness a deferred fold never
+    // shadows, so terminated sessions could persist 'folding…' rows forever).
+    // The host treats a version mismatch as a full replay, not a load failure,
+    // so the replay converges those rows through the close-result witness.
     ctx.sessionProjections.register({
       key: TASK_MARKS_KEY,
       stateSchema: taskMarksStateSchema,
       init: () => null,
       apply: applyTaskMarks,
-      stateVersion: 9
+      stateVersion: 10,
+      wire: {
+        viewSchema: taskMarksStateSchema,
+        view: (state) => state
+      }
     })
 
     // Per-session closing declaration: the drain stashes the task name it is
@@ -462,6 +468,19 @@ export default {
       // not a conditional nag.
       if (lastAssistantHasTodoWrite(events)) {
         lines.push(todoBridgeLine(marks.map((m) => m.name)))
+      }
+
+      // ── Full stack snapshot, appended to any live hint ───────────────
+      // The user asked the lifecycle event to carry the WHOLE stack, not just
+      // the nagged task. Emitted ONLY alongside a live hint — never as a
+      // standing state line, which would re-inject after every
+      // task_begin/task_end (the reason this context deliberately has no
+      // "open marks: N" line above). It is number-free past the stack SHAPE,
+      // so the text stays byte-stable while the stack is unchanged and the
+      // latch (planLifecycleInjection) re-publishes only when the stack
+      // really moved — which is exactly when the hint's target may have too.
+      if (lines.length > 0) {
+        lines.push(taskStackLine(marks, archivesOf(ctx, session), pendingOf(ctx, session)))
       }
       return lines
     }

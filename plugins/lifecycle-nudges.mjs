@@ -23,6 +23,41 @@ export function todoBridgeLine(openNames) {
 }
 
 /**
+ * The FULL task stack, as one line appended to any live hint (never emitted
+ * on its own — see compact-region.mjs: a standing state line would re-inject
+ * after every lifecycle call, and depth already rides in every
+ * task_begin/task_end result).
+ *
+ * BYTE-STABLE BY CONSTRUCTION: it carries the stack SHAPE only — names in
+ * stack order (outermost first, innermost last), the open count, and the
+ * counts of queued archives and in-flight intents. No round ages and no seqs:
+ * the hint channel compares published text verbatim (planLifecycleInjection),
+ * so a number that drifts per round would re-arm the latch every round.
+ * Names are model-authored text and are quoted with double quotes escaped.
+ */
+export function taskStackLine(marks, archives, pending) {
+  const names = (Array.isArray(marks) ? marks : [])
+    .filter((m) => m !== null && typeof m === 'object' && typeof m.name === 'string' && m.name !== '')
+    .map((m) => '"' + m.name.replace(/"/g, "'") + '"')
+  const folding = (Array.isArray(archives) ? archives : [])
+    .filter((a) => a !== null && typeof a === 'object' && typeof a.name === 'string' && a.name !== '').length
+  let begin = 0
+  let end = 0
+  for (const p of (Array.isArray(pending) ? pending : [])) {
+    if (p === null || typeof p !== 'object') continue
+    if (p.kind === 'begin') begin += 1
+    else if (p.kind === 'end') end += 1
+  }
+  const counts = []
+  if (folding > 0) counts.push(folding + ' folding')
+  if (begin > 0) counts.push(begin + ' begin pending')
+  if (end > 0) counts.push(end + ' end pending')
+  const tail = counts.length > 0 ? counts.join(', ') : 'nothing folding or pending'
+  if (names.length === 0) return 'Task lifecycle: task stack — empty; ' + tail + '.'
+  return 'Task lifecycle: task stack — ' + names.length + ' open, outermost first: ' + names.join(' > ') + '; ' + tail + '.'
+}
+
+/**
  * Decomposition nudge (Nudge 3) window. Fires in the coverage GAP between
  * a task's opening (nothing to decompose yet) and Nudge 2's close
  * pressure (20+ rounds): while an open mark is 8–19 rounds old and real

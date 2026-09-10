@@ -29,10 +29,16 @@
     "agent-memory"
   ],
   "main": "plugins/compact-region.mjs",
+  "exports": {
+    ".": "./plugins/compact-region.mjs",
+    "./client": "./plugins/taskfold-client.mjs",
+    "./plugins/*": "./plugins/*",
+    "./package.json": "./package.json"
+  },
   "scripts": {
     "release": "node scripts/release.mjs",
     "verify:cache": "node scripts/verify-cache.mjs",
-    "test": "node test/task-marks.test.mjs && node test/fold-drain.test.mjs && node test/span-preview.test.mjs && node test/compact-stats.test.mjs && node test/release.test.mjs && node test/fold-engine.test.mjs && node test/fold-instruction.test.mjs && node test/verify-cache.test.mjs && node test/lifecycle-nudges.test.mjs && node test/lifecycle-injection.test.mjs"
+    "test": "node test/task-marks.test.mjs && node test/fold-drain.test.mjs && node test/span-preview.test.mjs && node test/compact-stats.test.mjs && node test/release.test.mjs && node test/fold-engine.test.mjs && node test/fold-instruction.test.mjs && node test/verify-cache.test.mjs && node test/lifecycle-nudges.test.mjs && node test/lifecycle-injection.test.mjs && node test/client-bundle.test.mjs && node test/task-stack-ui.test.mjs"
   },
   "files": [
     "plugins",
@@ -48,6 +54,9 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
     }
   }
 }

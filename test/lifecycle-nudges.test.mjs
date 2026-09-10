@@ -11,7 +11,8 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   innermostMark, latestNestedOutcomeSeq, taskAgeRounds, closePressureLine,
-  decomposeHintLine, shouldSuggestDecomposition, DECOMPOSE_NUDGE_MIN_ROUNDS, DECOMPOSE_NUDGE_MAX_ROUNDS
+  decomposeHintLine, shouldSuggestDecomposition, taskStackLine,
+  DECOMPOSE_NUDGE_MIN_ROUNDS, DECOMPOSE_NUDGE_MAX_ROUNDS
 } from '../plugins/lifecycle-nudges.mjs'
 
 const result = (seq, text) => ({ seq, type: 'tool/result', data: { message: { content: [{ type: 'tool-result', content: [{ type: 'text', text }] }] } } })
@@ -106,4 +107,28 @@ test('shouldSuggestDecomposition: the 8–19 window hands off to close pressure 
   assert.equal(shouldSuggestDecomposition(1, 20, 3), false, '20+ belongs to closePressureLine')
   assert.equal(shouldSuggestDecomposition(1, 8, 2), false, 'needs active work')
   assert.equal(shouldSuggestDecomposition(0, 8, 3), false, 'needs an open mark')
+})
+
+test('taskStackLine: the whole stack, shape only — byte-stable while the stack stands still', () => {
+  const marks = [mark(5, 'polish: one row per folding task'), mark(30, 'dock layout redesign'), mark(44, 'nudge prints full task stack')]
+  assert.equal(
+    taskStackLine(marks, [], []),
+    'Task lifecycle: task stack — 3 open, outermost first: "polish: one row per folding task" > "dock layout redesign" > "nudge prints full task stack"; nothing folding or pending.'
+  )
+  // The latch compares published text VERBATIM, so the same stack must render
+  // identical bytes however many rounds have passed (seqs are not in the line).
+  assert.equal(taskStackLine([mark(105, 'a'), mark(130, 'b')], [], []), taskStackLine([mark(5, 'a'), mark(30, 'b')], [], []))
+  // Order is the STACK order it is handed: outermost first, innermost last.
+  assert.equal(taskStackLine([mark(30, 'inner'), mark(5, 'outer')], [], []).includes('"inner" > "outer"'), true, 'renderer keeps the given order; the host passes marks stack-ordered')
+  // Queued archives and in-flight intents ride in the same line.
+  const withTail = taskStackLine(marks, [{ seq: 50, name: 'part 1', foldResultSeq: 55 }], [{ kind: 'begin' }, { kind: 'end' }])
+  assert.equal(withTail.includes('1 folding, 1 begin pending, 1 end pending'), true)
+  assert.equal(taskStackLine(marks, [{ name: 'x' }], [{ kind: 'begin' }]).includes('1 folding, 1 begin pending.'), true)
+  // An empty stack is REPORTED, never hidden: that is the state the
+  // begin-nudge needs to be read against.
+  assert.equal(taskStackLine([], [], []), 'Task lifecycle: task stack — empty; nothing folding or pending.')
+  // Nameless legacy phantoms and garbage never leak into the line.
+  assert.equal(taskStackLine([mark(5, ''), null, 'x'], [], []), 'Task lifecycle: task stack — empty; nothing folding or pending.')
+  // Names are model-authored text: quotes are neutralized.
+  assert.equal(taskStackLine([mark(5, 'a "b"')], [], []).includes('"a \'b\'"'), true)
 })
