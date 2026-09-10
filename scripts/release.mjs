@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Release flow for dsh-taskfold. Design: docs/design/release-flow.md (workspace).
+// Release flow for dsh-taskfold. Design: docs/design/release-flow.md.
 //
 // State model (quadruple: CHANGELOG top entry, package.json version, latest
 // v* tag, working tree). Legal states:
