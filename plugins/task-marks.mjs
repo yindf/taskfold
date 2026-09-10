@@ -143,7 +143,7 @@ export function closeTarget(marks, name) {
 /**
  * Deferred-archive plan for ONE pendingArchive entry (v9 full-deferred
  * folds; pure and offline-testable). The message gate (product owner's
- * 0.31.3 ruling, superseding G2's text requirement) folds a task as soon
+ * 0.32.0 ruling, superseding G2's text requirement) folds a task as soon
  * as ONE more assistant message follows the closing task_end result — any
  * content counts (report text, a tool-call-only step, reasoning-only).
  * The lifecycle discipline directs the model to deliver its report in
@@ -182,7 +182,7 @@ export function closeTarget(marks, name) {
  * region sweeps it), voiding that rationale; and since anchors are
  * begin-message seqs, the first post-close assistant message can never
  * sit after the earliest successor anchor — the defer branch had become
- * unreachable. Removed in 0.31.3 together with the successorAnchors
+ * unreachable. Removed in 0.32.0 together with the successorAnchors
  * parameter.
  */
 export function deferredArchivePlan(entry, surfaceNodes, events) {

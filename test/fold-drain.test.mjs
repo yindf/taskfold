@@ -1,5 +1,5 @@
 // Offline tests for the deferred-archive drain (createArchiveDrain) under
-// the 0.31.3 message gate: the fold fires once ONE assistant message
+// the 0.32.0 message gate: the fold fires once ONE assistant message
 // follows the close result — any content counts (the old text-only
 // requirement held folds open through a straight task_begin handoff, found
 // live on the MasterGoUI session as the 插件侧源码审查 → up 仓库 handoff).
@@ -84,7 +84,7 @@ function harness(events) {
   }
 }
 
-// The 0.31.3 headline shape: elder closes with its report text riding the
+// The 0.32.0 headline shape: elder closes with its report text riding the
 // SAME message as the task_end call (before the result — too early), and
 // the first assistant message after the close is the successor's bare
 // task_begin call, no text at all. Under the old text gate + successor

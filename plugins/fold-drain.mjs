@@ -1,6 +1,6 @@
 /**
  * Full-deferred archive machinery (v9): the message-gated auto-folder.
- * Since 0.31.3 the gate opens at the FIRST assistant message after the
+ * Since 0.32.0 the gate opens at the FIRST assistant message after the
  * close result — any content counts (the old text-only requirement held
  * folds open through tool-call-only steps), and the successor-anchor
  * defer is gone (unreachable once anchors are begin-message seqs; see
@@ -153,7 +153,7 @@ export function createArchiveDrain({ ctx, engineFor, closingTasks }) {
         if (entries.length === 0) return
         entries.sort((a, b) => b.seq - a.seq)
         const entry = entries[0]
-        // Successor-anchor machinery is gone (0.31.3): the region is
+        // Successor-anchor machinery is gone (0.32.0): the region is
         // [begin result + 1 .. close result] and successors' begin anchors
         // sit after the close by construction, so no region can cross one,
         // and with anchors being begin-message seqs the first post-close

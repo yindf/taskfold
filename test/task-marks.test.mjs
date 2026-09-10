@@ -320,7 +320,7 @@ test('deferredArchivePlan: the message gate (wait / fold / drop)', () => {
   const noMessage = [begun, toolResultEvent(30, '3 matches'), { seq: 32, type: 'user/message', data: { message: { content: [{ type: 'text', text: 'hm' }] } } }]
   assert.equal(deferredArchivePlan(p, nodes, noMessage).action, 'wait', 'non-assistant events after the close do not open the gate')
   // ② ANY assistant message after the close opens the gate — a
-  // reasoning/tool-call-only step included (0.31.3: the old text-only
+  // reasoning/tool-call-only step included (0.32.0: the old text-only
   // requirement held folds open through a straight task_begin handoff).
   // The span opens at the first surface node AFTER the "Task begun" result
   // (a region starting AT the result would split the begin call/result

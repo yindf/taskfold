@@ -8,7 +8,7 @@
  *   task_begin / task_end — named tasks; task_end pops the mark and QUEUES an
  *   archive (v9 full-deferred): the span folds AUTOMATICALLY at the next
  *   agent step boundary after the first assistant message follows the
- *   close (0.31.3 message gate — any content; the report belongs there).
+ *   close (0.32.0 message gate — any content; the report belongs there).
  *
  * Zero module dependencies: every capability arrives through `inject`; the
  * compaction engine is self-hosted (fold-engine.mjs).
