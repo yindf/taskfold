@@ -1,7 +1,8 @@
 // Offline tests for the pure helpers exported from plugins/fold-engine.mjs:
-// prependFoldHeading and opensWithSectionHeading (heading construction), plus
+// prependFoldHeading and opensWithSectionHeading (heading construction),
 // dropDuplicateLeadingSystem (the prefix-envelope / host system-message
-// dedup).
+// dedup), and spanMessagesFor (the span coordinate the artifact, the span
+// index and the footer share with fold_recall).
 // The guard itself runs inside the LLM seam (buildScopedEngine); these
 // tests pin the construction contract that replaced heading COMPLIANCE
 // (byte-exact, then similarity compares both retried whole-span fold
@@ -12,7 +13,7 @@
 //   node test/fold-engine.test.mjs
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { prependFoldHeading, opensWithSectionHeading, dropDuplicateLeadingSystem } from '../plugins/fold-engine.mjs'
+import { prependFoldHeading, opensWithSectionHeading, dropDuplicateLeadingSystem, spanMessagesFor } from '../plugins/fold-engine.mjs'
 
 const NAME = 'Investigate settings Models page "off" bug'
 const text = (s) => ({ type: 'text', text: s })
@@ -125,4 +126,62 @@ test('dropDuplicateLeadingSystem: empty or malformed inputs are total', () => {
   assert.equal(dropDuplicateLeadingSystem([sys('p')], null), null)
   const odd = [null, user('s')]
   assert.equal(dropDuplicateLeadingSystem([sys('p')], odd), odd, 'non-object head is left alone')
+})
+
+// --- spanMessagesFor (the span coordinate) --------------------------------
+// Live divergence this pins: the host prepends the surface-head system prompt
+// into input.messages (dsh >= 0.1.5-alpha.1) while fold_recall rebuilds a fold
+// from data.shadowedSeqs alone. Writing the artifact / span index / footer
+// from input.messages therefore put them all exactly one line off recall
+// (measured: 36/5/14 artifact lines against 35/4/13 shadowed seqs). The fold
+// side must recompute the commit's own positional slice.
+const msg = (s) => ({ role: 'user', content: [text(s)] })
+
+/** Session stand-in: surface positions + per-seq event lookup. */
+function sessionStub(nodes, bySeq) {
+  return {
+    surface: { nodes },
+    eventAt: (seq) => (Object.prototype.hasOwnProperty.call(bySeq, seq) ? bySeq[seq] : null),
+    deriveEventMessage: (ev) => (ev === null || ev === undefined ? null : ev.message)
+  }
+}
+const node = (label) => ({ message: msg(label) })
+
+test('spanMessagesFor: rebuilds the shadowed positional slice, dropping the routed request head', () => {
+  const session = sessionStub([1, 5, 9, 12, 20], { 9: node('span 1'), 12: node('span 2'), 20: node('span 3') })
+  // The routed request carries the host-prepended surface head — exactly the
+  // shape that made artifact/recall disagree.
+  const hostRegion = [sys('You are an AI agent…'), msg('span 1'), msg('span 2'), msg('span 3')]
+  const out = spanMessagesFor(session, { startSeq: 9, endSeq: 20 }, hostRegion)
+  assert.equal(out.length, 3, 'the request head is not span content')
+  assert.deepEqual(out, [msg('span 1'), msg('span 2'), msg('span 3')], 'coordinate is the commit\'s own shadowed slice')
+})
+
+test('spanMessagesFor: slices by SURFACE POSITION, never by seq magnitude', () => {
+  // Post-fold surface: a summary node (183) and a later-committed node (220)
+  // sit at earlier positions than the span while carrying higher seqs, and
+  // 150 — numerically BELOW the start — is genuine span content.
+  const session = sessionStub([183, 177, 179, 187, 150, 216, 220], { 187: node('a'), 150: node('b'), 216: node('c') })
+  const out = spanMessagesFor(session, { startSeq: 187, endSeq: 216 }, [])
+  assert.deepEqual(out, [msg('a'), msg('b'), msg('c')], 'positional slice includes 150 and stops at 216')
+})
+
+test('spanMessagesFor: null projections inside the slice are skipped, like the host', () => {
+  const session = sessionStub([1, 2, 3], { 2: node('only') })
+  assert.deepEqual(spanMessagesFor(session, { startSeq: 1, endSeq: 3 }, []), [msg('only')])
+})
+
+test('spanMessagesFor: falls back whenever the declaration cannot be honored', () => {
+  const fallback = [sys('head'), msg('x')]
+  const session = sessionStub([1, 2, 3], { 2: node('m') })
+  assert.equal(spanMessagesFor(session, null, fallback), fallback, 'no closing declaration (stock AUTO path)')
+  assert.equal(spanMessagesFor(session, {}, fallback), fallback, 'declaration without seqs')
+  assert.equal(spanMessagesFor(session, { startSeq: '1', endSeq: 3 }, fallback), fallback, 'non-integer seqs')
+  assert.equal(spanMessagesFor(session, { startSeq: 99, endSeq: 3 }, fallback), fallback, 'start not on the surface')
+  assert.equal(spanMessagesFor(session, { startSeq: 3, endSeq: 1 }, fallback), fallback, 'end before start')
+  assert.equal(spanMessagesFor({ surface: { nodes: [1, 2] } }, { startSeq: 1, endSeq: 2 }, fallback), fallback, 'no per-node projection API')
+  const empty = { surface: { nodes: [1, 2] }, eventAt: () => null, deriveEventMessage: (ev) => (ev === null ? null : ev.message) }
+  assert.equal(spanMessagesFor(empty, { startSeq: 1, endSeq: 2 }, fallback), fallback, 'nothing derivable → fallback')
+  const throwing = { surface: { nodes: [1] }, eventAt: () => { throw new Error('boom') }, deriveEventMessage: (x) => x }
+  assert.equal(spanMessagesFor(throwing, { startSeq: 1, endSeq: 1 }, fallback), fallback, 'a throwing host API never breaks the fold')
 })

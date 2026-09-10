@@ -175,7 +175,18 @@ export default {
               if (lines !== null) {
                 const plan = planLifecycleInjection(renderLifecycleBody(lines), lifecycleLatch.get(latchKey))
                 if (plan.last === null) lifecycleLatch.delete(latchKey)
-                else lifecycleLatch.set(latchKey, plan.last)
+                else {
+                  lifecycleLatch.set(latchKey, plan.last)
+                  // Bound the latch: a long-lived host serves one session per
+                  // subagent and this map only ever grew. Evicting an old
+                  // session costs at most one re-published hint — the latch is
+                  // an anti-repeat cache, never state.
+                  if (lifecycleLatch.size > 200) {
+                    for (const key of lifecycleLatch.keys()) {
+                      if (key !== latchKey) { lifecycleLatch.delete(key); break }
+                    }
+                  }
+                }
                 if (plan.publish) {
                   return { ...decision, messages: [...decision.messages, lifecycleMessage(plan.last)] }
                 }
@@ -426,11 +437,15 @@ export default {
       // ── Auto-fold failure warning (HOLD) ─────────────────────────────
       // Renders for as long as a queued archive's auto-fold keeps failing
       // (engine busy etc.); retracts when the fold finally commits or the
-      // entry settles. Bucket wording is byte-stable per failure cause.
+      // entry settles. The bucket now carries the classified error's own
+      // message plus the attempt count (fold-drain.mjs), so the line names
+      // the actual cause instead of a bare category; the text changes only
+      // when the attempt or the cause does, and the latch re-publishes
+      // exactly then.
       const fails = drain.autoFoldFailures.get(session.id)
       if (fails !== undefined) {
         for (const [failName, bucket] of fails) {
-          lines.push('Task lifecycle: auto-fold for "' + failName.replace(/"/g, "'") + '" is failing (' + bucket + ') — it retries automatically at every step boundary; no action needed.')
+          lines.push('Task lifecycle: auto-fold for "' + failName.replace(/"/g, "'") + '" is failing (' + bucket + ') — it retries automatically with backoff; no action needed.')
         }
       }
 

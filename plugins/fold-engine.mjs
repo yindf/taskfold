@@ -125,6 +125,52 @@ export function dropDuplicateLeadingSystem(prefixMessages, regionMessages) {
 }
 
 /**
+ * The SPAN coordinate — the messages a fold ARCHIVES, NUMBERS and FOOTERS.
+ *
+ * It is NOT always `input.messages`. The host prepends the surface-head
+ * system prompt into `messages[0]` (dsh >= 0.1.5-alpha.1), so that array is
+ * the ROUTED REQUEST's span, one message longer than the span the commit
+ * shadows. `fold_recall` rebuilds a fold from `data.shadowedSeqs` alone
+ * (`spanNodes.map(deriveEventMessage)`), so writing the artifact from
+ * `input.messages` put every artifact, span index and footer exactly ONE
+ * LINE off recall's coordinates (measured live: 36/5/14 lines against 35/4/13
+ * shadowed seqs, artifact line 1 always `role: system`) — the model copied
+ * `L<N>` numbers that address neither the request it was sent nor the
+ * originals recall returns ("preview line N = artifact line N" held only on
+ * the artifact side). Recomputing the region from the closing declaration
+ * reproduces the commit's own `shadowedSeqs` slice — the host validates
+ * exactly `nodes.slice(startIdx, endIdx + 1)` — so the fold-time artifact,
+ * the fold-time index, and a later `fold_recall({ fold })` are one
+ * coordinate by construction, with no version check and no head detection.
+ * Falls back to the deduped request span for a call with no closing
+ * declaration (the stock AUTO path) or when the seqs are no longer
+ * locatable.
+ */
+export function spanMessagesFor(session, closingInfo, fallback) {
+  try {
+    if (closingInfo === null || typeof closingInfo !== 'object') return fallback
+    if (!Number.isInteger(closingInfo.startSeq) || !Number.isInteger(closingInfo.endSeq)) return fallback
+    if (session === null || typeof session !== 'object') return fallback
+    if (typeof session.deriveEventMessage !== 'function' || typeof session.eventAt !== 'function') return fallback
+    const nodes = session.surface !== null && typeof session.surface === 'object' && Array.isArray(session.surface.nodes)
+      ? session.surface.nodes
+      : null
+    if (nodes === null) return fallback
+    const startIdx = nodes.indexOf(closingInfo.startSeq)
+    const endIdx = nodes.indexOf(closingInfo.endSeq)
+    if (startIdx === -1 || endIdx < startIdx) return fallback
+    const picked = []
+    for (let i = startIdx; i <= endIdx; i += 1) {
+      const m = session.deriveEventMessage(session.eventAt(nodes[i]))
+      if (m !== null && m !== undefined) picked.push(m)
+    }
+    return picked.length > 0 ? picked : fallback
+  } catch (err) {
+    return fallback
+  }
+}
+
+/**
  * Build the scoped engine once. `closingTasks` is the per-session Map the
  * fold drain writes the closing declaration into ({ name, startSeq, endSeq },
  * keyed by sessionId): the name DECLARES the completion (the span's own
@@ -149,7 +195,12 @@ async function buildScopedEngine(ctx, closingTasks) {
 
   class ScopedEngine extends Base {
     async summarize(input, agent, signal) {
-      const header = agent.session.requestHeader()
+      // requestHeader() is a host API, not a guaranteed one: an unguarded
+      // call that throws here turns into a DETERMINISTIC fold failure that
+      // the drain re-attempts at every step boundary (each attempt a full
+      // summarization call). Degrade to the configured / agent targets.
+      let header
+      try { header = agent.session.requestHeader() } catch (err) { header = undefined }
       const latest = header !== null && typeof header === 'object' && header.config !== undefined ? header.config : undefined
       const cfg = this.config
       const configured = typeof cfg.summarizationProvider === 'string' && cfg.summarizationProvider.length > 0
@@ -203,9 +254,13 @@ async function buildScopedEngine(ctx, closingTasks) {
       // so the prefix-cache anchor is preserved.
       // The host may prepend the surface-node-0 system prompt into
       // input.messages (dsh >= 0.1.5-alpha.1); the prefix envelope already
-      // replays it, so keep exactly one copy. input.messages itself stays
-      // untouched: it is the true span the artifact and archive describe.
+      // replays it, so the REQUEST keeps exactly one copy
+      // (dropDuplicateLeadingSystem). The SPAN coordinate is a different
+      // thing — see spanMessagesFor: the artifact, the span index and the
+      // footer describe what the commit shadows, which is what fold_recall
+      // rebuilds, never the routed request's extra head.
       const regionMessages = dropDuplicateLeadingSystem(prefixMessages, input.messages)
+      const spanMessages = spanMessagesFor(agent.session, closingInfo, regionMessages)
       const messages = [...prefixMessages, ...regionMessages, {
         role: 'user',
         content: [{
@@ -213,7 +268,7 @@ async function buildScopedEngine(ctx, closingTasks) {
           text: assembleFoldInstruction({
             opts: { prefix: prefixMessages.length > 0, name: closingName },
             closing,
-            indexLines: renderSpanPreview(input.messages)
+            indexLines: renderSpanPreview(spanMessages)
           })
         }]
       }]
@@ -263,8 +318,10 @@ async function buildScopedEngine(ctx, closingTasks) {
       // and it owns the summary text — so the fold number (existing
       // summaries in THIS session + 1; per-session counters, the
       // event-log lock makes the fold serial) and the artifact
-      // (input.messages IS the exact span) are computed HERE and
-      // appended as a section formatted like the summary's own five:
+      // (spanMessages IS the exact span the commit shadows, and the exact
+      // coordinate fold_recall regenerates from shadowedSeqs) are computed
+      // HERE and appended as a section formatted like the summary's own
+      // five:
       //   ## Fold archive
       //   - fold #N · M messages · originals (JSONL, one message per
       //     line): <path>
@@ -283,14 +340,14 @@ async function buildScopedEngine(ctx, closingTasks) {
         }
         foldNo += 1
         const name = typeof closingName === 'string' && closingName.length > 0 ? closingName : 'fold'
-        const file = writeSpanArtifact(input.messages, name, { sessionDir: sessionArtifactDir(ctx, agent.session), sessionKey: agent.session.id })
+        const file = writeSpanArtifact(spanMessages, name, { sessionDir: sessionArtifactDir(ctx, agent.session), sessionKey: agent.session.id })
         if (file !== undefined) {
           // Markdown-safe formatting: single newlines collapse into one
           // paragraph in every markdown renderer, which mashed the
           // preview into a blob. A fenced code block preserves the
           // per-line layout; a blank line separates the metadata bullet.
-          const section = '\n\n## Fold archive\n\n- fold #' + foldNo + ' · ' + input.messages.length + ' messages · originals (JSONL, one message per line): ' + file + '\n\n```\n'
-            + renderArchiveFooter(input.messages).join('\n') + '\n```'
+          const section = '\n\n## Fold archive\n\n- fold #' + foldNo + ' · ' + spanMessages.length + ' messages · originals (JSONL, one message per line): ' + file + '\n\n```\n'
+            + renderArchiveFooter(spanMessages).join('\n') + '\n```'
           const last = withFooter[withFooter.length - 1]
           withFooter[withFooter.length - 1] = { ...last, text: last.text.replace(/\s+$/, '') + section }
         }

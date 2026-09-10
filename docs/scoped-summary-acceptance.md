@@ -74,8 +74,14 @@ cluster consecutive steps into phase bullets carrying `L<N>-<M>`.
 Recall pointers live INSIDE the committed summary node: its trailing
 `## Fold archive` section carries the fold number, the message count, the
 JSONL artifact path, and a compact archive footer — the head and tail of the
-span preview with TRUE line numbers (preview line N = artifact line N); the
-complete index stays one `fold_recall({ fold })` away. No separate notice
+span preview with TRUE line numbers. All four sides of that coordinate are one
+construction: the instruction's span index, the artifact, the resident footer
+and `fold_recall`'s regeneration all number the SAME span slice (the surface
+nodes the commit shadows, `nodes[startIdx..endIdx]`), so preview line N =
+artifact line N = `fold_recall({ fold, line: N })`. The commit's own
+summarization REQUEST is a different coordinate — the routed request, which the
+host may lengthen with the surface-head system prompt — and is never numbered.
+The complete index stays one `fold_recall({ fold })` away. No separate notice
 message is injected.
 
 ## Acceptance

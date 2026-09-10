@@ -10,12 +10,15 @@
  *
  * Fold NUMBERING is chronological (1-based, order of collectFolds): the
  * number list_folds prints is exactly the number fold_recall({ fold: N })
- * consumes and exactly what task_fold's "Folded #N" counts. The event-log
- * seq is shown as a secondary annotation only — never pass it to fold_recall.
+ * consumes and exactly what a committed fold's own summary node calls itself
+ * ("fold #N" in its Fold archive section). The event-log seq is shown as a
+ * secondary annotation only — never pass it to fold_recall.
  */
-// Shared span-preview/JSONL helpers: regenerated artifacts keep the exact
-// format (JSONL, one message per line) and numbering that task folds'
-// preview lines use. events.mjs carries the shared event-log accessor.
+// Shared span-preview/JSONL helpers: the artifact, the instruction's span
+// index and the resident footer are ONE coordinate (span position = preview
+// line = artifact line = fold_recall({ fold, line: N })), so a regenerated
+// artifact keeps the exact format (JSONL, one message per line) and
+// numbering. events.mjs carries the shared event-log accessor.
 import { renderSpanPreview, writeSpanArtifact, sessionArtifactDir, artifactLineAt, artifactLines } from './span-preview.mjs'
 import { sessionEvents, messageOf, blocksOf } from './events.mjs'
 
@@ -37,11 +40,14 @@ import { sessionEvents, messageOf, blocksOf } from './events.mjs'
 export const PREVIEW_LIMIT = 60
 
 /**
- * Fold-summary preview. The engine's summarizer forces every summary to open
- * with the SAME markdown structure ("## Primary Request and Intent\n\n- …"),
- * so a naive head-slice would spend the whole 60-char budget on boilerplate
- * and every fold preview would look identical. Skip leading section headers
- * and blank space, preview the first meaningful line, and mark truncation.
+ * Fold-summary preview. It is the LISTING FALLBACK for folds that carry no
+ * title — today that means AUTO (pressure) checkpoints, whose stock
+ * instruction forces the fixed "## Primary Request and Intent\n\n- …"
+ * structure, so a naive head-slice would spend the whole 60-char budget on
+ * boilerplate and every such fold would look identical. Skip leading section
+ * headers and blank space, preview the first meaningful line, and mark
+ * truncation. Task folds carry a constructed '# <name>' heading and are
+ * titled from it instead (firstHeadingLine below).
  */
 function firstTextBlock(summary) {
   if (!Array.isArray(summary)) return ''
@@ -59,12 +65,18 @@ function firstTextBlock(summary) {
   return ''
 }
 
-/** Fold record from one `compaction/summary` event; defensive on every field. */
+/**
+ * Fold record from one `compaction/summary` event; defensive on every field —
+ * INCLUDING the event itself. `collectFolds` filters non-objects before it
+ * calls, but this is a public pure helper: `foldOf(null)` used to throw a
+ * TypeError on `event.seq` while the doc comment promised defensiveness.
+ */
 export function foldOf(event) {
-  const data = event !== null && typeof event === 'object' && event.data !== null && typeof event.data === 'object' ? event.data : {}
+  const ev = event !== null && typeof event === 'object' ? event : {}
+  const data = ev.data !== null && typeof ev.data === 'object' ? ev.data : {}
   const tokens = typeof data.shadowedTokenCount === 'number' && Number.isFinite(data.shadowedTokenCount) ? data.shadowedTokenCount : 0
   const record = {
-    seq: Number.isInteger(event.seq) ? event.seq : -1,
+    seq: Number.isInteger(ev.seq) ? ev.seq : -1,
     shadowedTokenCount: tokens,
     preview: firstTextBlock(data.summary)
   }
@@ -140,17 +152,27 @@ function foldNameOfCall(block) {
 }
 
 /**
- * Attach task_fold titles to their folds, single linear pass. Correlation is
- * temporal and exact: an INLINE fold's compaction/summary is appended between
- * its task_fold CALL and its RESULT (the engine commits during execute), so
- * the in-flight task_fold call at summary time is that fold's owner — the
- * name comes straight from its `arguments`, no rendered-text parsing. A
- * failed fold never gets a summary while its call is in flight, so it cannot
- * mislabel; auto-compaction folds between steps see no in-flight call and
- * stay untitled. v9 DEFERRED folds commit at a step boundary, long past the
- * call/result window — the in-flight path misses them, so after the pass
- * every untitled fold falls back to its summary's '# <name>' heading line
- * (titleFallback, forced by the scoped summarizer's closing instruction).
+ * Attach fold titles, single linear pass.
+ *
+ * LIVE PATH (v9, and the only one a current log can reach): every fold is
+ * DEFERRED — it commits at a step boundary, long past any task_end call/result
+ * window — so each fold takes its summary's own '# <name>' heading line
+ * (titleFallback, constructed by the scoped summarizer). The fallback at the
+ * end of this function is what titles real folds today.
+ *
+ * LEGACY PATH (kept for old-log replay): a pre-0.15 INLINE fold's
+ * compaction/summary was appended between its task_fold CALL and its RESULT
+ * (the engine committed during execute), so the in-flight task_fold call at
+ * summary time was that fold's owner — the name came straight from its
+ * `arguments`, no rendered-text parsing, and a failed fold could not mislabel
+ * because its call was retired before any summary appeared. Since 0.15.0
+ * `task_end` replaced `task_fold` and the v9 deferred queue replaced inline
+ * folding, so this branch is unreachable for new logs — it is exercised only
+ * by replaying an old one.
+ *
+ * AUTO (pressure) checkpoints carry no heading at all and stay untitled —
+ * their stock instruction opens with '## Primary Request and Intent' — so
+ * list_folds lists their preview instead.
  * Mutates and returns `folds`.
  */
 export function attachFoldTitles(folds, events) {

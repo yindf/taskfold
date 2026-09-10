@@ -255,3 +255,29 @@ test('fold_recall range overload: one call returns a cited slice of exact origin
   assert.equal(oob.ok, false, 'out-of-span range rejected')
   assert.match(oob.error, /1\.\.4/, 'error names the valid domain')
 })
+
+test('foldOf is total: a nullish or malformed event degrades instead of throwing', () => {
+  // Review-found: the doc claimed "defensive on every field" while
+  // foldOf(null) read `event.seq` on null and threw a TypeError. It is a
+  // public pure helper, so the EVENT itself is defensive too now.
+  for (const bad of [null, undefined, 42, 'x', []]) {
+    const fold = foldOf(bad)
+    assert.equal(fold.seq, -1)
+    assert.equal(fold.shadowedTokenCount, 0)
+    assert.equal(fold.preview, '')
+  }
+  assert.equal(foldOf({ seq: 3, type: 'compaction/summary', data: null }).seq, 3, 'missing data degrades to an empty record')
+})
+
+test('an AUTO (untitled) fold lists by its preview; a task fold by its heading', () => {
+  const events = [
+    { seq: 10, type: 'compaction/summary', data: { shadowedSeqs: [1, 9], shadowedTokenCount: 42, summary: [{ type: 'text', text: '## Primary Request and Intent\n- the auto checkpoint body' }] } },
+    { seq: 11, type: 'compaction/summary', data: { shadowedSeqs: [12, 20], shadowedTokenCount: 77, summary: [{ type: 'text', text: '# a named task\n\n## What happened\n- body' }] } }
+  ]
+  const stats = collectStats(events, 6)
+  assert.equal(stats.folds[0].title, undefined, 'an AUTO checkpoint carries no title')
+  assert.equal(stats.folds[1].title, 'a named task', 'the constructed heading is the title source')
+  const lines = renderFoldList(stats)
+  assert.match(lines[1], /\| - the auto checkpoint body$/, 'untitled folds list their preview')
+  assert.match(lines[2], /\| a named task$/, 'titled folds list the heading')
+})

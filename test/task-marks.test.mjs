@@ -411,6 +411,49 @@ test('deferredArchivePlan: parallel-begin guard — the start skips the partner 
   assert.equal(foreign.startSeq, 12, 'unrelated later results are span content, not floor candidates')
 })
 
+test('deferredArchivePlan: the region start follows SURFACE POSITION, not seq magnitude', () => {
+  // Live regression (fold #3 of a real session on dsh 0.1.2-rc.1). After an
+  // earlier fold commits, its summary node sits AT the position of the region
+  // it shadowed while carrying a seq from the log's END — so the surface is
+  // NOT seq-ordered. The old plan scanned for the SMALLEST seq in
+  // (begunResult, closeResult) and picked that summary node (seq 183), which
+  // sits BEFORE the task's own begin call: the fold then swallowed the
+  // 'Task begun' bookmark, the nested subtask's begin pair and two
+  // already-committed summary nodes (the engine's region is a contiguous
+  // slice from the chosen position). The region must open at the POSITIONAL
+  // successor of the begun result (187) instead.
+  const p = { seq: 177, name: 'gamma', foldResultSeq: 216 }
+  const beginMsg = assistantMsg(177, [{ type: 'tool-call', id: 'b', name: 'task_begin', arguments: '{}' }])
+  const begun = { seq: 179, type: 'tool/result', data: { message: { content: [{ type: 'tool-result', toolCallId: 'b', content: [{ type: 'text', text: 'Task begun: gamma — 1 open.' }] }] } } }
+  const deliverable = assistantMsg(221, [{ type: 'text', text: 'report' }])
+  const events = [beginMsg, begun, deliverable]
+  // Positions: 0    1    2    3    4    5    6    7    8    9
+  // nodes:    183  177  179  187  199  201  216  214  220  221
+  // 183 = fold #1's committed summary node and 220 = fold #2's: both sit at
+  // the position of the region they shadowed while carrying seqs from the
+  // log's end, which is exactly what makes the numeric scan pick them.
+  const nodes = [183, 177, 179, 187, 199, 201, 216, 214, 220, 221]
+  const plan = deferredArchivePlan(p, nodes, events)
+  assert.equal(plan.action, 'fold')
+  assert.equal(plan.startSeq, 187, 'the span opens at the positional successor of the begun result')
+  assert.equal(plan.endSeq, 216, 'the span still closes at the close result')
+  // The three nodes the old scan swallowed now stay on the surface.
+  for (const stay of [183, 177, 179]) {
+    assert.ok(nodes.indexOf(stay) < nodes.indexOf(plan.startSeq), 'node ' + stay + ' stays before the span')
+  }
+  // Same shape with the begun result's successor being the close result:
+  // there is no room for an after-result region, so the plan falls back to
+  // the begin call — never to endPos (which cannot open a region).
+  const tightNodes = [183, 177, 179, 216, 221]
+  const tight = deferredArchivePlan(p, tightNodes, events)
+  assert.equal(tight.action, 'fold')
+  assert.equal(tight.startSeq, 177, 'no positional room after the begun result folds from the call')
+  // A surface whose order contradicts the log (close before begin) drops
+  // rather than folding a bogus region.
+  assert.equal(deferredArchivePlan(p, [216, 177, 179, 221], events).action, 'drop')
+})
+
+
 test('FOLD_SUMMARY_INSTRUCTION: five-section structure with user-inputs and pitfalls sections', () => {
   // v2 contract: the five section headings, in order.
   const sections = ['## What happened', '## User inputs & decisions', '## Changes', '## Pitfalls & gotchas', '## Outcomes']

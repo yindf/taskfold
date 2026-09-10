@@ -71,9 +71,11 @@ Chronological, 1-based, derived from event order: the number `list_folds`
 prints is exactly the number `fold_recall({ fold: N })` validates and exactly
 what the fold archive section counts. The event-log seq is a secondary
 annotation only — never pass it to `fold_recall`. Titles come from the
-in-flight `task_fold` call's arguments (inline folds, temporal correlation)
-or, for deferred folds that commit at a later step boundary, from the
-summary's own forced `# <name>` heading.
+summary's own forced `# <name>` heading (every fold since 0.15.0 is deferred
+and commits outside its call window). The older in-flight `task_fold`
+argument correlation survives only as old-log replay support and can never
+fire on a current log; AUTO (pressure) checkpoints carry no heading, so they
+stay untitled and list by their preview instead.
 
 ## Degradation policy (distinguishable, never silent)
 

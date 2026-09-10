@@ -20,6 +20,7 @@
 import nodePath from 'node:path'
 import nodeFs from 'node:fs'
 import nodeOs from 'node:os'
+import { randomUUID } from 'node:crypto'
 
 const TEXT_CLIP = 80
 const LINE_CLIP = 200
@@ -231,7 +232,7 @@ export function renderArchiveFooter(messages) {
 // fold_recall's line overload: the message at a 1-based span position —
 // the same position a span-preview line and the JSONL artifact line
 // carry, so a preview line number is directly recallable. The message
-// is slimmed to {role, content} exactly as writeSpanArtifact slimms
+// is slimmed to {role, content} exactly as writeSpanArtifact slims
 // each artifact line: recall serves content recovery, and host
 // provenance metadata (source/provider/model/replayState, id) would
 // only bloat the tool result — it stays in the durable event log.
@@ -330,7 +331,11 @@ export function writeSpanArtifact(messages, nameKey, opts) {
     }
     nodeFs.mkdirSync(dir, { recursive: true })
     const slug = slugPart(nameKey, 60)
-    const file = nodePath.join(dir, (slug.length > 0 ? slug : 'artifact') + '-' + Date.now().toString(36) + '.jsonl')
+    // Timestamp for ordering plus a random tail: two writers in the same
+    // millisecond (a committed fold and a fold_recall regeneration of the same
+    // name, or two sessions sharing the tmp fallback root) would otherwise
+    // overwrite each other's artifact.
+    const file = nodePath.join(dir, (slug.length > 0 ? slug : 'artifact') + '-' + Date.now().toString(36) + '-' + randomUUID().slice(0, 8) + '.jsonl')
     const body = messages.map((m) => JSON.stringify(m !== null && typeof m === 'object' ? { role: m.role, content: m.content } : m)).join('\n') + '\n'
     nodeFs.writeFileSync(file, body, 'utf8')
     return file

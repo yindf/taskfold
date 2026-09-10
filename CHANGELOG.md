@@ -3,6 +3,98 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.32.1 — fold regions follow surface POSITION, and one coordinate for index, artifact and recall (unreleased draft 2026-09-10)
+
+Review pass over every plugin module, script and test against a live session
+log; five real defects and a retry-budget hole. No envelope change: the
+summarization REQUEST is byte-identical, so the cache-verification numbers are
+unaffected.
+
+- **Fix (high) — the fold region was resolved by seq MAGNITUDE instead of
+  surface POSITION.** `surface.nodes` is a position list, not a sorted one: a
+  committed fold re-inserts its summary node AT the position of the region it
+  shadowed while that node carries a seq from the log's END. `deferredArchivePlan`
+  picked the start as `min{ s : floor < s < close }` and `foldRegion` picked the
+  shrink target as `max{ s : start <= s < end }`, so on any post-fold surface
+  both could land EARLIER on the surface than the intended node. Live evidence
+  (this session, fold #3 at seq 240): its region opened at 183 — an EARLIER
+  fold's summary node — swallowing the task's own `task_begin` call, its
+  opening reasoning, the `Task begun` result, a nested subtask's begin pair and
+  two already-committed summary nodes, i.e. exactly the "the bookmark stays
+  live" promise made by the README, both tool descriptions and
+  `docs/scoped-summary-acceptance.md`, plus cross-task contamination of the
+  summary. Both sites now resolve the region by INDEX (`posOf`,
+  `nodes[floorPos + 1]`, `endPos -= 1` with `endPos`/`startPos` guards), and the
+  drain's walk is index-driven end to end (the old `end >= startSeq` NUMERIC
+  loop guard could stop a walk that still had room — silently closing a task
+  unfolded through the tooSmall path). Seq comparisons remain only over the
+  event log, which is seq-ordered by construction. Both halves were then
+  re-checked against the session log's own record of that fold: replayed over
+  the recorded region (`shadowedSeqs = [183,177,179,187,…,220,214,216]`) the OLD
+  numeric scan returns startSeq 183 — bit-identical to the region the host
+  actually committed, which is the bug reproduced from data — while the fixed
+  positional scan returns 187, the node immediately after the `Task begun`
+  result. Regression tests drive
+  a real post-fold surface both in the plan and through the drain's shrink walk.
+- **Fix (high) — the span index, the artifact and the resident footer were
+  numbered in the REQUEST's coordinate while `fold_recall` rebuilds the SPAN's.**
+  The host prepends the surface-head system prompt into `input.messages`
+  (dsh >= 0.1.5-alpha.1), and all three were rendered from `input.messages`,
+  so every artifact carried one extra leading message (measured 36/5/14 lines
+  against 35/4/13 shadowed seqs, first line always `role: system`). A model
+  copying a printed `L<N>` therefore pointed at a line that was neither in its
+  own span nor the same line `fold_recall({ fold, line: N })` returns, and
+  `preview line N = artifact line N` — the contract in
+  `docs/scoped-summary-acceptance.md` — was false on the recall side. New pure
+  helper `spanMessagesFor()` recomputes the commit's own slice
+  (`nodes[startIdx..endIdx]` projected per event, exactly what the host
+  validates as `shadowedSeqs` and what `fold_recall` rebuilds) and falls back
+  to the deduped request span when there is no closing declaration. All four
+  sites — instruction index, artifact, footer, message-count bullet — now use
+  it, so fold-time output and recall-time regeneration are the same
+  construction.
+- **Fix — the retry loop was unbounded and undiagnosable.** One fold attempt is
+  a whole summarization call (30–70 s); a deterministic failure (structure
+  receipt, missing host API, provider refusal) was re-attempted at EVERY step
+  boundary forever, with no cap and no backoff. `classifyCategory` collected the
+  error's own message and then threw it away, so the HOLD line named a bare
+  category that appeared nowhere in the log. Now: consecutive failures back off
+  geometrically (1, 2, 4, 8 boundaries), past `MAX_FOLD_ATTEMPTS` (5) the entry
+  still retries — never abandoned silently — but only once per
+  `GIVE_UP_PASSES` (200) boundaries, and the failure line carries
+  `"<bucket>, attempt N: <error message>"`. A `cancelled` fold (an interrupted
+  or superseded turn — the normal shape of an Esc) stays quiet on its first
+  occurrence and is surfaced only if cancellation repeats. Also guarded
+  `agent.session.requestHeader()` in the engine: an unguarded throw there was a
+  deterministic failure in the loop above.
+- **Fix — small, each found by reading against a live log.** `foldOf(null)`
+  threw a TypeError while its doc promised "defensive on every field" (it is an
+  exported pure helper; `collectFolds` merely hid it). Artifact filenames used
+  `Date.now().toString(36)` alone, so two writers in one millisecond
+  overwrote each other; they now carry a random tail. `settledArchives`,
+  `autoFoldFailures`, the new `autoFoldAttempts` and `compact-region`'s
+  `lifecycleLatch` are keyed by session id and never shrank (a long-lived host
+  serves one session per subagent) — all four are now evicted past
+  `MAX_TRACKED_SESSIONS` / 200. `scripts/verify-cache.mjs`: `resolveLog`'s
+  `readdirSync` calls are guarded (a missing sessions root must be the clean
+  "no session log found", exit 2, not an ENOENT stack) and every numeric flag is
+  validated — `--last abc` was `Number('abc')` → NaN → `slice(-NaN)` →
+  `slice(0)`, i.e. it judged EVERY fold while looking scoped.
+- **Docs**: `plugins/compact-stats.mjs` and `docs/design-compact-stats.md`
+  described the pre-0.15 in-flight `task_fold` title correlation as if it were
+  the live path; it is unreachable for any current log (fold titles come from
+  the constructed `# <name>` heading, AUTO checkpoints stay untitled and list by
+  their preview), so both now say so and the tests pin the live path as well as
+  the legacy replay. Also corrected the stale `## Primary Request and Intent`
+  and `task_fold` references in the stats module. `CHANGELOG.md` joins the
+  published `files` list (the README links it).
+- **Tests**: 131 offline assertions pass (was ~120), including new
+  discriminating cases for the positional region start and END-shrink walk, the
+  span coordinate (a numerically-below-start node that IS span content is
+  included; out-of-position summary nodes are not), the retry budget/backoff and
+  failure naming, cancellation quietness, `foldOf` totality, the AUTO-vs-titled
+  listing, and `parseArgs` value validation.
+
 ## 0.32.0 — message gate - fold at the first assistant message after the close, drop the unreachable successor-anchor defer (2026-09-10)
 
 - **Behavior (product owner ruling, superseding v0.14's G2)**: the fold

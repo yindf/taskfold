@@ -206,7 +206,23 @@ export function deferredArchivePlan(entry, surfaceNodes, events) {
     if (e.type === 'assistant/message') { deliverableSeq = e.seq; break }
   }
   if (deliverableSeq === null) return { action: 'wait' }
-  if (nodes.indexOf(entry.seq) === -1) return { action: 'drop' }
+  // ② SURFACE POSITIONS, never seq magnitude. `surface.nodes` is a POSITION
+  // list, not a sorted one: a committed fold re-inserts its summary node AT
+  // the position of the region it shadowed while that node carries a seq
+  // from the log's END. Numeric comparison ("the smallest seq above X") then
+  // picks a node that sits EARLIER on the surface — live regression (fold #3
+  // of a real session): the region swallowed the task's own 'Task begun'
+  // bookmark, the nested subtask's begin pair, and two already-committed
+  // summary nodes, because their seqs (183/220) sorted below the begin
+  // result's positional successor (187). Everything below resolves the
+  // region by index; seq comparisons are correct only over `list` (the event
+  // log IS seq-ordered).
+  const posOf = new Map()
+  for (let i = 0; i < nodes.length; i += 1) {
+    if (typeof nodes[i] === 'number' && !posOf.has(nodes[i])) posOf.set(nodes[i], i)
+  }
+  const beginPos = posOf.get(entry.seq)
+  if (beginPos === undefined) return { action: 'drop' }
   // END: the close result itself (the cut AFTER a completed call/result
   // pair is balanced). START: the first surface node AFTER the "Task begun"
   // result. The engine's validateSurfaceRegion requires a tool-pairing-
@@ -225,13 +241,21 @@ export function deferredArchivePlan(entry, surfaceNodes, events) {
   // result missing or shadowed, or no node between it and the close): fold
   // from the begin call itself — the v0.18 region, whose leading cut is
   // balanced by construction.
-  if (nodes.indexOf(foldResultSeq) === -1) return { action: 'drop' }
-  let beginResultSeq = null
+  const endPos = posOf.get(foldResultSeq)
+  // endPos <= beginPos means the surface order contradicts the log order
+  // (the close cannot precede its own begin): treat it exactly like a
+  // shadowed end — drop rather than fold a bogus region.
+  if (endPos === undefined || endPos <= beginPos) return { action: 'drop' }
+  // The FIRST 'Task begun: ' result in log order between the begin anchor
+  // and the close (seq bounds are right here: `list` is seq-ordered), kept
+  // only when it is still on the surface — its index is the cut floor.
+  let beginResultPos = -1
   for (const e of list) {
     if (e === null || typeof e !== 'object' || !Number.isInteger(e.seq)) continue
     if (e.seq <= entry.seq || e.seq >= foldResultSeq) continue
     if (taskResultEventText(e).indexOf('Task begun: ') !== 0) continue
-    if (nodes.indexOf(e.seq) !== -1) beginResultSeq = e.seq
+    const pos = posOf.get(e.seq)
+    if (pos !== undefined) beginResultPos = pos
     break
   }
   // PARALLEL-BEGIN GUARD (found live on dsh 0.1.2-rc.1): when the
@@ -245,33 +269,31 @@ export function deferredArchivePlan(entry, surfaceNodes, events) {
   // leaves the partner calls/results live on the surface beside the begin
   // pair, and is byte-identical to the old choice for a single-call begin
   // (the begin result IS that message's last result).
-  let startFloorSeq = beginResultSeq
-  if (beginResultSeq !== null) {
+  let startFloorPos = beginResultPos
+  if (beginResultPos !== -1) {
     const callIds = assistantMessageCallIds(list, entry.seq)
     if (callIds !== null) {
       for (const e of list) {
         if (e === null || typeof e !== 'object' || !Number.isInteger(e.seq)) continue
         if (e.seq <= entry.seq || e.seq >= foldResultSeq) continue
         if (e.type !== 'tool/result') continue
+        const pos = posOf.get(e.seq)
+        if (pos === undefined || pos <= startFloorPos) continue
         for (const b of blocksOf(messageOf(e))) {
           if (b !== null && typeof b === 'object' && b.type === 'tool-result' && typeof b.toolCallId === 'string'
-            && callIds.has(b.toolCallId) && e.seq > startFloorSeq) startFloorSeq = e.seq
+            && callIds.has(b.toolCallId)) { startFloorPos = pos; break }
         }
       }
     }
   }
+  // START: the surface node at the position immediately AFTER the floor. The
+  // node AT endPos is the close result, which can never open a region (the
+  // same unbalanced-cut shape as opening at any result), so a floor with no
+  // room left after it falls back to the begin call itself.
   let startSeq = entry.seq
-  if (startFloorSeq !== null) {
-    let next = null
-    for (const s of nodes) {
-      // Strictly between the begun result (or the last parallel partner
-      // result) and the close result: the close result itself can never
-      // open a region (same unbalanced-cut shape), so the upper bound is
-      // exclusive.
-      if (typeof s !== 'number' || s <= startFloorSeq || s >= foldResultSeq) continue
-      if (next === null || s < next) next = s
-    }
-    if (next !== null) startSeq = next
+  if (startFloorPos !== -1 && startFloorPos + 1 < endPos) {
+    const next = nodes[startFloorPos + 1]
+    if (typeof next === 'number') startSeq = next
   }
   return { action: 'fold', startSeq, endSeq: foldResultSeq, name: entry.name }
 }

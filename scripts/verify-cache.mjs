@@ -192,22 +192,41 @@ export function findNewestLog(home = process.env.DSH_HOME) {
   walk(root)
   let best = null
   for (const file of found) {
-    const mtime = fs.statSync(file).mtimeMs
+    // A file that vanished between the walk and the stat must not abort the
+    // whole resolution — skip it and keep the newest survivor.
+    let mtime
+    try { mtime = fs.statSync(file).mtimeMs } catch (err) { continue }
     if (best === null || mtime > best.mtime) best = { file, mtime }
   }
   return best === null ? null : best.file
 }
 
-function parseArgs(argv) {
+/**
+ * One numeric flag value. `Number('abc')` is NaN and `slice(-NaN)` is
+ * `slice(0)`: `--last abc` used to judge EVERY fold while looking scoped, so a
+ * bad value has to be a usage error (exit 2), never a silent widening.
+ */
+export function numberArg(argv, index, flag, opts) {
+  const o = opts === undefined ? {} : opts
+  const min = o.min === undefined ? 0 : o.min
+  const raw = argv[index]
+  const value = Number(raw)
+  if (raw === undefined || raw.trim() === '' || !Number.isFinite(value) || value < min || (o.integer === true && !Number.isInteger(value))) {
+    throw new Error(flag + ' needs a ' + (o.integer === true ? 'whole number' : 'number') + ' >= ' + min + ' (got ' + String(raw) + ')')
+  }
+  return value
+}
+
+export function parseArgs(argv) {
   const opts = { tailBudget: DEFAULT_TAIL_BUDGET, minSpan: DEFAULT_MIN_SPAN }
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]
     if (arg === '--log') opts.log = argv[++i]
     else if (arg === '--session') opts.session = argv[++i]
-    else if (arg === '--last') opts.last = Number(argv[++i])
+    else if (arg === '--last') opts.last = numberArg(argv, ++i, '--last', { integer: true, min: 1 })
     else if (arg === '--since-restart') opts.sinceRestart = true
-    else if (arg === '--tail-budget') opts.tailBudget = Number(argv[++i])
-    else if (arg === '--min-span') opts.minSpan = Number(argv[++i])
+    else if (arg === '--tail-budget') opts.tailBudget = numberArg(argv, ++i, '--tail-budget')
+    else if (arg === '--min-span') opts.minSpan = numberArg(argv, ++i, '--min-span')
     else if (arg === '--require') opts.require = true
     else if (arg === '--json') opts.json = true
     else if (arg === '--help' || arg === '-h') opts.help = true
@@ -221,13 +240,20 @@ function resolveLog(opts) {
   if (opts.session !== undefined) {
     const home = process.env.DSH_HOME ?? ''
     const dir = path.join(home, 'sessions')
+    // Both scans are guarded: a missing or renamed sessions root must degrade
+    // to the caller's clean "no session log found" (exit 2), never to a raw
+    // ENOENT stack trace out of a diagnostic script.
+    let projects
+    try { projects = fs.readdirSync(dir) } catch (err) { return null }
     const hits = []
-    for (const project of fs.readdirSync(dir)) {
+    for (const project of projects) {
       const candidate = path.join(dir, project, opts.session)
       if (fs.existsSync(candidate)) hits.push(candidate)
     }
     for (const dirPath of hits) {
-      for (const name of fs.readdirSync(dirPath)) {
+      let names
+      try { names = fs.readdirSync(dirPath) } catch (err) { continue }
+      for (const name of names) {
         if (/^session(\.v\d+)?\.jsonl\.zstd$/.test(name)) return path.join(dirPath, name)
       }
     }

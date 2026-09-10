@@ -52,7 +52,7 @@ const ENDED = (n, rest) => 'Task ended: ' + n + ' — ' + rest
  * shadowed). append() lets a test advance the log between drain passes
  * the way later turns would.
  */
-function harness(events) {
+function harness(events, opts) {
   let state = null
   for (const e of events) state = applyTaskMarks(state, e)
   const session = {
@@ -62,11 +62,34 @@ function harness(events) {
   }
   const ctx = { sessionProjections: { stateOf: () => state } }
   const folds = []
+  const attempts = []
+  const rejectEnds = new Set(opts !== undefined && Array.isArray(opts.rejectEnds) ? opts.rejectEnds : [])
+  const failWith = opts !== undefined && typeof opts.failWith === 'string' ? opts.failWith : null
   const engine = {
     async compactRegion(startSeq, endSeq) {
+      attempts.push([startSeq, endSeq])
+      if (failWith !== null) {
+        const err = new Error(failWith)
+        if (opts !== undefined && typeof opts.failCode === 'string') err.code = opts.failCode
+        throw err
+      }
+      if (rejectEnds.has(endSeq)) {
+        throw new Error('compactRegion: end seq ' + endSeq + ' is not a balanced boundary (would split a step, or the step is still open)')
+      }
       folds.push([startSeq, endSeq])
-      const shadowed = session.surface.nodes.filter((n) => n >= startSeq && n <= endSeq)
-      session.surface.nodes = session.surface.nodes.filter((n) => n < startSeq || n > endSeq)
+      // The real engine slices the span by surface POSITION
+      // (validateSurfaceRegion: nodes.slice(startIdx, endIdx + 1)) — never by
+      // seq range: a committed fold re-inserts its summary node at the
+      // position of the region it shadowed while the node keeps a seq from
+      // the log's end, so the surface is not seq-ordered.
+      const nodes = session.surface.nodes
+      const startIdx = nodes.indexOf(startSeq)
+      const endIdx = nodes.indexOf(endSeq)
+      if (startIdx === -1 || endIdx === -1 || startIdx > endIdx) {
+        throw new Error('compactRegion: start seq ' + startSeq + ' is after end seq ' + endSeq + ' on the surface')
+      }
+      const shadowed = nodes.slice(startIdx, endIdx + 1)
+      session.surface.nodes = nodes.slice(0, startIdx).concat(nodes.slice(endIdx + 1))
       state = applyTaskMarks(state, { type: 'compaction/summary', data: { shadowedSeqs: shadowed } })
       return { shadowedTokenCount: 1000 }
     }
@@ -74,7 +97,7 @@ function harness(events) {
   const agent = { session }
   const drain = createArchiveDrain({ ctx, engineFor: async () => engine, closingTasks: new Map() })
   return {
-    session, agent, ctx, engine, folds, drain,
+    session, agent, ctx, engine, folds, attempts, drain,
     state: () => state,
     append(e) {
       session.events.push(e)
@@ -165,4 +188,93 @@ test('a waiting entry folds on the next pass once a message lands', async () => 
   h.append(toolResult(31, 'b1', BEGUN('younger', '1 open.')))
   await h.drain.processDeferredArchives(h.agent, undefined)
   assert.deepEqual(h.folds, [[20, 21]], 'the bare task_begin handoff opens the gate on the next pass')
+})
+
+// The balanced-boundary END shrink walks surface POSITIONS. Review-found
+// regression: the old shrink picked "the largest seq below `end`", which on a
+// post-fold surface is meaningless — a nested fold's summary node sits at the
+// position of the region it shadowed while carrying a seq from the log's END.
+// With the corrected positional start (226, the node right after the begun
+// result) the old scan found NO candidate at all (no node satisfies
+// `226 <= s < 216`), so it broke out with a null result and gamma closed
+// unfolded through the silent tooSmall path.
+test('a rejected END boundary shrinks by one surface POSITION, never by seq order', async () => {
+  const h = harness([
+    assistantCall(177, [{ id: 'b1', name: 'task_begin' }]),
+    toolResult(179, 'b1', BEGUN('gamma', '1 open.')),
+    toolResult(226, 'w1', 'work output inside gamma'),
+    assistantCall(214, [{ id: 'e1', name: 'task_end' }]),
+    toolResult(216, 'e1', ENDED('gamma', 'all closed. Archival queued.')),
+    assistantText(221, 'gamma deliverable')
+  ], { rejectEnds: [216, 214] })
+  // A nested subtask folded while gamma stayed open: its committed summary
+  // node (220) replaced its own region — a position INSIDE gamma's span —
+  // while carrying the newest seq in the log.
+  h.session.surface.nodes.splice(3, 0, 220)
+
+  await h.drain.processDeferredArchives(h.agent, undefined)
+
+  assert.deepEqual(h.attempts.slice(0, 3), [[226, 216], [226, 214], [226, 220]], 'the END walks back one surface POSITION at a time')
+  assert.deepEqual(h.folds, [[226, 220]], 'the first acceptable boundary commits')
+  // The residual close pair cannot be cut at either node (its CALL is
+  // unbalanced too), so the walk stops at the minimal region instead of
+  // looping: two more attempts, no more.
+  assert.equal(h.attempts.length, 5, 'the walk stops when the END reaches the START')
+  assert.deepEqual(h.state().pendingArchives.map((p) => p.name), ['gamma'], 'the entry stays queued (its anchor was never shadowed)')
+})
+
+// Retry budget (review-found): ONE fold attempt is a whole summarization call
+// (30–70 s), and the old drain re-attempted a failing entry at EVERY step
+// boundary forever — no cap, no backoff, and the classified error's own
+// message was dropped, so the HOLD line named a cause the log never recorded.
+test('a failing archive backs off geometrically and names its cause', async () => {
+  const h = harness([
+    assistantCall(10, [{ id: 'a1', name: 'task_begin' }]),
+    toolResult(11, 'a1', BEGUN('stuck', '1 open.')),
+    assistantCall(20, [{ id: 'a2', name: 'task_end' }]),
+    toolResult(21, 'a2', ENDED('stuck', 'all closed. Archival queued.')),
+    assistantText(25, 'deliverable')
+  ], { failWith: 'summary structure failure: expected the summary to open with a "## " section heading, got: 摘要' })
+
+  // Pass 1: one attempt, then a HOLD failure that carries the cause and the
+  // attempt count.
+  await h.drain.processDeferredArchives(h.agent, undefined)
+  assert.equal(h.attempts.length, 1)
+  const fails = h.drain.autoFoldFailures.get(h.session.id)
+  assert.equal(fails.get('stuck'), 'fold failed, attempt 1: summary structure failure: expected the summary to open with a "## " section heading, got: 摘要')
+
+  // Pass 2 is the first boundary of the attempt-1 backoff (one pass): retry.
+  await h.drain.processDeferredArchives(h.agent, undefined)
+  assert.equal(h.attempts.length, 2)
+  assert.ok(fails.get('stuck').includes('attempt 2'))
+
+  // Pass 3 sits inside the attempt-2 window (two passes) and bills nothing.
+  await h.drain.processDeferredArchives(h.agent, undefined)
+  assert.equal(h.attempts.length, 2, 'a backoff boundary costs no summarization call')
+
+  // Pass 4 is the first boundary after it: attempt 3, backing off four.
+  await h.drain.processDeferredArchives(h.agent, undefined)
+  assert.equal(h.attempts.length, 3)
+  const state = h.drain.autoFoldAttempts.get(h.session.id).get(10)
+  assert.equal(state.attempts, 3)
+  assert.equal(state.nextPass, 8, 'attempt 3 backs off four boundaries')
+  // Never abandoned silently: the entry stays queued and keeps its retry state.
+  assert.ok(!h.drain.isSettledArchive(h.session, 10))
+})
+
+test('a cancelled fold is quiet on its first occurrence and visible if it repeats', async () => {
+  const h = harness([
+    assistantCall(10, [{ id: 'a1', name: 'task_begin' }]),
+    toolResult(11, 'a1', BEGUN('interrupted', '1 open.')),
+    assistantCall(20, [{ id: 'a2', name: 'task_end' }]),
+    toolResult(21, 'a2', ENDED('interrupted', 'all closed. Archival queued.')),
+    assistantText(25, 'deliverable')
+  ], { failWith: 'the turn was cancelled', failCode: 'cancelled' })
+
+  // The normal shape of an interrupted turn (Esc, superseded turn): the retry
+  // is unconditional anyway, so the first one publishes no HOLD line.
+  await h.drain.processDeferredArchives(h.agent, undefined)
+  assert.equal(h.drain.autoFoldFailures.get(h.session.id), undefined, 'no noise from a single cancellation')
+  await h.drain.processDeferredArchives(h.agent, undefined)
+  assert.match(h.drain.autoFoldFailures.get(h.session.id).get('interrupted'), /^fold cancelled, attempt 2: /)
 })

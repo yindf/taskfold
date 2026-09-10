@@ -11,7 +11,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { zstdCompressSync } from 'node:zlib'
-import { decodeSessionLog, parseEvents, foldRows, classifyFold, evaluate, lastResumeSeq } from '../scripts/verify-cache.mjs'
+import { decodeSessionLog, parseEvents, foldRows, classifyFold, evaluate, lastResumeSeq, parseArgs } from '../scripts/verify-cache.mjs'
 
 const usage = (inputTokens, cacheReadTokens) => ({ inputTokens, cacheReadTokens })
 const fold = (seq, uncached, span, cacheRead) => ({
@@ -150,4 +150,20 @@ test('evaluate: --since-restart judges only folds after the restart', () => {
   const after = evaluate(events, { sinceRestart: true })
   assert.equal(after.rows.length, 1)
   assert.equal(after.verdict, 'pass')
+})
+
+test('parseArgs: a non-numeric flag value is a usage error, never a silent widening', () => {
+  // `Number('abc')` is NaN and `slice(-NaN)` is `slice(0)`, so `--last abc`
+  // used to judge EVERY fold while looking scoped — a regression check that
+  // silently stops checking.
+  assert.equal(parseArgs(['--last', '3']).last, 3)
+  assert.throws(() => parseArgs(['--last', 'abc']), /--last needs a whole number >= 1 \(got abc\)/)
+  assert.throws(() => parseArgs(['--last', '0']), /--last needs a whole number >= 1/)
+  assert.throws(() => parseArgs(['--last', '1.5']), /--last needs a whole number >= 1/)
+  assert.throws(() => parseArgs(['--last']), /--last needs a whole number >= 1 \(got undefined\)/)
+  assert.throws(() => parseArgs(['--tail-budget', 'x']), /--tail-budget needs a number >= 0/)
+  assert.throws(() => parseArgs(['--min-span', '-1']), /--min-span needs a number >= 0/)
+  assert.equal(parseArgs(['--min-span', '2500', '--json']).minSpan, 2500)
+  assert.equal(parseArgs([]).tailBudget, 3500, 'defaults survive')
+  assert.throws(() => parseArgs(['--nope']), /unknown argument: --nope/)
 })
