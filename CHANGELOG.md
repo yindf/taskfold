@@ -3,6 +3,38 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.33.0 — escalate close-pressure nudges in 20+/50+/100+ buckets (2026-09-10)
+
+Live evidence (a real session): a mark stayed innermost for 200+ rounds;
+the byte-stable "20+" line fired ONCE at round 20 and the publish latch
+then suppressed every later render for 74 minutes — the nudge system went
+silent exactly while the situation kept worsening, and the task was finally
+closed by the user, not by a hint. The design says "a hint is an EVENT, not
+a state display", but the only event detector is the text transition — and
+past round 21 the text never changed again. Exact-age wording would fix the
+philosophy and spam one injection per round; buckets fix it with one event
+per meaningful milestone.
+
+- **Close pressure escalates in buckets.** `closePressureLine(name, age)`
+  renders "20+", "50+" or "100+ rounds" — byte-stable WITHIN each bucket
+  (one event per milestone, never per-round spam) and text-distinct ACROSS
+  them, so the existing publish latch naturally re-fires at every bucket
+  crossing. An omitted/garbage `age` falls back to the lowest bucket, keeping
+  old callers byte-compatible.
+- **`taskAgeRounds` cap 21 → 101.** The cap bounds the backward scan AND
+  stabilized the old wording; 101 keeps both properties while feeding the
+  "100+" bucket the only precision it needs.
+- **`CLOSE_PRESSURE_MIN_ROUNDS` (20) exported** and used by the renderer's
+  threshold check, next to the exported decompose-window constants.
+- Tests: bucket boundaries (49 vs 50, 99 vs 100) are text transitions,
+  in-bucket byte-stability, undefined-age fallback, no drifting numbers,
+  and the 8–19 decompose window still hands off cleanly at 20.
+
+Riding along since 0.32.1:
+
+- **Docs**
+  - correct the 0.32.1 fold-region attribution and document the span sweep
+
 ## 0.32.1 — fold regions follow surface POSITION, and one coordinate for index, artifact and recall (2026-09-10)
 
 Review pass over every plugin module, script and test against a live session
