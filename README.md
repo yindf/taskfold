@@ -97,6 +97,12 @@ Four agent tools (plus the reminders above):
 | `list_folds` | List all folds (number, size, title). |
 | `fold_recall({ fold })` | Bring back any fold's original content on demand. |
 
+In the Web GUI, the current open-task stack also shows as a live dock above the composer (like the todo panel): outermost first, the innermost task highlighted, with the closing/pending counts — read straight from the session's `taskMarks` projection, no extra events.
+
+<img src="https://raw.githubusercontent.com/yindf/taskfold/master/assets/screenshot-tasks.png" width="100%" alt="the live task stack, docked above the composer: nested open tasks with the innermost highlighted, and one folding row per task that has already ended">
+
+<img src="https://raw.githubusercontent.com/yindf/taskfold/master/assets/screenshot-tasks-collapsed.png" width="100%" alt="the same stack collapsed to one line, next to the task-stack line the lifecycle hint hands to the model">
+
 ## Other ways to install
 
 Every release attaches a prebuilt `dsh-taskfold-<version>.tgz`. Plugin storefronts offer that asset — or the npm package — instead of the build-from-source command, which also skips dsh's `allowBuilds` approval step — see the [latest release](https://github.com/yindf/taskfold/releases/latest).
@@ -110,7 +116,7 @@ Every release attaches a prebuilt `dsh-taskfold-<version>.tgz`. Plugin storefron
 
 ## For maintainers
 
-- Layout: `plugins/` (the two mounted rows `compact-region.mjs` and `compact-stats.mjs`, plus the shared plain modules they import — `events.mjs`, `task-marks.mjs`, `fold-instruction.mjs`, `fold-engine.mjs`, `fold-drain.mjs`, `lifecycle-nudges.mjs`, `lifecycle-injection.mjs`, `span-preview.mjs`), `scripts/release.mjs` and `scripts/verify-cache.mjs`, `test/` (`npm test`), `assets/` (README banner and the social-preview image to upload in repo settings), `CHANGELOG.md`.
+- Layout: `plugins/` (the two mounted rows `compact-region.mjs` and `compact-stats.mjs`, plus the shared plain modules they import — `events.mjs`, `task-marks.mjs`, `fold-instruction.mjs`, `fold-engine.mjs`, `fold-drain.mjs`, `lifecycle-nudges.mjs`, `lifecycle-injection.mjs`, `span-preview.mjs`, plus the browser half: `task-stack-ui.mjs` — the dock's source of truth, generated into `taskfold-client.mjs` by `scripts/build-client.mjs`), `scripts/release.mjs`, `scripts/verify-cache.mjs` and `scripts/build-client.mjs`, `test/` (`npm test`), `assets/` (README banner, the social-preview image to upload in repo settings, and the store screenshots listed in `screenshots.json`), `CHANGELOG.md`.
 - Releasing: `node scripts/release.mjs draft` → review the CHANGELOG entry → `node scripts/release.mjs release` (CHANGELOG is the single source of truth for versions). If this release changes which dsh versions are supported, update the "Supported dsh versions" section in **both** READMEs before releasing — the release script reminds you. Keep that section to **one line per channel**: the newest verified `alpha`, then the newest verified `rc`; delete historical alpha/rc entries instead of listing them.
 - **Fold cache verification is part of the flow.** After every dsh upgrade — and before any release that touches the fold envelope — run `node scripts/verify-cache.mjs --since-restart` against a live session log, and record the numbers in the CHANGELOG entry. It exits non-zero when a fold's summarizer call re-pays its span — the test is `uncached − span > --tail-budget`, i.e. a positive tail, which is the signature of the prefix envelope no longer matching the host's summarization input. The offline suite pins the structural precondition (one system message, strict prefix); only a live log can show the actual cache read.
 - Design decisions and history live in `CHANGELOG.md` and the design notes in the source repo.
