@@ -3,6 +3,44 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.31.2 — exclude settled ghost rows from successor anchors so the drain cannot starve (2026-09-10)
+
+- **Five closed tasks on one real session never folded; the drain now
+  unblocks them all.** Root cause, confirmed by replaying the session log
+  through the plugin's own pure functions: a committed fold never shadows
+  its OWN begin anchor (the archive opens after the "Task begun" result,
+  which stays live as the bookmark), so the queue row survives its own
+  commit until a later, wider fold shadows the anchor. The drain filtered
+  those settled rows when PICKING the next entry but not when computing
+  successor anchors — the ghost still counted as a pending successor, and
+  every older entry whose deliverable sat after it deferred forever. Worse,
+  the defer was the whole pass's exit: one blocked newest entry starved
+  every older foldable entry behind it, including the outer tasks whose
+  wide folds were the only things that could have retired the ghosts.
+  Nothing else ever did (the session never triggered AUTO compaction), so
+  the queue deadlocked. The fix is symmetric filtering plus skip-not-exit:
+  successor anchors exclude settled rows, and a 'wait'/'defer' verdict
+  skips that entry for the rest of the pass instead of aborting the drain.
+- **Verified three ways.** New `test/fold-drain.test.mjs` (wired into
+  `npm test`) drives the real `createArchiveDrain` against a mock harness
+  and reproduces the exact live shape — an older sibling closing before a
+  younger one begins, one shared deliverable — plus the starvation and
+  retry-on-next-boundary cases; all three tests fail on the pre-fix drain.
+  Full suite: 120 tests green. And the original session's log, replayed
+  with the fixed decisions and clean commits simulated, folds 13 tasks
+  where the live run managed 6: the stuck five all fold at their turn
+  boundaries, turn 1's whole queue drains in a single boundary, and zero
+  rows remain waiting.
+- **Restart behavior is unchanged and still self-healing.** `settledArchives`
+  stays process-local on purpose: after a restart the ghost rows re-plan,
+  hit the shadowed-close 'drop' path, and settle again within one drain
+  round — no persisted state needed (now asserted by test too).
+- **Riding along since 0.31.1** (docs/chores already on master): npm
+  storefront material — hero banner, badges, quickstart, compaction
+  comparison, screenshots, and a star/discussion call-to-action in both
+  READMEs — plus the publish metadata and the dsh 0.1.5-alpha.2
+  verification note.
+
 ## 0.31.1 — README states what folding saves against not folding at all (2026-09-09)
 
 - **The savings section is a counterfactual now, not a log of one fix.** Both
