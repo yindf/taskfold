@@ -3,6 +3,40 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.32.0 — message gate - fold at the first assistant message after the close, drop the unreachable successor-anchor defer (2026-09-10)
+
+- **Behavior (product owner ruling, superseding v0.14's G2)**: the fold
+  gate now opens at the FIRST assistant message that follows the close
+  result — any content counts (report text, a tool-call-only step,
+  reasoning-only). The old text-only requirement held folds open through
+  the common handoff shape — end task A, immediately `task_begin` task B,
+  deliver A's report later — where A's gate stayed shut waiting for text
+  that only landed deep inside B's span (found live on the MasterGoUI
+  session: the 插件侧源码审查 → up 仓库与测试脚本审查 handoff folded two
+  steps late, only after B's own fold). The lifecycle discipline still
+  directs the model to deliver the report in that message; the gate only
+  verifies the message exists. Tool copy and the system-prompt section
+  updated to the new mechanics ("make the next message the report — the
+  fold fires as soon as it lands").
+- **Removed**: the successor-anchor defer (gate ②) and the drain's
+  successor-anchor computation, together with the `successorAnchors`
+  parameter of `deferredArchivePlan`. History: under v0.14's design the
+  region ran to the last surface node trimmed AT the first still-open/
+  pending successor anchor, so the defer protected the deliverable from
+  being stranded outside the span. v0.16.0 pinned the region to
+  begin..close exactly (deliverable stays on the surface; a later task's
+  region sweeps it), voiding that rationale — and since anchors are
+  begin-message seqs, the first post-close assistant message can never
+  sit after the earliest successor anchor, making the defer branch
+  unreachable. This also subsumes the 0.31.2 ghost-row filter's only
+  consumer; the settled-row skip when picking entries remains.
+- **Tests**: gate cases rewritten for the message semantics (wait only
+  when NO assistant message follows the close; tool-call-only and
+  whitespace-only messages open it); drain tests reshaped — the headline
+  case is exactly the handoff shape above (elder folds in the same pass
+  as the successor, no defer), plus wait-skip and next-pass retry.
+  120/120 offline tests pass.
+
 ## 0.31.2 — exclude settled ghost rows from successor anchors so the drain cannot starve (2026-09-10)
 
 - **Five closed tasks on one real session never folded; the drain now
