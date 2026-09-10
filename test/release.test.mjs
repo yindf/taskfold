@@ -8,6 +8,11 @@ import {
   renderEntry,
   finalizeDraftHeader,
   classifyState,
+  changelogSection,
+  packTarballName,
+  releaseNotes,
+  ghReleaseArgs,
+  manualAssetHint,
 } from '../scripts/release.mjs'
 
 // ── cmpSemver ─────────────────────────────────────────────────────────────
@@ -117,4 +122,66 @@ test('classifyState: INVALID — package behind CHANGELOG top, tag mismatch, dir
 test('classifyState: first-release (no tag) uses package.json as baseline', () => {
   assert.equal(classifyState({ top: { version: '0.2.3', kind: 'released' }, packageVersion: '0.2.3', tagVersion: undefined, dirty: [] }).state, 'CLEAN')
   assert.equal(classifyState({ top: { version: '1.0.0', kind: 'draft' }, packageVersion: '0.2.3', tagVersion: undefined, dirty: ['CHANGELOG.md'] }).state, 'DRAFT')
+})
+
+// ── GitHub Release assets ─────────────────────────────────────────────────
+
+const CHANGELOG_FIXTURE = [
+  '# Changelog',
+  '',
+  '## 0.3.0 — third release (2025-06-02)',
+  '',
+  '- **Features**',
+  '  - add x',
+  '',
+  '## 0.2.3 — second release (2025-06-01)',
+  '',
+  '- **Fixes**',
+  '  - fix y',
+  '',
+].join('\n')
+
+test('changelogSection: extracts one entry body, stops at the next heading, null when absent', () => {
+  const third = changelogSection(CHANGELOG_FIXTURE, '0.3.0')
+  assert.equal(third.title, 'third release')
+  assert.equal(third.body, '- **Features**\n  - add x')
+  assert.equal(changelogSection(CHANGELOG_FIXTURE, '0.2.3').body, '- **Fixes**\n  - fix y')
+  assert.equal(changelogSection(CHANGELOG_FIXTURE, '9.9.9'), null)
+  assert.equal(changelogSection('no entries here', '0.3.0'), null)
+  assert.equal(changelogSection(undefined, '0.3.0'), null)
+})
+
+test('packTarballName: plain and scoped names match npm pack output', () => {
+  assert.equal(packTarballName('dsh-taskfold', '0.34.0'), 'dsh-taskfold-0.34.0.tgz')
+  assert.equal(packTarballName('@scope/name', '1.2.3'), 'scope-name-1.2.3.tgz')
+})
+
+test('releaseNotes: keeps the CHANGELOG body and names the attached tarball', () => {
+  const md = releaseNotes({ title: 't', body: '- **Features**\n  - add x' }, 'dsh-taskfold-0.34.0.tgz')
+  assert.ok(md.includes('- **Features**\n  - add x'))
+  assert.ok(md.includes('`dsh-taskfold-0.34.0.tgz`'))
+  assert.ok(!md.includes('undefined'))
+  const bare = releaseNotes({ title: 't', body: '' }, 'x-1.0.0.tgz')
+  assert.ok(bare.startsWith('\n\n---'))
+  assert.ok(!bare.includes('undefined'))
+  assert.ok(!releaseNotes(null, 'x-1.0.0.tgz').includes('undefined'))
+})
+
+test('ghReleaseArgs: create on first publish, --clobber upload into an existing release', () => {
+  assert.deepEqual(
+    ghReleaseArgs({ version: '0.34.0', tarball: '/tmp/x.tgz', notesFile: '/tmp/n.md', exists: false }),
+    ['release', 'create', 'v0.34.0', '/tmp/x.tgz', '--title', 'v0.34.0', '--notes-file', '/tmp/n.md'],
+  )
+  assert.deepEqual(
+    ghReleaseArgs({ version: '0.34.0', tarball: '/tmp/x.tgz', notesFile: '/tmp/n.md', exists: true }),
+    ['release', 'upload', 'v0.34.0', '/tmp/x.tgz', '--clobber'],
+  )
+})
+
+test('manualAssetHint: names the tag, the asset and both recovery routes', () => {
+  const hint = manualAssetHint('0.34.0', 'dsh-taskfold-0.34.0.tgz')
+  assert.ok(hint.includes('v0.34.0'))
+  assert.ok(hint.includes('dsh-taskfold-0.34.0.tgz'))
+  assert.ok(hint.includes('gh release create'))
+  assert.ok(hint.includes('release.mjs assets'))
 })

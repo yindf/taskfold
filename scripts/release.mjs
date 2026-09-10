@@ -12,11 +12,15 @@
 // exactly the historical 0.1.0 accident); it prints the quadruple plus a
 // targeted manual fix hint and exits 1.
 //
+// A successful `release` also publishes the GitHub Release for the new tag with
+// a prebuilt `dsh-taskfold-<version>.tgz` attached; `assets` re-runs just that
+// step for an already-released version (and repairs releases shipped without it).
+//
 // Version numbers are strict `X.Y.Z` numerics; prerelease/build metadata are
 // rejected. The only source of truth for the NEXT version is the CHANGELOG
 // top entry; package.json is synced by this script, never by hand.
 import { spawnSync } from 'node:child_process'
-import { readFileSync, writeFileSync, openSync, closeSync, unlinkSync } from 'node:fs'
+import { readFileSync, writeFileSync, openSync, closeSync, unlinkSync, mkdtempSync, existsSync, rmSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -141,17 +145,18 @@ export function classifyState({ top, packageVersion, tagVersion, dirty, remoteHa
 // ── git / fs plumbing ─────────────────────────────────────────────────────
 
 // Some sandboxes forbid captured pipes (EPERM on named pipes). When that
-// happens, rerun the command with stdout backed by a temp file — git still
+// happens, rerun the command with stdout backed by a temp file — the tool still
 // runs, only the capture channel changes. stderr is discarded in that mode;
-// the non-zero status is the error signal.
-function git(args, opts) {
-  let r = spawnSync('git', args, { cwd: repoRoot, encoding: 'utf8' })
+// the non-zero status is the error signal. Shared by git, npm and gh so every
+// external tool degrades the same way.
+function spawnCaptured(file, args, opts) {
+  const r = spawnSync(file, args, { cwd: repoRoot, encoding: 'utf8' })
   if (r.error && (r.error.code === 'EPERM' || r.error.code === 'ENOENT')) {
     const tmp = path.join(os.tmpdir(), 'dsh-release-' + Date.now() + '-' + Math.random().toString(36).slice(2) + '.out')
     let fd
     try {
       fd = openSync(tmp, 'w')
-      const s = spawnSync('git', args, { cwd: repoRoot, stdio: ['ignore', fd, 'ignore'] })
+      const s = spawnSync(file, args, { cwd: repoRoot, stdio: ['ignore', fd, 'ignore'] })
       closeSync(fd); fd = undefined
       const stdout = readFileSync(tmp, 'utf8')
       return { status: s.status, stdout, stderr: '' }
@@ -160,6 +165,11 @@ function git(args, opts) {
       try { unlinkSync(tmp) } catch (err) {}
     }
   }
+  return r
+}
+
+function git(args, opts) {
+  const r = spawnCaptured('git', args, opts)
   if (r.status !== 0 && !(opts && opts.okNonZero)) {
     throw new Error('git ' + args.join(' ') + ' failed (' + r.status + '): ' + (r.stderr || r.error || '').toString().trim())
   }
@@ -229,6 +239,113 @@ function today() {
   const d = new Date()
   const p = (n) => String(n).padStart(2, '0')
   return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate())
+}
+
+// ── GitHub Release + prebuilt tarball asset ───────────────────────────────
+//
+// The READMEs promise a prebuilt `dsh-taskfold-<version>.tgz` on every release;
+// only v0.31.1 ever had one, because nothing in this flow published it. These
+// helpers build that asset and drive `gh`. Everything here runs AFTER the
+// commit, tag and push are durable, so a missing `gh` (or a failing upload)
+// downgrades to a printed manual recipe — it must never look like a failed
+// release. Re-running is safe: an existing release gets its asset re-uploaded.
+
+/** Extract one entry from a CHANGELOG text: { version, title, body } or null. */
+export function changelogSection(text, version) {
+  const lines = String(text === undefined || text === null ? '' : text).split(/\r?\n/)
+  let at = -1
+  for (let i = 0; i < lines.length; i++) {
+    const h = parseEntryHeader(lines[i])
+    if (h !== null && h.version === version) { at = i; break }
+  }
+  if (at === -1) return null
+  const header = parseEntryHeader(lines[at])
+  let end = at + 1
+  while (end < lines.length && !lines[end].startsWith('## ')) end++
+  return { version: header.version, title: header.title, body: lines.slice(at + 1, end).join('\n').trim() }
+}
+
+/** npm tarball file name for a package name + version (scoped names fold the slash). */
+export function packTarballName(name, version) {
+  return String(name).replace(/^@/, '').replace(/\//g, '-') + '-' + version + '.tgz'
+}
+
+/** Release body: the CHANGELOG entry plus what the attached asset is. */
+export function releaseNotes(section, tarballName) {
+  const body = (section && section.body) || ''
+  return body + '\n\n---\n\nPrebuilt plugin bundle attached: `' + tarballName + '` (`npm pack` of this tag).\n'
+}
+
+/** `gh` argv: the first publish creates the release, a re-run uploads into it. */
+export function ghReleaseArgs({ version, tarball, notesFile, exists }) {
+  const tag = 'v' + version
+  if (exists) return ['release', 'upload', tag, tarball, '--clobber']
+  return ['release', 'create', tag, tarball, '--title', tag, '--notes-file', notesFile]
+}
+
+/** What to print when the asset could not be published automatically. */
+export function manualAssetHint(version, tarballName) {
+  const tag = 'v' + version
+  return [
+    'GitHub Release ' + tag + ' was NOT published automatically (the commit and tag are already pushed).',
+    'Publish it by hand, or re-run once the tooling is available: node scripts/release.mjs assets',
+    '  npm pack',
+    '  gh release create ' + tag + ' ' + tarballName + ' --title ' + tag + ' --notes-file <CHANGELOG section>',
+  ].join('\n')
+}
+
+function ghAvailable() {
+  try {
+    return spawnCaptured('gh', ['--version'], { okNonZero: true }).status === 0
+  } catch (err) {
+    return false
+  }
+}
+
+function warnAssets(version, tarballName, detail) {
+  console.log('warning: ' + detail)
+  console.log(manualAssetHint(version, tarballName))
+}
+
+/**
+ * Publish the GitHub Release for `version` and attach its prebuilt tarball.
+ * Idempotent (an existing release gets the asset re-uploaded with --clobber)
+ * and non-throwing: it reports failure by returning false so the caller can
+ * decide whether the outcome is fatal.
+ */
+export function publishReleaseAssets(version) {
+  const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'))
+  const tarballName = packTarballName(pkg.name, version)
+  const section = changelogSection(readFileSync(changelogPath, 'utf8'), version)
+  if (section === null) {
+    warnAssets(version, tarballName, 'CHANGELOG has no entry for ' + version + ' — cannot build release notes.')
+    return false
+  }
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'dsh-taskfold-assets-'))
+  try {
+    const packed = spawnCaptured('npm', ['pack', '--pack-destination', dir], { okNonZero: true })
+    const tarball = path.join(dir, tarballName)
+    if (packed.status !== 0 || !existsSync(tarball)) {
+      warnAssets(version, tarballName, '`npm pack` did not produce ' + tarballName + '.')
+      return false
+    }
+    if (!ghAvailable()) {
+      warnAssets(version, tarballName, 'the GitHub CLI (`gh`) is missing or not logged in.')
+      return false
+    }
+    const notesFile = path.join(dir, 'release-notes.md')
+    writeFileSync(notesFile, releaseNotes(section, tarballName))
+    const exists = spawnCaptured('gh', ['release', 'view', 'v' + version], { okNonZero: true }).status === 0
+    const r = spawnCaptured('gh', ghReleaseArgs({ version, tarball, notesFile, exists }), { okNonZero: true })
+    if (r.status !== 0) {
+      warnAssets(version, tarballName, '`gh release ' + (exists ? 'upload' : 'create') + '` failed: ' + String(r.stderr || '').trim())
+      return false
+    }
+    console.log('GitHub Release v' + version + ' published with ' + tarballName + (exists ? ' (asset re-uploaded)' : '') + '.')
+    return true
+  } finally {
+    try { rmSync(dir, { recursive: true, force: true }) } catch (err) {}
+  }
 }
 
 // ── commands ──────────────────────────────────────────────────────────────
@@ -332,6 +449,7 @@ function cmdRelease() {
     console.log('PENDING release v' + st.version + ' detected — resuming pushes only.')
     pushRelease(st.version)
     console.log('Release v' + st.version + ' fully pushed.')
+    publishReleaseAssets(st.version)
     return
   }
   if (st.state !== 'DRAFT') {
@@ -363,6 +481,7 @@ function cmdRelease() {
   console.log('Committed and tagged v' + version + '.')
   pushRelease(version)
   console.log('Release v' + version + ' fully pushed.')
+  publishReleaseAssets(version)
 }
 
 // The remote branch release pushes must reconcile against: HEAD's upstream
@@ -424,6 +543,31 @@ function cmdStatus() {
   }
 }
 
+/**
+ * `assets`: (re)publish the GitHub Release + tarball for an already-released
+ * version. This is the repair path for releases that went out before the flow
+ * attached assets, and the retry path after a failed upload. Unlike the release
+ * command it exits 1 on failure — attaching the asset is the whole point here.
+ */
+function cmdAssets(opts) {
+  const top = readTopEntry()
+  if (top === null) {
+    console.error('CHANGELOG has no parseable version entry.')
+    process.exit(1)
+  }
+  if (top.kind === 'draft') {
+    console.error('top CHANGELOG entry is an unreleased draft (' + top.version + ') — release it first.')
+    process.exit(1)
+  }
+  const version = opts.version || top.version
+  const tagged = git(['rev-parse', '--verify', '--quiet', 'v' + version], { okNonZero: true }).status === 0
+  if (!tagged) {
+    console.error('tag v' + version + ' does not exist locally — nothing to publish.')
+    process.exit(1)
+  }
+  if (!publishReleaseAssets(version)) process.exit(1)
+}
+
 // ── CLI entry ─────────────────────────────────────────────────────────────
 
 function main() {
@@ -435,9 +579,10 @@ function main() {
   }
   if (cmd === 'draft') cmdDraft(opts)
   else if (cmd === 'release') cmdRelease()
+  else if (cmd === 'assets') cmdAssets(opts)
   else if (cmd === 'status') cmdStatus()
   else {
-    console.error('usage: node scripts/release.mjs draft [--version X.Y.Z] [--force] | release | status')
+    console.error('usage: node scripts/release.mjs draft [--version X.Y.Z] [--force] | release | assets [--version X.Y.Z] | status')
     process.exit(1)
   }
 }
