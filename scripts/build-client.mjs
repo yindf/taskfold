@@ -56,17 +56,33 @@ export function renderBundle({ template, model, pkgId, dockId }) {
     .replace('__DOCK_ID__', dockId)
 }
 
+/** Repo root, derived from this file. Exported so the release guard and the
+ *  tests can ask for the bundle without re-deriving (and mis-deriving) it. */
+export const REPO_ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
+
 /** Absolute path of the emitted bundle file. */
-export function clientBundlePath(root) {
+export function clientBundlePath(root = REPO_ROOT) {
   return join(root, 'plugins', 'taskfold-client.mjs')
 }
 
-/** Build the bundle into the repo tree. @returns the emitted absolute path. */
-export function buildClient(root = dirname(dirname(fileURLToPath(import.meta.url)))) {
+/**
+ * Render the bundle text for a repo tree, reading package.json, the envelope
+ * template and the model (pure: never writes). The release guard compares this
+ * against the committed bytes, so sharing ONE function with the build is what
+ * guarantees the two sides read the same inputs.
+ * @param {string} [root] - repo root; defaults to this repo.
+ * @returns {string} the bundle source the build would emit.
+ */
+export function repoBundleText(root = REPO_ROOT) {
   const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
   const template = readFileSync(join(root, 'scripts', 'taskfold-client.template.mjs'), 'utf8')
   const model = transformModel(readFileSync(join(root, 'plugins', 'task-stack-ui.mjs'), 'utf8'))
-  const out = renderBundle({ template, model, pkgId: pkg.name, dockId: TASK_STACK_DOCK_ID })
+  return renderBundle({ template, model, pkgId: pkg.name, dockId: TASK_STACK_DOCK_ID })
+}
+
+/** Build the bundle into the repo tree. @returns the emitted absolute path. */
+export function buildClient(root = REPO_ROOT) {
+  const out = repoBundleText(root)
   const path = clientBundlePath(root)
   writeFileSync(path, out)
   return path

@@ -20,7 +20,7 @@ import { readFileSync, writeFileSync, openSync, closeSync, unlinkSync } from 'no
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { renderBundle, clientBundlePath } from './build-client.mjs'
+import { clientBundlePath, repoBundleText } from './build-client.mjs'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const changelogPath = path.join(repoRoot, 'CHANGELOG.md')
@@ -307,10 +307,17 @@ function remoteHasTag(version) {
  * serves its raw bytes), so a stale one would ship silently. Every release
  * path must fail before writing anything when the committed bytes differ from
  * a fresh render of plugins/task-stack-ui.mjs through the envelope template.
+ *
+ * Both sides go through build-client.mjs' own helpers (clientBundlePath +
+ * repoBundleText) and both default to THIS repo's root: an earlier version
+ * called them with no arguments at all, which does not throw here but crashes
+ * on an undefined root — a guard is only a guard once it is exercised.
+ * Exported so the offline suite can run the exact call the release makes.
+ * @param {string} [root] - repo root to check; defaults to this repo.
  */
-function assertClientBundleFresh() {
-  const current = readFileSync(clientBundlePath(), 'utf8')
-  if (current !== renderBundle()) {
+export function assertClientBundleFresh(root = repoRoot) {
+  const current = readFileSync(clientBundlePath(root), 'utf8')
+  if (current !== repoBundleText(root)) {
     throw new Error('plugins/taskfold-client.mjs is stale — run `node scripts/build-client.mjs` and commit the regenerated bundle first')
   }
 }

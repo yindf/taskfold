@@ -6,10 +6,12 @@
 //   node test/client-bundle.test.mjs
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { readFileSync, mkdtempSync, writeFileSync, mkdirSync, copyFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { transformModel, renderBundle, clientBundlePath, CLIENT_ID, TASK_STACK_DOCK_ID } from '../scripts/build-client.mjs'
+import { transformModel, renderBundle, clientBundlePath, repoBundleText, CLIENT_ID, TASK_STACK_DOCK_ID } from '../scripts/build-client.mjs'
+import { assertClientBundleFresh } from '../scripts/release.mjs'
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)))
 const bundlePath = clientBundlePath(root)
@@ -53,4 +55,23 @@ test('manifest routes exports["./client"] to the committed bundle', () => {
   const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
   assert.equal(pkg.exports?.['./client'], './plugins/taskfold-client.mjs')
   assert.ok(pkg.dsh?.client?.platform === 'web', 'dsh.client.platform must be web')
+})
+
+test('the release guard runs the default-root path it actually uses', () => {
+  assert.equal(clientBundlePath(), join(root, 'plugins', 'taskfold-client.mjs'), 'default root must be this repo')
+  assert.equal(repoBundleText(), committed, 'default-root render must equal the committed bytes')
+  assert.doesNotThrow(() => assertClientBundleFresh(), 'the exact call cmdDraft/cmdRelease make')
+})
+
+test('the release guard rejects a stale bundle instead of crashing', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'dsh-taskfold-stale-'))
+  mkdirSync(join(tmp, 'plugins'), { recursive: true })
+  mkdirSync(join(tmp, 'scripts'), { recursive: true })
+  copyFileSync(join(root, 'package.json'), join(tmp, 'package.json'))
+  copyFileSync(join(root, 'scripts', 'taskfold-client.template.mjs'), join(tmp, 'scripts', 'taskfold-client.template.mjs'))
+  copyFileSync(join(root, 'plugins', 'task-stack-ui.mjs'), join(tmp, 'plugins', 'task-stack-ui.mjs'))
+  writeFileSync(join(tmp, 'plugins', 'taskfold-client.mjs'), '// stale bundle\n')
+  assert.throws(() => assertClientBundleFresh(tmp), /is stale/, 'a stale artifact must fail the release, not crash the guard')
+  copyFileSync(bundlePath, join(tmp, 'plugins', 'taskfold-client.mjs'))
+  assert.doesNotThrow(() => assertClientBundleFresh(tmp))
 })
