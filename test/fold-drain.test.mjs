@@ -48,9 +48,9 @@ const ENDED = (n, rest) => 'Task ended: ' + n + ' — ' + rest
  * through ctx, a surface the engine commit rewrites, and an engine whose
  * compactRegion SHADOWS the region and feeds the synthetic compaction/
  * summary through the reducer — exactly what the host does on a real
- * commit (the reducer then drops queue rows whose begin anchor was
- * shadowed). append() lets a test advance the log between drain passes
- * the way later turns would.
+ * commit (the reducer then drops the queue row whose CLOSE RESULT it
+ * shadowed — every fold region ENDS at the close result). append() lets a
+ * test advance the log between drain passes the way later turns would.
  */
 function harness(events, opts) {
   let state = null
@@ -134,9 +134,11 @@ test('tool-call-only handoff opens the gate: elder folds without waiting for tex
   // Younger (innermost-last) folded first and swept the stranded elder
   // report; elder folded right after in the SAME pass — no defer, no wait.
   assert.deepEqual(h.folds, [[35, 41], [20, 21]])
-  // Both rows persist (their begin-message anchors 10/30 are never
-  // shadowed by design) but both settle in memory via the drop path.
-  assert.deepEqual(h.state().pendingArchives.map((p) => p.name), ['elder', 'younger'])
+  // Both rows are GONE from the projection: each committed fold shadowed the
+  // close result it was queued for, and the reducer's archive closure drops
+  // such rows immediately (they used to linger forever — the dock drew them
+  // as permanent 'folding…' rows). The in-memory settled set agrees.
+  assert.equal(h.state(), null, 'both archive rows closed out of the projection')
   assert.ok(h.drain.isSettledArchive(h.session, 10) && h.drain.isSettledArchive(h.session, 30), 'both rows settled in memory')
 
   // Restart: a fresh drain instance (settled memory lost) must NOT re-fold
@@ -165,7 +167,8 @@ test('wait skips the entry instead of starving older foldable ones', async () =>
   await h.drain.processDeferredArchives(h.agent, undefined)
 
   assert.deepEqual(h.folds, [[20, 21]], 'the older ready entry folded despite the newer wait')
-  assert.deepEqual(h.state().pendingArchives.map((p) => p.name), ['ready', 'pending deliverable'], 'the waiting entry stays queued, unsettled')
+  assert.deepEqual(h.state().pendingArchives.map((p) => p.name), ['pending deliverable'], 'the folded entry left the projection; the waiting entry stays queued')
+  assert.ok(h.drain.isSettledArchive(h.session, 10), 'the folded entry is settled in memory')
   assert.ok(!h.drain.isSettledArchive(h.session, 30), 'waiting entry not settled — retried next boundary')
 })
 

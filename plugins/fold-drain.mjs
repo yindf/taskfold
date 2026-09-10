@@ -7,7 +7,12 @@
  * the history note in task-marks.mjs).
  *
  * settledArchives: per-session Set of begin-anchor seqs whose archive is
- * DONE without a fold (too-small at fold time, or dropped by the plan).
+ * DONE — a fold we committed that also removed the row from
+ * pendingArchives (the region shadowed the close result, so the reducer's
+ * archive closure dropped it in the same pass), the too-small / nothing-
+ * committed path, or the plan's 'drop' verdict. A fold whose region had to
+ * shrink below the close result does NOT settle: the row stays queued and
+ * the next pass re-plans it.
  * Process-local bookkeeping only — on replay the entries retry once, hit
  * the same outcome, settle again; no persisted state involved.
  *
@@ -277,19 +282,21 @@ export function createArchiveDrain({ ctx, engineFor, closingTasks }) {
         try {
           closingTasks.set(session.id, { name: entry.name, startSeq: plan.startSeq, endSeq: plan.endSeq })
           const result = await foldRegion(session, agent, engine, entry.name, plan.startSeq, plan.endSeq, guardedSignal(signal))
-          if (result === null) markArchiveSettled(session, entry.seq)
+          // Settle when nothing was committed (result === null) or when the
+          // committed fold shadowed this entry's close result: the reducer's
+          // archive closure then removed the row IN THIS PASS, so the old
+          // "next round re-plans and drops it" cleanup can no longer happen.
+          // A fold that had to shrink its region BELOW the close result (to
+          // avoid an unbalanced boundary) leaves the row queued — and
+          // unsettled — on purpose: the next pass re-plans against the
+          // rewritten surface exactly as it always did.
+          if (result === null || !archivesOf(ctx, session).some((p) => p.seq === entry.seq)) {
+            markArchiveSettled(session, entry.seq)
+          }
           // No notice message is injected: the committed summary node
           // itself carries the fold number and artifact path (embedded by
           // the summarize override before commit).
           clearArchiveFailure(session, entry.name)
-          // A committed fold does NOT drop this entry via the reducer:
-          // the region starts AFTER the "Task begun" result, so the begin
-          // anchor (entry.seq) sits BEFORE the shadowed range and stays
-          // on the surface. Cleanup is the NEXT drain round: the plan
-          // re-runs against the rewritten surface, the close result is
-          // gone (shadowed by this fold) → 'drop', settled in memory.
-          // After a restart the same one-shot re-plan happens again —
-          // harmless, no state involved.
         } catch (err) {
           const classified = classifyCategory(err)
           if (classified.category === 'summary') {

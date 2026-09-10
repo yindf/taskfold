@@ -415,17 +415,25 @@ export function applyTaskMarks(state, event) {
     return next === null ? state : normalizeTaskMarks(next)
   }
   if (event.type === 'compaction/summary') {
-    // Archive-completion closure: a committed fold shadows a seq range; any
-    // pendingArchive whose BEGIN anchor lies inside that range is done —
-    // drop it. Precise for AUTO folds too (a shadowed anchor can never fold
-    // again). Pure and replay-safe.
+    // Archive-completion closure. A committed fold shadows a seq range that
+    // ENDS AT the close result (deferredArchivePlan: endSeq = foldResultSeq)
+    // and deliberately STARTS after the 'Task begun' result, so the begin
+    // anchor stays on the surface: the close result is the witness that EVERY
+    // successful fold shadows, while the anchor is only shadowed by
+    // pre-deferral inline folds and AUTO folds. Keying on the anchor alone
+    // left every deferred archive queued forever — the dock then rendered one
+    // permanent 'folding…' row per closed task (observed live: 6 stuck rows).
+    // Either witness present ⇒ that archive can never fold again ⇒ drop it,
+    // which is exactly the plan's own 'close result gone ⇒ drop' verdict.
+    // Rows written before foldResultSeq existed keep the anchor-only rule.
+    // Pure and replay-safe.
     const base = state
     if (base === null || !Array.isArray(base.pendingArchives) || base.pendingArchives.length === 0) return state
     const shadowed = event.data !== null && typeof event.data === 'object' && Array.isArray(event.data.shadowedSeqs)
       ? event.data.shadowedSeqs
       : null
     if (shadowed === null) return state
-    const kept = base.pendingArchives.filter((p) => shadowed.indexOf(p.seq) === -1)
+    const kept = base.pendingArchives.filter((p) => shadowed.indexOf(p.seq) === -1 && shadowed.indexOf(p.foldResultSeq) === -1)
     if (kept.length === base.pendingArchives.length) return state
     return normalizeTaskMarks({ pending: base.pending, marks: base.marks, pendingArchives: kept })
   }
@@ -475,6 +483,32 @@ export function archivesOf(ctx, session) {
     const state = ctx.sessionProjections.stateOf(session, TASK_MARKS_KEY)
     if (state === undefined || state === null) return []
     return Array.isArray(state.pendingArchives) ? state.pendingArchives : []
+  } catch (err) {
+    return []
+  }
+}
+
+/**
+ * Lifecycle calls still awaiting their result for one session:
+ * [{ callId, kind, anchorSeq }], empty when none. `kind` is 'begin' or 'end';
+ * a pending intent is an in-flight task_begin/task_end whose tool result has
+ * not landed yet, so it is deliberately NOT part of the open stack. Read-only
+ * convenience over the same projection state marksOf/archivesOf expose, used
+ * by the lifecycle hint's stack snapshot.
+ */
+export function pendingOf(ctx, session) {
+  try {
+    const state = ctx.sessionProjections.stateOf(session, TASK_MARKS_KEY)
+    if (state === undefined || state === null) return []
+    const pending = state.pending
+    if (pending === null || typeof pending !== 'object') return []
+    const out = []
+    for (const key of Object.keys(pending)) {
+      const e = pending[key]
+      if (e === null || typeof e !== 'object') continue
+      out.push({ callId: key, kind: e.kind, anchorSeq: e.anchorSeq })
+    }
+    return out
   } catch (err) {
     return []
   }

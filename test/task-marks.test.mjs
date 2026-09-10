@@ -113,6 +113,36 @@ test('begin/end round trip: named push and pop-by-name', () => {
   assert.equal(state, null, 'all archives settled; state normalizes to null')
 })
 
+test('archive closure keys on the close result, not only the begin anchor', () => {
+  // The REAL shape of a committed deferred fold: the shadowed region starts
+  // AFTER the 'Task begun' result (so the begin anchor survives on the
+  // surface) and ends AT the close result. Keying only on the anchor left the
+  // entry in pendingArchives forever — the dock rendered it as a permanent
+  // 'folding…' row (replayed from a live log: 6 stuck rows).
+  let state = null
+  state = applyTaskMarks(state, assistantCall(100, [{ id: 'c1', name: 'task_begin' }]))
+  state = applyTaskMarks(state, toolResult('c1', BEGIN_OK('alpha'), 101))
+  state = applyTaskMarks(state, assistantCall(200, [{ id: 'c2', name: 'task_fold' }]))
+  state = applyTaskMarks(state, toolResult('c2', END_OK('alpha'), 201))
+  assert.deepEqual(state.pendingArchives, [{ seq: 100, name: 'alpha', foldResultSeq: 201 }],
+    'a close queues its archive')
+  // fold region = [102, 201]: anchor 100 NOT shadowed, close result 201 gone.
+  state = applyTaskMarks(state, { seq: 300, type: 'compaction/summary', data: { shadowedSeqs: [102, 150, 201], shadowedTokenCount: 9 } })
+  assert.equal(state, null, 'shadowing only the close result settles the archive')
+})
+
+test('archive stays queued while neither witness is shadowed', () => {
+  let state = null
+  state = applyTaskMarks(state, assistantCall(100, [{ id: 'c1', name: 'task_begin' }]))
+  state = applyTaskMarks(state, toolResult('c1', BEGIN_OK('alpha'), 101))
+  state = applyTaskMarks(state, assistantCall(200, [{ id: 'c2', name: 'task_fold' }]))
+  state = applyTaskMarks(state, toolResult('c2', END_OK('alpha'), 201))
+  // an unrelated summary (some other task's fold) touches neither seq
+  state = applyTaskMarks(state, { seq: 400, type: 'compaction/summary', data: { shadowedSeqs: [7, 8, 9], shadowedTokenCount: 9 } })
+  assert.deepEqual(state.pendingArchives, [{ seq: 100, name: 'alpha', foldResultSeq: 201 }],
+    'unrelated shadowing keeps the archive queued')
+})
+
 test('closing an unknown name changes nothing', () => {
   let state = null
   state = applyTaskMarks(state, assistantCall(100, [{ id: 'c1', name: 'task_begin' }]))
