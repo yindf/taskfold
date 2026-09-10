@@ -100,7 +100,11 @@ async function foldRegion(session, agent, engine, name, startSeq, endSeq, signal
  * by construction; the projection state is re-read before EACH entry
  * because a committed fold rewrites the surface (the previous entry's
  * summary may shadow the next entry's anchor — the reducer then drops it
- * and the re-read no longer lists it).
+ * and the re-read no longer lists it). A 'wait'/'defer' verdict skips that
+ * entry for the REST of the pass instead of aborting the drain: one blocked
+ * newest entry must not starve the older entries that are already
+ * foldable. The skip set dies with the pass — the next boundary retries
+ * everything from scratch.
  */
 export function createArchiveDrain({ ctx, engineFor, closingTasks }) {
   const settledArchives = new Map() // session.id → Set<seq>
@@ -134,18 +138,35 @@ export function createArchiveDrain({ ctx, engineFor, closingTasks }) {
     drainRunning = true
     try {
       const session = agent.session
+      // Entries passed over this pass ('wait'/'defer'): skipped, not fatal.
+      // Reset when the pass ends so the next boundary re-tries them.
+      const skipped = new Set()
       for (;;) {
-        const entries = archivesOf(ctx, session).filter((e) => !isSettledArchive(session, e.seq))
+        const entries = archivesOf(ctx, session)
+          .filter((e) => !isSettledArchive(session, e.seq) && !skipped.has(e.seq))
         if (entries.length === 0) return
         entries.sort((a, b) => b.seq - a.seq)
         const entry = entries[0]
         // Successor anchors: every begin anchor that is still OPEN or still
         // QUEUED and sits after this entry's close — the region must end
-        // before the first of them.
+        // before the first of them. Settled rows are NOT successors: a
+        // committed fold never shadows its OWN begin anchor (the archive
+        // opens after the "Task begun" result, which stays live), so the
+        // row survives its own commit until a later, wider fold shadows
+        // the anchor. Counting that ghost as a pending successor defers
+        // every older entry whose deliverable sits after it — permanently,
+        // because the only folds that could retire the ghost are themselves
+        // deferred by it (found live on the MasterGoUI session: five closed
+        // tasks never folded).
         const anchors = marksOf(ctx, session).map((m) => m.seq)
-          .concat(archivesOf(ctx, session).filter((q) => q.seq !== entry.seq).map((q) => q.seq))
+          .concat(archivesOf(ctx, session)
+            .filter((q) => q.seq !== entry.seq && !isSettledArchive(session, q.seq))
+            .map((q) => q.seq))
         const plan = deferredArchivePlan(entry, session.surface.nodes, sessionEvents(session), anchors)
-        if (plan.action === 'wait' || plan.action === 'defer') return
+        if (plan.action === 'wait' || plan.action === 'defer') {
+          skipped.add(entry.seq)
+          continue
+        }
         if (plan.action === 'drop') {
           markArchiveSettled(session, entry.seq)
           clearArchiveFailure(session, entry.name)
