@@ -3,6 +3,80 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.34.1 — dsh 0.1.5-rc.2 verified, and the release flow publishes its own tarball (2026-09-11)
+
+dsh moved from `0.1.5-rc.1` to `0.1.5-rc.2`, and this round verified the plugin
+against the new host: no code change was needed. The same round taught the release
+flow to publish the asset it documents, and taught the repository to keep its
+working tree byte-equal to its committed blobs — so the tarball it attaches is
+reproducible. One dist-tag gotcha is worth recording: `0.1.5-rc.2` shipped under
+`next` while `latest` still resolves to `0.1.5-rc.1`, so a bare
+`npx @deepseek-ai/dsh web` keeps running rc.1 — only an explicit `@0.1.5-rc.2`
+(or `@next`) reaches the new build.
+
+- **Host upgrade 0.1.5-rc.1 → 0.1.5-rc.2 verified — no plugin change**
+  - a byte-level seam audit of all 240 first-party `@deepseek-ai` packages between
+    the two install roots: 231 differ only in their `package.json` version fields,
+    7 change implementation files (the message-feedback group —
+    `dsh-client-ui-message-feedback`, `dsh-message-feedback`,
+    `dsh-command-feedback`, `dsh-client-ui-chat`, `dsh-client-ui-deliverables`,
+    `dsh-client-ui-sidebar` — plus the `dsh-web-frontend` shell), no package is
+    added or removed, and no package changed content while keeping its version
+  - the two packages this plugin imports — `dsh-compaction-basic` and `dsh-llm`,
+    the only `importHostPackage` calls in `fold-engine.mjs` — are byte-identical in
+    implementation, and a host-API probe against the real rc.2 packages confirms
+    the engine class export, its `summarize` prototype, subclassing, and
+    `BlockAssembler` with `push`/`blocks`
+  - the client contract is unchanged: a sweep of `conversation.input.dock`,
+    `useProjection`, `__ModuleLoader__`, and `slots.inject` across both builds is
+    identical, and the dock's owner (`dsh-client-ui-conversation`), the reference
+    consumer (`dsh-client-ui-goal`), and the bundle registry
+    (`dsh-client-modules`) are byte-identical — three packages that never even
+    enter the seven-package delta
+  - live, on the running 0.1.5-rc.2 host: the `taskMarks` projection rebuilds
+    after restart (`ver: 10`, `pendingArchives: []`, open tasks in stack order) and
+    the first fold passes `verify-cache --since-restart` (98.6% prefix-cache hit);
+    the mounted plugin copy is byte-identical to this repo's `v0.34.0` tag blobs
+    (12/12 plugin files)
+
+- **Release publishes its own tarball.** `release` now creates the GitHub Release
+  and attaches `dsh-taskfold-<version>.tgz`; a new `assets [--version X.Y.Z]`
+  subcommand publishes or repairs the asset for an existing tag. That subcommand
+  exits non-zero on failure, while the in-`release` attempt only warns — by then the
+  commit, tag, and push have already landed, and a missing attachment must not read
+  as a failed release. Portability was probed rather than assumed: `npm` is spawned
+  as `process.execPath` + `npm-cli.js` (a bare `npm` is `ENOENT` on Windows without
+  a shell, `npm.cmd` is `EINVAL`, and `shell: true` triggers DEP0190), and `gh` is
+  resolved from `PATH` first, then the standard install locations.
+  - `v0.34.0` was backfilled this way; it carries `dsh-taskfold-0.34.0.tgz`
+    (106,183 B), verified by unpacking the asset and comparing every file against
+    `git cat-file blob v0.34.0:<path>` (18 files; at the time 12 differed only by
+    CRLF — see the next bullet)
+
+- **Release assets are byte-reproducible.** `.gitattributes` (`* text=auto eol=lf`,
+  plus explicit `binary` marks) closes a gap that made every attachment differ from
+  its tag blobs: the blobs were already LF, but `core.autocrlf=true` had written
+  CRLF into the working tree, and `npm pack` packs the working tree rather than the
+  blobs. Repairing an existing checkout needs the renormalize sequence
+  (`git add --renormalize .` → commit → `git rm --cached -r .` → `git reset
+  --hard`); `git checkout-index -a -f` does **not** rewrite working-tree line
+  endings. Verified: 18/18 packed files byte-identical to the committed blobs
+  (previously 6/18) and zero `w/crlf` across the 46 tracked files.
+
+- **Docs moved into the repo.** The design notes and ADRs had never been
+  version-controlled — the workspace `docs/` tree was not inside any git
+  repository. They now live in `docs/README.md` (index), `docs/design/` (13 notes),
+  and `docs/adr/` (2 decisions), still outside the npm `files` whitelist. The move
+  repaired two references `CHANGELOG.md` had been making all along, to
+  `docs/design/deferred-report-fold.md` and `docs/design/lazy-fold.md`. The two
+  historical notes stay at their flat `docs/*.md` paths because the changelog cites
+  them there.
+
+**Verification** — offline suite 12 suites / 162 tests / 0 fail; the seam audit and
+client-contract sweep above; live `verify-cache --since-restart` 1/1 pass at 98.6%
+prefix-cache hit on the running 0.1.5-rc.2 host; mounted plugin copy byte-identical
+to the `v0.34.0` tag blobs.
+
 ## 0.34.0 — the live task stack in a Web GUI dock, and archive closure on the close-result witness (2026-09-10)
 
 An open-task stack was only ever visible as prose: every `task_begin`/`task_end`
