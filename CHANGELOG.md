@@ -3,6 +3,69 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.34.4 — accept the summaries models actually write; make every prompt layer tell the same truth (2026-09-12)
+
+Two five-round reviews — an implementation audit, then a prompt audit —
+converged from opposite sides on the same picture: the scheduling
+machinery (region planning, settle, backoff, replay) survived every
+adversarial pass, but the ACCEPTANCE face turned frequent, benign
+summary format deviations into deterministic retry loops, and the
+prompts still described the pre-0.34.2 semantics in four places while
+carrying an authority conflict between the section and the guard it
+describes.
+
+- **Fixes (fold acceptance — `dd8c00e`)**
+  - bounded preamble tolerance in the structural receipt check: a
+    summary whose first `## ` heading arrives after a short lead-in
+    (≤3 lines, ≤400 chars) now passes with the preamble stripped. The
+    audit session itself hit the old behavior twice — "summarization
+    produced no text summary content" after a leading sentence, four
+    full-price retries, then a budget settle; with the tolerance both
+    folds would have committed on attempt 1. No heading at all, or an
+    oversized preamble, still fails loud.
+  - build-time fail-fast for the degraded Assembler: when
+    `buildScopedEngine` can never produce content blocks (e.g. a host
+    API surface where blocks() is permanently empty), it now throws
+    immediately, routing through fold-drain's zero-LLM settle path
+    instead of billing full-price summarization retries that are
+    structurally incapable of succeeding.
+  - second-chance settle for `'not smaller'`: one transient
+    not-smaller comparison no longer permanently settles a row; two
+    consecutive occurrences are required.
+  - stale HOLD filter: `autoFoldFailures` entries are filtered against
+    the live archives projection before rendering, so a row that
+    settled through the reducer no longer prints a permanent false
+    "folding" notice.
+- **Fixes (prompts — `297e5a2`)**
+  - accuracy: the task_end description's "retry at every step
+    boundary" now matches the classified backoff shipped in 0.34.2;
+    FOLD_BOUNDARY_RULE gains the end-side PARALLEL-END extension and
+    scopes "parallel partner results stay outside" to the BEGIN side;
+    the section and fold_recall describe the span as closing with the
+    last result of the task_end message; fold_recall's span sentence
+    distinguishes task folds from auto-compaction folds.
+  - authority conflict ended: the section's "alone in a step" (×2)
+    becomes "as the only task-mark call in its message" — until now
+    `task_begin` + `read` in one message was legal by tool
+    description, illegal by section, and silently allowed by the
+    guard; section, descriptions, and guard now state one contract.
+  - standing token trim, net −347 chars (≈ −89 tokens per request):
+    the task_end description drops its triple-nested archive-anatomy
+    parenthetical and compresses the ONE-call tail; task_begin
+    compresses its ONE-call parenthetical; the section drops the
+    ONE-call mechanism parenthetical. Every deleted fact survives
+    verbatim in a remaining layer or in the guard's error text.
+  - polish: the shape example's outer close gains its `→ report` node;
+    the Fold-archive anatomy sentence is compressed; "never track
+    message positions yourself" becomes actionable ("never estimate
+    message positions or line numbers from memory — copy them from a
+    visible index or quote a fragment"); report/deliverable unified.
+- **Verification** — 171 pass / 0 fail / 5 noReact skips (163 before
+  this cycle; the 8 new tests pin the four acceptance fixes). Every
+  prompt edit was verified for zero test pinning and zero BYTE-STABLE
+  exposure before landing; fold-envelope bytes are untouched, so
+  verify-cache does not apply.
+
 ## 0.34.3 — one task-mark call per message: enforced at execute time, taught in every prompt layer (2026-09-12)
 
 0.34.2 made the parallel end→begin shape SAFE (the close settles on its first
