@@ -367,3 +367,32 @@ test('a starved cross-session drain call is chained, not dropped', async () => {
   assert.equal(a.state(), null, 'A row closed out of its projection')
   assert.equal(b.state(), null, 'B row closed out of its projection')
 })
+
+// P1 review-found: a 'summary' rejection (the host's 'not smaller', or a
+// structure failure) used to settle the entry on its FIRST occurrence —
+// one unlucky generation permanently abandoned the archive. The first
+// occurrence now joins the backoff schedule with a HOLD line and re-bills
+// exactly once; only the SECOND consecutive rejection settles.
+test('a summary rejection settles only on the second consecutive occurrence', async () => {
+  const h = harness([
+    assistantCall(10, [{ id: 'a1', name: 'task_begin' }]),
+    toolResult(11, 'a1', BEGUN('lump', '1 open.')),
+    assistantCall(20, [{ id: 'a2', name: 'task_end' }]),
+    toolResult(21, 'a2', ENDED('lump', 'all closed. Archival queued.')),
+    assistantText(25, 'deliverable')
+  ], { failWith: 'summary is not smaller than the region it replaces' })
+
+  // Pass 1: one billed attempt, no settle, a HOLD line naming the cause.
+  await h.drain.processDeferredArchives(h.agent, undefined)
+  assert.equal(h.attempts.length, 1, 'the first rejection bills one summarization call')
+  assert.ok(!h.drain.isSettledArchive(h.session, 10), 'the first rejection does NOT settle the archive')
+  assert.match(h.drain.autoFoldFailures.get(h.session.id).get('lump'), /^fold failed, attempt 1: summary is not smaller/, 'the HOLD line names the classified cause')
+  assert.deepEqual(h.state().pendingArchives.map((p) => p.name), ['lump'], 'the entry stays queued')
+
+  // Pass 2 (the scheduled retry): the second consecutive rejection settles.
+  await h.drain.processDeferredArchives(h.agent, undefined)
+  assert.equal(h.attempts.length, 2, 'the retry bills exactly one more call, then gives up')
+  assert.ok(h.drain.isSettledArchive(h.session, 10), 'two consecutive rejections settle the archive')
+  assert.equal(h.drain.autoFoldFailures.get(h.session.id).get('lump'), undefined, 'settling clears the HOLD line')
+  assert.deepEqual(h.state().pendingArchives.map((p) => p.name), ['lump'], 'settle is in-memory: the projection row persists (anchor never shadowed)')
+})

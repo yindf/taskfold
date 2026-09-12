@@ -326,8 +326,21 @@ export function createArchiveDrain({ ctx, engineFor, closingTasks }) {
         } catch (err) {
           const classified = classifyCategory(err)
           if (classified.category === 'summary') {
-            markArchiveSettled(session, entry.seq)
-            clearArchiveFailure(session, entry.name)
+            // 'not smaller' and structure failures can be a single bad
+            // generation; settling on the FIRST occurrence permanently
+            // abandoned archives to a transient. Give up only on the
+            // SECOND consecutive summary rejection: the first joins the
+            // backoff schedule with a HOLD line and re-bills exactly once.
+            const attempt = recordAttempt(session, entry.seq, entry.name)
+            if (attempt.attempts >= 2) {
+              markArchiveSettled(session, entry.seq)
+              clearArchiveFailure(session, entry.name)
+              continue
+            }
+            attempt.nextPass = drainPass + backoffPasses(attempt.attempts)
+            recordArchiveFailure(session, entry.name,
+              failureBucket(classified.category) + ', attempt ' + attempt.attempts + (reasonOf(classified) === '' ? '' : ': ' + reasonOf(classified)))
+            skipped.add(entry.seq)
             continue
           }
           const attempt = recordAttempt(session, entry.seq, entry.name)
