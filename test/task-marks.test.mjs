@@ -441,6 +441,72 @@ test('deferredArchivePlan: parallel-begin guard — the start skips the partner 
   assert.equal(foreign.startSeq, 12, 'unrelated later results are span content, not floor candidates')
 })
 
+test('deferredArchivePlan: parallel-end guard — the end extends past the partner results of the close message', () => {
+  // The close-carrying assistant message (seq 22) calls task_end AND other
+  // tools in parallel — the live wxgame shape was task_end(A) + the
+  // successor's task_begin(B) in ONE message. The close result (25) is
+  // then followed by the partners' results on the surface, so a cut AT 25
+  // splits those call/result pairs: an unbalanced END boundary. The drain's
+  // shrink walk "fixed" it by committing below the close result — the fold
+  // never shadowed foldResultSeq, the row never settled, and every
+  // boundary re-summarized the previous summary node (live: one task
+  // folded 5 times). The end now extends past the LAST partner result.
+  const p = { seq: 10, name: 'alpha', foldResultSeq: 25 }
+  const beginMsg = assistantMsg(10, [{ type: 'tool-call', id: 'b1', name: 'task_begin', arguments: '{}' }])
+  const begun = { seq: 11, type: 'tool/result', data: { message: { content: [{ type: 'tool-result', toolCallId: 'b1', content: [{ type: 'text', text: 'Task begun: alpha — 1 open.' }] }] } } }
+  const work = { seq: 15, type: 'tool/result', data: { message: { content: [{ type: 'tool-result', toolCallId: 'w1', content: [{ type: 'text', text: 'work output' }] }] } } }
+  const closeMsg = assistantMsg(22, [
+    { type: 'tool-call', id: 'e1', name: 'task_end', arguments: '{}' },
+    { type: 'tool-call', id: 'n1', name: 'task_begin', arguments: '{}' },
+    { type: 'tool-call', id: 'p1', name: 'present', arguments: '{}' }
+  ])
+  const ended = { seq: 25, type: 'tool/result', data: { message: { content: [{ type: 'tool-result', toolCallId: 'e1', content: [{ type: 'text', text: 'Task ended: alpha — 1 open. Archival queued.' }] }] } } }
+  const nextBegun = { seq: 26, type: 'tool/result', data: { message: { content: [{ type: 'tool-result', toolCallId: 'n1', content: [{ type: 'text', text: 'Task begun: beta — 1 open.' }] }] } } }
+  const presented = { seq: 27, type: 'tool/result', data: { message: { content: [{ type: 'tool-result', toolCallId: 'p1', content: [{ type: 'text', text: 'files presented' }] }] } } }
+  const deliverable = assistantMsg(30, [{ type: 'text', text: 'alpha report' }])
+  const events = [beginMsg, begun, work, closeMsg, ended, nextBegun, presented, deliverable]
+  // ① The end extends past the LAST partner result still on the surface
+  // (27, not 26): the cut leaves the close message's calls AND results all
+  // inside the span, the committed fold shadows the close result at 25,
+  // and the row settles on the first fold.
+  const nodes = [10, 11, 15, 22, 25, 26, 27, 30]
+  const plan = deferredArchivePlan(p, nodes, events)
+  assert.equal(plan.action, 'fold')
+  assert.equal(plan.startSeq, 15)
+  assert.equal(plan.endSeq, 27, 'the end extends past the LAST partner result — a cut at 25 would split the begun/presented pairs')
+  // ② Partner results shadowed (AUTO compaction took 26 and 27 off the
+  // surface): no extension candidate remains; the end stays at the close
+  // result — byte-identical to the pre-guard plan.
+  assert.equal(deferredArchivePlan(p, [10, 11, 15, 22, 25, 30], events).endSeq, 25,
+    'shadowed partner results leave the end at the close result')
+  // ③ A single-call close keeps the exact pre-guard choice.
+  const singleEvents = [
+    beginMsg, begun, work,
+    assistantMsg(22, [{ type: 'tool-call', id: 'e1', name: 'task_end', arguments: '{}' }]),
+    ended, deliverable
+  ]
+  const single = deferredArchivePlan(p, [10, 11, 15, 22, 25, 30], singleEvents)
+  assert.equal(single.endSeq, 25, 'single-call close is byte-identical to the old behavior')
+  // ④ The guard only extends over the CLOSE message's own calls: a LATER
+  // step's unrelated call/result after the close still ends the span at
+  // the close result (that pair is outside the region, so the cut at 25 is
+  // balanced for it).
+  const laterStepEvents = [
+    beginMsg, begun, work,
+    assistantMsg(22, [{ type: 'tool-call', id: 'e1', name: 'task_end', arguments: '{}' }]),
+    ended,
+    assistantMsg(26, [{ type: 'tool-call', id: 'u1', name: 'read', arguments: '{}' }]),
+    { seq: 27, type: 'tool/result', data: { message: { content: [{ type: 'tool-result', toolCallId: 'u1', content: [{ type: 'text', text: 'content' }] }] } } },
+    deliverable
+  ]
+  const foreign = deferredArchivePlan(p, [10, 11, 15, 22, 25, 26, 27, 30], laterStepEvents)
+  assert.equal(foreign.endSeq, 25, 'unrelated later results are not extension candidates')
+  // ⑤ Legacy/odd shape — no close event at foldResultSeq at all: the guard
+  // degrades to no extension (the old plan), never to a bogus region.
+  const legacy = deferredArchivePlan(p, nodes, events.filter((e) => e !== ended))
+  assert.equal(legacy.endSeq, 25, 'missing close event skips the extension entirely')
+})
+
 test('deferredArchivePlan: the region start follows SURFACE POSITION, not seq magnitude', () => {
   // Live regression (fold #3 of a real session on dsh 0.1.2-rc.1). After an
   // earlier fold commits, its summary node sits AT the position of the region
