@@ -479,7 +479,14 @@ export default {
       // exactly then.
       const fails = drain.autoFoldFailures.get(session.id)
       if (fails !== undefined) {
+        // Render only names that STILL have a queued archive row: a row
+        // can leave the projection through the reducer itself (replay,
+        // anchor drop) without the drain's settle path clearing the
+        // bucket, and a stale entry would then warn forever. Filter at
+        // render; the bucket itself stays the drain's memory.
+        const queuedNames = new Set(archivesOf(ctx, session).map((p) => p.name))
         for (const [failName, bucket] of fails) {
+          if (!queuedNames.has(failName)) continue
           lines.push('Task lifecycle: auto-fold for "' + failName.replace(/"/g, "'") + '" is failing (' + bucket + ') — it retries automatically with backoff; no action needed.')
         }
       }

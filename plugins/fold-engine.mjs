@@ -71,6 +71,28 @@ async function importHostPackage(pkgName) {
 }
 
 /**
+ * Resolve @deepseek-ai/dsh-llm's BlockAssembler, failing at BUILD time
+ * when dsh-llm is unresolvable or malformed. The old path installed a
+ * no-op stand-in whose summarize() failed only AFTER a full, billed LLM
+ * call ('no text summary content'); a broken install then re-billed a
+ * call on every retry. Throwing here makes engineFor() return undefined,
+ * and the drain takes its zero-LLM path (HOLD line: engine unavailable).
+ */
+export async function resolveBlockAssembler(importFn) {
+  let llmMod
+  try {
+    llmMod = await importFn('@deepseek-ai/dsh-llm')
+  } catch (err) {
+    const why = err !== null && typeof err === 'object' && err.message !== undefined ? String(err.message) : String(err)
+    throw new Error('dsh-llm BlockAssembler unavailable: ' + why)
+  }
+  if (llmMod === null || typeof llmMod !== 'object' || typeof llmMod.BlockAssembler !== 'function') {
+    throw new Error('dsh-llm BlockAssembler unavailable: BlockAssembler export missing')
+  }
+  return llmMod.BlockAssembler
+}
+
+/**
  * Heading CONSTRUCTION, not heading COMPLIANCE (live-data ruling): the
  * fold engine itself prepends the exact '# <closingName>' title line to
  * the model's summary, and the model is instructed to write NO title —
@@ -81,8 +103,8 @@ async function importHostPackage(pkgName) {
  * instruction, each rejection re-summarizing the whole span (30–70 s).
  * Construction makes the heading byte-exact by definition; the residual
  * receipt is structural — the first non-empty output line must be a
- * '## ' section heading (preamble or drift fails loud, retry is cheap
- * because it almost never fires).
+ * '## ' section heading, modulo a SHORT bounded preamble
+ * (stripBoundedPreamble); drift beyond that bound fails loud.
  */
 export function prependFoldHeading(blocks, name) {
   if (typeof name !== 'string' || name.length === 0 || !Array.isArray(blocks)) return blocks
@@ -98,6 +120,50 @@ export function opensWithSectionHeading(blocks) {
   const first = blocks.find((b) => b !== null && typeof b === 'object' && b.type === 'text' && typeof b.text === 'string' && b.text.trim().length > 0)
   if (first === undefined) return false
   return first.text.trim().split('\n')[0].trim().indexOf('## ') === 0
+}
+
+/**
+ * Bounded preamble tolerance for the structure receipt (review-found
+ * live failure): models summarizing dense CJK spans sometimes open with
+ * one to three lead-in lines before the first '## ' section heading.
+ * The zero-tolerance receipt rejected that, the retry re-billed a full
+ * summarization call, and the run could go to give-up with the span
+ * stranded on the surface forever. Strip a leading run of NON-heading
+ * lines from the first non-empty text block when it is short — at most
+ * MAX_PREAMBLE_LINES non-empty lines and MAX_PREAMBLE_CHARS characters
+ * in total, blank lines free — with the first '## ' heading inside that
+ * window. Returns the cleaned block array, the input unchanged when it
+ * already opens with a heading, or undefined when the bound is exceeded
+ * or no heading is reachable (the caller fails loud: that is drift).
+ */
+const MAX_PREAMBLE_LINES = 3
+const MAX_PREAMBLE_CHARS = 400
+
+export function stripBoundedPreamble(blocks) {
+  if (!Array.isArray(blocks)) return undefined
+  const idx = blocks.findIndex((b) => b !== null && typeof b === 'object' && b.type === 'text' && typeof b.text === 'string' && b.text.trim().length > 0)
+  if (idx === -1) return undefined
+  const lines = blocks[idx].text.split('\n')
+  let nonEmpty = 0
+  let chars = 0
+  let cut = 0
+  let found = false
+  for (let i = 0; i < lines.length; i += 1) {
+    const trimmed = lines[i].trim()
+    if (trimmed.length === 0) { cut = i + 1; continue }
+    if (trimmed.indexOf('## ') === 0) { found = true; break }
+    nonEmpty += 1
+    chars += trimmed.length
+    if (nonEmpty > MAX_PREAMBLE_LINES || chars > MAX_PREAMBLE_CHARS) return undefined
+    cut = i + 1
+  }
+  if (!found) return undefined
+  if (cut === 0) return blocks
+  const kept = lines.slice(cut).join('\n')
+  if (kept.trim().length === 0) return undefined
+  const out = blocks.slice()
+  out[idx] = { ...blocks[idx], text: kept }
+  return out
 }
 
 /**
@@ -184,14 +250,11 @@ async function buildScopedEngine(ctx, closingTasks) {
   const engineMod = await importHostPackage('@deepseek-ai/dsh-compaction-basic')
   const Base = engineMod.default !== undefined ? engineMod.default : engineMod.BasicCompactionEngine
   if (typeof Base !== 'function') throw new Error('engine export missing')
-  // Degradation stand-in when dsh-llm is unresolvable: a finish of
-  // { kind: 'stop' } with zero blocks makes our summarize() fail loudly
-  // ('no text summary content') instead of crashing on a missing class.
-  let Assembler = class { push() {} blocks() { return [] } finish = { kind: 'stop' } }
-  try {
-    const llmMod = await importHostPackage('@deepseek-ai/dsh-llm')
-    if (typeof llmMod.BlockAssembler === 'function') Assembler = llmMod.BlockAssembler
-  } catch (err) { /* without the real assembler the summary will fail loudly */ }
+  // Fail at BUILD time when dsh-llm is unresolvable: the old no-op
+  // stand-in billed the full summarization call and only then failed
+  // ('no text summary content'). Throwing here routes engineFor() to
+  // undefined and the drain takes its zero-LLM path instead.
+  const Assembler = await resolveBlockAssembler(importHostPackage)
 
   class ScopedEngine extends Base {
     async summarize(input, agent, signal) {
@@ -301,17 +364,20 @@ async function buildScopedEngine(ctx, closingTasks) {
       // beats compliance — demanding the model reproduce the heading
       // verbatim proved unreliable across languages (translated titles
       // scored 0.00 and re-summarized the whole span 9+ times). The
-      // residual check is structural: a first line that is not a '## '
-      // section heading means preamble or drift → fail loud → retried on
-      // a later boundary; never commit a malformed summary.
+      // residual check is structural, with bounded preamble tolerance: a
+      // short lead-in (stripBoundedPreamble: ≤3 non-empty lines, ≤400
+      // chars — dense CJK spans produce them) is stripped first; drift
+      // beyond that bound fails loud → retried on a later boundary; never
+      // commit a malformed summary.
       let withHeading = summary
       if (closingName.length > 0) {
-        const firstText = summary.find((b) => b.text.trim().length > 0)
-        if (firstText !== undefined && !opensWithSectionHeading(summary)) {
-          const firstLine = firstText.text.trim().split('\n')[0].trim()
+        let sanitized = opensWithSectionHeading(summary) ? summary : stripBoundedPreamble(summary)
+        if (sanitized === undefined || !opensWithSectionHeading(sanitized)) {
+          const firstText = summary.find((b) => b.text.trim().length > 0)
+          const firstLine = firstText === undefined ? '' : firstText.text.trim().split('\n')[0].trim()
           throw new Error('summary structure failure: expected the summary to open with a "## " section heading (## What happened), got: ' + firstLine.slice(0, 80))
         }
-        withHeading = prependFoldHeading(summary, closingName)
+        withHeading = prependFoldHeading(sanitized, closingName)
       }
       // FOLD ARCHIVE SECTION EMBEDDED IN THE SUMMARY NODE (product
       // ruling): this hook is the last stop before the engine commits,

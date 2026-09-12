@@ -13,7 +13,7 @@
 //   node test/fold-engine.test.mjs
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { prependFoldHeading, opensWithSectionHeading, dropDuplicateLeadingSystem, spanMessagesFor } from '../plugins/fold-engine.mjs'
+import { prependFoldHeading, opensWithSectionHeading, stripBoundedPreamble, resolveBlockAssembler, dropDuplicateLeadingSystem, spanMessagesFor } from '../plugins/fold-engine.mjs'
 
 const NAME = 'Investigate settings Models page "off" bug'
 const text = (s) => ({ type: 'text', text: s })
@@ -184,4 +184,55 @@ test('spanMessagesFor: falls back whenever the declaration cannot be honored', (
   assert.equal(spanMessagesFor(empty, { startSeq: 1, endSeq: 2 }, fallback), fallback, 'nothing derivable → fallback')
   const throwing = { surface: { nodes: [1] }, eventAt: () => { throw new Error('boom') }, deriveEventMessage: (x) => x }
   assert.equal(spanMessagesFor(throwing, { startSeq: 1, endSeq: 1 }, fallback), fallback, 'a throwing host API never breaks the fold')
+})
+
+// Bounded preamble tolerance (review-found P0): dense CJK spans sometimes
+// open with 1–3 lead-in lines before the first '## ' section. The old
+// zero-tolerance receipt rejected them, re-billing a full summarization
+// call per retry and — at give-up — leaving the span on the surface
+// forever (observed live as repeated 'summarization produced no text
+// summary content' retries in this very session).
+test('stripBoundedPreamble: strips a short lead-in before the first ## heading', () => {
+  const out = stripBoundedPreamble([text('总结如下：\n这是该 span 的压缩摘要引言。\n## What happened\n- 甲')])
+  assert.deepEqual(out, [text('## What happened\n- 甲')], 'the lead-in lines are gone, the heading survives')
+})
+
+test('stripBoundedPreamble: blank lines ride along and never count toward the line bound', () => {
+  const out = stripBoundedPreamble([text('引言行。\n\n\n## What happened\n- 甲')])
+  assert.deepEqual(out, [text('## What happened\n- 甲')], 'two blank lines + one lead-in line stay within the ≤3-line bound')
+})
+
+test('stripBoundedPreamble: a summary already opening with the heading is returned unchanged', () => {
+  const blocks = [text('## What happened\n- 甲'), text('tail')]
+  assert.equal(stripBoundedPreamble(blocks), blocks, 'same reference, nothing to strip')
+})
+
+test('stripBoundedPreamble: four lead-in lines, an oversized lead-in, or no heading at all reject', () => {
+  assert.equal(stripBoundedPreamble([text('一\n二\n三\n四\n## What happened')]), undefined, 'more than MAX_PREAMBLE_LINES non-empty lines')
+  assert.equal(stripBoundedPreamble([text('引'.repeat(401) + '\n## What happened')]), undefined, 'a single line beyond MAX_PREAMBLE_CHARS')
+  assert.equal(stripBoundedPreamble([text('全部正文，没有任何标题。')]), undefined, 'no ## heading in reach')
+  assert.equal(stripBoundedPreamble([]), undefined, 'no non-empty text block')
+  assert.equal(stripBoundedPreamble(null), undefined, 'non-array input')
+})
+
+test('stripBoundedPreamble: never mutates the input blocks', () => {
+  const original = text('引言。\n## What happened\n- 甲')
+  const snapshot = original.text
+  stripBoundedPreamble([original])
+  assert.equal(original.text, snapshot, 'the input block is untouched')
+})
+
+test('resolveBlockAssembler: returns the class when dsh-llm resolves', async () => {
+  class FakeAssembler {}
+  const cls = await resolveBlockAssembler(async () => ({ BlockAssembler: FakeAssembler }))
+  assert.equal(cls, FakeAssembler)
+})
+
+test('resolveBlockAssembler: throws at BUILD time when dsh-llm is unresolvable or malformed', async () => {
+  // The old stand-in degraded to a no-op assembler that failed only AFTER
+  // a full, billed summarization call; failing here keeps the drain on the
+  // zero-LLM path ('engine unavailable' HOLD).
+  await assert.rejects(resolveBlockAssembler(async () => { throw new Error('boom') }), /BlockAssembler unavailable: boom/)
+  await assert.rejects(resolveBlockAssembler(async () => ({})), /export missing/)
+  await assert.rejects(resolveBlockAssembler(async () => null), /export missing/)
 })
