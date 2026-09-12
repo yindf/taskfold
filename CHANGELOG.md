@@ -3,6 +3,55 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.34.2 — settle deferred archives on the first fold, never drop a starved drain (2026-09-12)
+
+Two compaction bugs found live on dsh 0.1.5 (the wxgame workspace, plugin
+v0.34.0), both stemming from the same operational shape: the host's task
+lifecycle asks the model to end a task and deliver the next step in ONE
+assistant message, so a `task_end(A)` frequently travels together with the
+successor's `task_begin(B)` — or a `present` — as parallel tool calls.
+
+- **Fixes**
+  - extend the deferred archive END past parallel close-call results. When the
+    close-carrying message also calls other tools, their results follow the
+    close result on the surface, so a cut AT the close result splits those
+    call/result pairs — an unbalanced END boundary. The shrink walk then
+    committed regions ending BELOW the close result, `foldResultSeq` was never
+    shadowed, the row never left `pendingArchives`, and every subsequent step
+    boundary re-planned and re-summarized the previous summary node: one task
+    was summarized 5 times, four tasks 3–5 times each — 13 redundant
+    summarization calls in a single session, each with its own artifact file.
+    `deferredArchivePlan` now resolves the close message's full call set
+    (`closeMessageCallIds`, two-step pure resolution) and extends the END to
+    the last partner result still on the surface — the mirror of the existing
+    parallel-BEGIN guard — so the committed region shadows the close result
+    and the row settles on the first fold. When the log lacks a close event
+    the guard skips and the plan is byte-identical to the previous behavior.
+  - back off unsettled commits instead of re-planning them free at every
+    boundary. A fold that commits below the close result used to leave its row
+    queued for the next pass to re-plan immediately — which is exactly the
+    cascade above. Such a commit now joins the shared backoff schedule
+    (`recordAttempt` + `backoffPasses`), ends the pass (`skipped.add`), and
+    records a HOLD failure line naming the state; the sibling `task_begin`'s
+    archive row still drops at plan time as it always did.
+  - chain starved drain calls instead of dropping them. `drainRunning` is a
+    process-global singleton (subagent sessions share the process), and the
+    cascade above held it across a sibling session's `agent/turn-stopping`
+    hook: that session's closed task never folded — zero compaction events, no
+    artifacts, the archive queued until a resume. A drain call that finds the
+    pass busy now queues its agent (bounded, `MAX_DRAIN_QUEUE = 8`) and the
+    running pass chains one more pass for it in its `finally`, under a
+    timeout-only signal — the starved call's own turn is over by then, so its
+    hook signal cannot be reused. Beyond the queue cap the old semantics
+    (retry at the session's own next boundary) keep applying.
+
+Verification: offline suite 151 pass / 0 fail (5 skipped are the React/DOM
+`{ skip: noReact }` cases, environmental); new tests lock the parallel-end
+plan (`task-marks`), the two-pass shrink-plus-backoff behavior, and the
+cross-session starvation chaining (`fold-drain`). The summarization request
+envelope is untouched (region boundaries and drain scheduling only), so the
+prefix-cache verification deltas of previous releases carry over unchanged.
+
 ## 0.34.1 — dsh 0.1.5-rc.2 verified, and the release flow publishes its own tarball (2026-09-11)
 
 dsh moved from `0.1.5-rc.1` to `0.1.5-rc.2`, and this round verified the plugin
