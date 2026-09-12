@@ -16,7 +16,7 @@
  */
 // Boundary semantics shared by BOTH envelopes below: what the span covers
 // and what deliberately stays outside it.
-const FOLD_BOUNDARY_RULE = 'The span opens just after the \'Task begun\' result (and any results of tools called in parallel with the begin) and closes with the \'Task ended\' result — the begin call, its opening reasoning, the \'Task begun\' result itself, and those parallel partner results stay outside the span by design; do not treat their absence as missing work.'
+const FOLD_BOUNDARY_RULE = 'The span opens just after the \'Task begun\' result (and any results of tools called in parallel with the begin) and closes with the \'Task ended\' result, or — when the close message also calls other tools — the last of that message\'s results — the begin call, its opening reasoning, the \'Task begun\' result itself, and the begin-side parallel partner results stay outside the span by design; do not treat their absence as missing work.'
 
 // The sections, structure, and rules every fold summary follows regardless of
 // envelope.
