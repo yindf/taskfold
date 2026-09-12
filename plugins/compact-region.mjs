@@ -49,7 +49,7 @@
  *   lifecycle-injection.mjs the event-only lifecycle hint channel
  */
 import { sessionEvents } from './events.mjs'
-import { TASK_MARKS_KEY, taskMarksStateSchema, applyTaskMarks, validTaskName, closeTarget, normalizeName, marksOf, archivesOf, pendingOf, lastSurfaceAssistantSeq } from './task-marks.mjs'
+import { TASK_MARKS_KEY, taskMarksStateSchema, applyTaskMarks, validTaskName, closeTarget, normalizeName, marksOf, archivesOf, pendingOf, lastSurfaceAssistantSeq, siblingTaskMarkCalls } from './task-marks.mjs'
 import { DETAILED_CHECKPOINT_INSTRUCTION } from './fold-instruction.mjs'
 import { createFoldEngine } from './fold-engine.mjs'
 import { createArchiveDrain } from './fold-drain.mjs'
@@ -239,7 +239,7 @@ export default {
 
     const taskBegin = {
       name: 'task_begin',
-      description: 'Begin a NAMED task. The name is the identity; when the work is done, one task_end({ name }) call ends it and queues archival — the span folds automatically at the next step boundary after the assistant message that follows your task_end result (any content opens the gate — make it your report). A name already open is rejected; names must not contain " —" (a space followed by an em dash). Tasks can nest: task_begin while a task is open opens a subtask (innermost closes first). The call message (with its opening reasoning) stays live in the transcript as the task\'s bookmark; the eventual fold\'s archive starts just after the \'Task begun\' result — the result itself stays live beside the call. Call alone in a step.',
+      description: 'Begin a NAMED task. The name is the identity; when the work is done, one task_end({ name }) call ends it and queues archival — the span folds automatically at the next step boundary after the assistant message that follows your task_end result (any content opens the gate — make it your report). A name already open is rejected; names must not contain " —" (a space followed by an em dash). Tasks can nest: task_begin while a task is open opens a subtask (innermost closes first). The call message (with its opening reasoning) stays live in the transcript as the task\'s bookmark; the eventual fold\'s archive starts just after the \'Task begun\' result — the result itself stays live beside the call. Call alone in a step — a message that also carries another task_begin/task_end call is rejected (the sibling fold would swallow this mark\'s anchor message); re-issue it alone in the next message.',
       parameters: {
         type: 'object',
         properties: {
@@ -282,6 +282,17 @@ export default {
         if (lastSurfaceAssistantSeq(session) === null) {
           return { ok: false, category: 'invalid', error: 'no assistant message found on the surface' }
         }
+        // Sibling guard: this call must be the ONLY task-mark call in its
+        // carrying message. A partner task_end here puts this mark's anchor
+        // message inside the partner's fold span (the PARALLEL-END relay):
+        // the fold would swallow the anchor and this task would close with
+        // no archive of its own. Enforced at execute time — the host has no
+        // pre-execution tool-call interception — so the model re-issues the
+        // call alone in its next message.
+        const siblings = siblingTaskMarkCalls(session, 'task_begin')
+        if (siblings !== null && siblings.length > 0) {
+          return { ok: false, category: 'invalid', error: 'this message also carries ' + siblings.join(', ') + ' — task_begin must be the ONLY task-mark call in its message, else the sibling\'s closing fold swallows this mark\'s anchor message and this task loses its own archive. Re-issue task_begin alone in your next message.' }
+        }
         // No event appended: the projection derives the named push from this
         // step's assistant/message + the success text about to be returned.
         const openNames = open.map((m) => m.name).concat([name])
@@ -292,7 +303,7 @@ export default {
 
     const taskEnd = {
       name: 'task_end',
-      description: 'End the INNERMOST open task by name: it closes the task and QUEUES archival — the span folds AUTOMATICALLY at the next step boundary after the FIRST assistant message that follows the task_end result (possibly mid-turn; any content opens the gate — text, tool calls, reasoning). So: finish the work, call task_end, then deliver the report in the same turn with full context — the report is text that lands AFTER the task_end result (text in the same assistant message as the call arrives before the result, too early); make the next message the report, because the fold fires as soon as it lands. Folds are system-executed: the committed summary node ends with a Fold archive section (same format as the summary sections) carrying the fold number, the artifact path (JSONL, one message per line — the span runs from just after the \u0027Task begun\u0027 result through the \u0027Task ended\u0027 result, so the task_begin call, its opening reasoning, and the \u0027Task begun\u0027 result itself stay live in the transcript), and a compact archive footer (head and tail of the span preview with true line numbers); fold_recall({ fold }) re-renders the full index on demand. LIFO: newer open tasks block older ones; a blocked or unknown name fails and changes nothing (close the newer task first). Too-small spans close without folding; failed auto-folds retry at every step boundary. Failure outcomes are explained in the result; follow it. Call alone in a step.',
+      description: 'End the INNERMOST open task by name: it closes the task and QUEUES archival — the span folds AUTOMATICALLY at the next step boundary after the FIRST assistant message that follows the task_end result (possibly mid-turn; any content opens the gate — text, tool calls, reasoning). So: finish the work, call task_end, then deliver the report in the same turn with full context — the report is text that lands AFTER the task_end result (text in the same assistant message as the call arrives before the result, too early); make the next message the report, because the fold fires as soon as it lands. Folds are system-executed: the committed summary node ends with a Fold archive section (same format as the summary sections) carrying the fold number, the artifact path (JSONL, one message per line — the span runs from just after the \u0027Task begun\u0027 result through the \u0027Task ended\u0027 result, so the task_begin call, its opening reasoning, and the \u0027Task begun\u0027 result itself stay live in the transcript), and a compact archive footer (head and tail of the span preview with true line numbers); fold_recall({ fold }) re-renders the full index on demand. LIFO: newer open tasks block older ones; a blocked or unknown name fails and changes nothing (close the newer task first). Too-small spans close without folding; failed auto-folds retry at every step boundary. Failure outcomes are explained in the result; follow it. Call alone in a step — a message that also carries another task_begin/task_end call is rejected (the successor\'s anchor must not ride this message); re-issue it alone in the next message.',
       parameters: {
         type: 'object',
         properties: {
@@ -328,6 +339,22 @@ export default {
         const name = args !== null && typeof args === 'object' ? normalizeName(args.name) : ''
         if (name.length === 0) return { ok: false, category: 'invalid', error: 'task_end requires a non-empty `name`' }
         const session = agent.session
+        // Sibling guard (mirror of task_begin's): this close must be the
+        // ONLY task-mark call in its carrying message. A batched successor
+        // task_begin would have its anchor message swallowed by THIS task's
+        // fold (deferredArchivePlan extends over the partner results —
+        // correct for the fold, fatal for the successor's own archive).
+        // Rejecting here keeps the close itself on a clean boundary; the
+        // model re-issues task_end alone, then the begin alone.
+        const closeSiblings = siblingTaskMarkCalls(session, 'task_end')
+        if (closeSiblings !== null && closeSiblings.length > 0) {
+          return {
+            ok: false,
+            category: 'invalid',
+            error: 'this message also carries ' + closeSiblings.join(', ') + ' — task_end must be the ONLY task-mark call in its message so the archive span gets this message\'s results to itself.',
+            hint: 'Batching task_end with the successor\'s task_begin forces this task\'s fold to swallow the successor\'s anchor message (it loses its own archive). Send task_end alone, then the next task_begin in the following message.'
+          }
+        }
         const marks = marksOf(ctx, session)
         const openNamesNow = marks.map((m) => m.name)
         if (!openNamesNow.some((n) => n === name)) {

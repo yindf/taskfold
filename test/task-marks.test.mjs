@@ -7,7 +7,7 @@
 //   node test/task-marks.test.mjs
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { applyTaskMarks, taskMarksStateSchema, closeTarget, validTaskName, deferredArchivePlan } from '../plugins/task-marks.mjs'
+import { applyTaskMarks, taskMarksStateSchema, closeTarget, validTaskName, deferredArchivePlan, siblingTaskMarkCalls, lastAssistantToolNames } from '../plugins/task-marks.mjs'
 import { todoBridgeLine, shouldSuggestDecomposition, decomposeHintLine } from '../plugins/lifecycle-nudges.mjs'
 import { FOLD_SUMMARY_INSTRUCTION, DETAILED_CHECKPOINT_INSTRUCTION, buildFoldInstruction } from '../plugins/fold-instruction.mjs'
 
@@ -615,5 +615,60 @@ test('DETAILED_CHECKPOINT_INSTRUCTION: uncapped, exhaustive, structure-preservin
   assert.ok(DETAILED_CHECKPOINT_INSTRUCTION.includes('prior checkpoint block'), 'prior-checkpoint merge rule present')
   assert.ok(!DETAILED_CHECKPOINT_INSTRUCTION.includes('terse'), 'the stock terse-bullets directive is gone')
   assert.notEqual(DETAILED_CHECKPOINT_INSTRUCTION, FOLD_SUMMARY_INSTRUCTION, 'fold and checkpoint instructions stay distinct artifacts')
+})
+
+// ── sibling guard: task-mark calls must be alone in their message ──────
+// The execute-time guard behind the PARALLEL-END relay rejection: a
+// task_begin batched into a task_end's message puts its anchor inside the
+// predecessor's fold span and costs it an archive (see siblingTaskMarkCalls).
+
+/** Fake session exposing events the way the two access paths expect. */
+function guardSession(events, { legacy = false } = {}) {
+  const rows = events.filter((e) => Number.isInteger(e.seq))
+  if (legacy) return { surface: { nodes: rows.map((e) => e.seq) }, events }
+  const bySeq = new Map(rows.map((e) => [e.seq, e]))
+  return { surface: { nodes: rows.map((e) => e.seq) }, eventAt: (seq) => (bySeq.has(seq) ? bySeq.get(seq) : null) }
+}
+
+test('sibling guard: relay message flags BOTH directions, alone passes', () => {
+  const relay = guardSession([assistantCall(22, [{ id: 'e1', name: 'task_end' }, { id: 'n1', name: 'task_begin' }])])
+  assert.deepEqual(siblingTaskMarkCalls(relay, 'task_begin'), ['task_end'], 'the begin sees its end sibling')
+  assert.deepEqual(siblingTaskMarkCalls(relay, 'task_end'), ['task_begin'], 'the end sees its begin sibling')
+  const alone = guardSession([assistantCall(10, [{ id: 'b1', name: 'task_begin' }])])
+  assert.deepEqual(siblingTaskMarkCalls(alone, 'task_begin'), [], 'a lone begin is the required shape')
+  // Contract: `self` is always the executing tool, so its call IS in the
+  // carrier — a begin-only message can only ever be queried as 'task_begin'.
+})
+
+test('sibling guard: non-trio partners and task_fold siblings', () => {
+  // present riding the close is NOT rejected — deferredArchivePlan's
+  // PARALLEL-END extension already covers non-mark partners correctly.
+  const withPresent = guardSession([assistantCall(22, [{ id: 'e1', name: 'task_end' }, { id: 'p1', name: 'present' }])])
+  assert.deepEqual(siblingTaskMarkCalls(withPresent, 'task_end'), [], 'present is not a task-mark call')
+  // task_fold is in the reducer's parser trio, so it counts as a sibling.
+  const withFold = guardSession([assistantCall(22, [{ id: 'e1', name: 'task_end' }, { id: 'f1', name: 'task_fold' }])])
+  assert.deepEqual(siblingTaskMarkCalls(withFold, 'task_end'), ['task_fold'], 'legacy task_fold is a sibling')
+  // Two begins in one message: the second sees the first (self-skip is one).
+  const double = guardSession([assistantCall(22, [{ id: 'b1', name: 'task_begin' }, { id: 'b2', name: 'task_begin' }])])
+  assert.deepEqual(siblingTaskMarkCalls(double, 'task_begin'), ['task_begin'], 'a second begin in the same message is flagged')
+})
+
+test('sibling guard: unreadable carriers degrade to null, never block', () => {
+  assert.equal(siblingTaskMarkCalls({ surface: { nodes: [] }, eventAt: () => null }, 'task_begin'), null, 'no assistant message: no verdict')
+  const textOnly = guardSession([{ seq: 5, type: 'assistant/message', data: { message: { content: [{ type: 'text', text: 'report' }] } } }])
+  assert.equal(lastAssistantToolNames(textOnly), null, 'text-only message carries no calls')
+  assert.equal(siblingTaskMarkCalls(textOnly, 'task_begin'), null, 'text-only carrier: no verdict')
+})
+
+test('sibling guard: reads the LAST assistant message via both access paths', () => {
+  const events = [
+    assistantCall(10, [{ id: 'b1', name: 'task_begin' }]),
+    assistantCall(22, [{ id: 'e1', name: 'task_end' }, { id: 'n1', name: 'task_begin' }])
+  ]
+  for (const legacy of [false, true]) {
+    const s = guardSession(events, { legacy })
+    assert.deepEqual(siblingTaskMarkCalls(s, 'task_begin'), ['task_end'], (legacy ? 'events-snapshot' : 'eventAt') + ' path: the last message is the carrier')
+    assert.deepEqual(lastAssistantToolNames(s), ['task_end', 'task_begin'], (legacy ? 'events-snapshot' : 'eventAt') + ' path: full call order')
+  }
 })
 

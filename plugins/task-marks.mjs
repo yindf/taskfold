@@ -626,3 +626,65 @@ export function lastSurfaceAssistantSeq(session) {
   }
   return null
 }
+
+/** Tool names the sibling guard recognizes — the reducer's parser trio. */
+const TASK_MARK_TOOLS = new Set(['task_begin', 'task_end', 'task_fold'])
+
+/**
+ * Tool-call NAMES carried by the LAST assistant message on the surface (the
+ * in-flight message a task-mark tool call is executing from), in block
+ * order; null when there is no such message or it carries no tool calls.
+ * Mirrors lastSurfaceAssistantSeq's two access paths (eventAt, then the
+ * events snapshot), so the guard reads the same message the projection
+ * will anchor on.
+ */
+export function lastAssistantToolNames(session) {
+  const seq = lastSurfaceAssistantSeq(session)
+  if (seq === null) return null
+  let event = null
+  if (typeof session.eventAt === 'function') {
+    try { event = session.eventAt(seq) } catch (err) { event = null }
+  }
+  if (event === null) {
+    for (const e of sessionEvents(session)) {
+      if (e !== null && typeof e === 'object' && Number.isInteger(e.seq) && e.seq === seq) { event = e; break }
+    }
+  }
+  if (event === null || typeof event !== 'object' || event.type !== 'assistant/message') return null
+  const names = []
+  for (const b of blocksOf(messageOf(event))) {
+    if (b !== null && typeof b === 'object' && b.type === 'tool-call' && typeof b.name === 'string') names.push(b.name)
+  }
+  return names.length > 0 ? names : null
+}
+
+/**
+ * Sibling task-mark calls sharing the last surface assistant message with a
+ * task-mark tool call (`self`) about to execute: the trio names besides the
+ * FIRST `self` occurrence, in block order. [] when the call is alone in its
+ * message (the required shape — 'Call alone in a step'); null when the
+ * carrying message cannot be read (older hosts) — callers treat null as
+ * "no verdict, proceed" so the guard degrades open, never blocks.
+ *
+ * Why this exists: a task_begin batched into a task_end's message puts the
+ * successor's begin ANCHOR inside the predecessor's fold span — the
+ * PARALLEL-END shape deferredArchivePlan already survives by extending over
+ * the partner results, but the successor then loses its own archive (its
+ * row drops on close, anchor shadowed). The host exposes no pre-execution
+ * tool-call interception ('agent/pre-step' only gates user messages), so
+ * execute-time rejection here is the ONLY point where the combined shape
+ * can be prevented: the model re-issues the call alone in its next message
+ * and every archive keeps a clean message boundary.
+ */
+export function siblingTaskMarkCalls(session, self) {
+  const names = lastAssistantToolNames(session)
+  if (names === null) return null
+  const siblings = []
+  let seenSelf = false
+  for (const n of names) {
+    if (!TASK_MARK_TOOLS.has(n)) continue
+    if (!seenSelf && n === self) { seenSelf = true; continue }
+    siblings.push(n)
+  }
+  return siblings
+}
