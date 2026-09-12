@@ -7,7 +7,7 @@
 //   node test/task-marks.test.mjs
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { applyTaskMarks, taskMarksStateSchema, closeTarget, validTaskName, deferredArchivePlan } from '../plugins/task-marks.mjs'
+import { applyTaskMarks, taskMarksStateSchema, closeTarget, validTaskName, deferredArchivePlan, siblingTaskMarkCalls, lastAssistantToolNames } from '../plugins/task-marks.mjs'
 import { todoBridgeLine, shouldSuggestDecomposition, decomposeHintLine } from '../plugins/lifecycle-nudges.mjs'
 import { FOLD_SUMMARY_INSTRUCTION, DETAILED_CHECKPOINT_INSTRUCTION, buildFoldInstruction } from '../plugins/fold-instruction.mjs'
 
@@ -617,64 +617,58 @@ test('DETAILED_CHECKPOINT_INSTRUCTION: uncapped, exhaustive, structure-preservin
   assert.notEqual(DETAILED_CHECKPOINT_INSTRUCTION, FOLD_SUMMARY_INSTRUCTION, 'fold and checkpoint instructions stay distinct artifacts')
 })
 
-// RESUME-DERIVED v4 results (backported from the alpha channel's linkage
-// hardening): a session re-opened after a restart feeds the projection
-// events re-derived through the resume path, where the tool-role message
-// can lose the message-level toolCallId flatten while KEEPING source.callId.
-// The pre-fix reducer read only block-level toolCallId, so every mark
-// call/result pair failed to pair on resume — the dock showed one stuck
-// 'opening…'/'closing…' row per call ever made (live on dsh 0.1.7-alpha.2:
-// 19 rows on one session, 40 on another; the poisoned state also
-// checkpointed itself back into the projection cache, surviving restarts
-// until the version bump discarded it).
-function toolResultV4Resume(callId, text, seq) {
-  const event = {
-    type: 'tool/result',
-    data: {
-      message: {
-        role: 'tool',
-        source: { kind: 'tool', callId },
-        content: [{ type: 'text', text }]
-      }
-    }
-  }
-  if (seq !== undefined) event.seq = seq
-  return event
+// ── sibling guard: task-mark calls must be alone in their message ──────
+// The execute-time guard behind the PARALLEL-END relay rejection: a
+// task_begin batched into a task_end's message puts its anchor inside the
+// predecessor's fold span and costs it an archive (see siblingTaskMarkCalls).
+
+/** Fake session exposing events the way the two access paths expect. */
+function guardSession(events, { legacy = false } = {}) {
+  const rows = events.filter((e) => Number.isInteger(e.seq))
+  if (legacy) return { surface: { nodes: rows.map((e) => e.seq) }, events }
+  const bySeq = new Map(rows.map((e) => [e.seq, e]))
+  return { surface: { nodes: rows.map((e) => e.seq) }, eventAt: (seq) => (bySeq.has(seq) ? bySeq.get(seq) : null) }
 }
 
-test('resume-derived v4 results (source.callId only, no message-level toolCallId) still pair', () => {
-  let state = null
-  state = applyTaskMarks(state, assistantCall(10, [{ id: 'a1', name: 'task_begin' }]))
-  state = applyTaskMarks(state, toolResultV4Resume('a1', 'Task begun: resume-task — 1 open.', 11))
-  assert.deepEqual(state.marks, [{ seq: 10, name: 'resume-task' }], 'begin pairs through source.callId')
-  assert.equal(Object.keys(state.pending).length, 0, 'intent consumed')
-
-  state = applyTaskMarks(state, assistantCall(20, [{ id: 'a2', name: 'task_end' }]))
-  state = applyTaskMarks(state, toolResultV4Resume('a2', 'Task ended: resume-task — all closed. Archival queued.', 21))
-  assert.deepEqual(state.marks, [], 'end pairs and pops the mark')
-  assert.deepEqual(state.pendingArchives, [{ seq: 10, name: 'resume-task', foldResultSeq: 21 }], 'archive queued for the drain')
+test('sibling guard: relay message flags BOTH directions, alone passes', () => {
+  const relay = guardSession([assistantCall(22, [{ id: 'e1', name: 'task_end' }, { id: 'n1', name: 'task_begin' }])])
+  assert.deepEqual(siblingTaskMarkCalls(relay, 'task_begin'), ['task_end'], 'the begin sees its end sibling')
+  assert.deepEqual(siblingTaskMarkCalls(relay, 'task_end'), ['task_begin'], 'the end sees its begin sibling')
+  const alone = guardSession([assistantCall(10, [{ id: 'b1', name: 'task_begin' }])])
+  assert.deepEqual(siblingTaskMarkCalls(alone, 'task_begin'), [], 'a lone begin is the required shape')
+  // Contract: `self` is always the executing tool, so its call IS in the
+  // carrier — a begin-only message can only ever be queried as 'task_begin'.
 })
 
-test('v4 tool-role results (message-level toolCallId) pair too', () => {
-  let state = null
-  state = applyTaskMarks(state, assistantCall(10, [{ id: 'a1', name: 'task_begin' }]))
-  state = applyTaskMarks(state, {
-    seq: 11,
-    type: 'tool/result',
-    data: { message: { role: 'tool', toolCallId: 'a1', content: [{ type: 'text', text: 'Task begun: v4-task — 1 open.' }] } }
-  })
-  assert.deepEqual(state.marks, [{ seq: 10, name: 'v4-task' }], 'message-level linkage pairs')
+test('sibling guard: non-trio partners and task_fold siblings', () => {
+  // present riding the close is NOT rejected — deferredArchivePlan's
+  // PARALLEL-END extension already covers non-mark partners correctly.
+  const withPresent = guardSession([assistantCall(22, [{ id: 'e1', name: 'task_end' }, { id: 'p1', name: 'present' }])])
+  assert.deepEqual(siblingTaskMarkCalls(withPresent, 'task_end'), [], 'present is not a task-mark call')
+  // task_fold is in the reducer's parser trio, so it counts as a sibling.
+  const withFold = guardSession([assistantCall(22, [{ id: 'e1', name: 'task_end' }, { id: 'f1', name: 'task_fold' }])])
+  assert.deepEqual(siblingTaskMarkCalls(withFold, 'task_end'), ['task_fold'], 'legacy task_fold is a sibling')
+  // Two begins in one message: the second sees the first (self-skip is one).
+  const double = guardSession([assistantCall(22, [{ id: 'b1', name: 'task_begin' }, { id: 'b2', name: 'task_begin' }])])
+  assert.deepEqual(siblingTaskMarkCalls(double, 'task_begin'), ['task_begin'], 'a second begin in the same message is flagged')
 })
 
-test('a source-bearing non-tool message never masquerades as a result', () => {
-  let state = null
-  state = applyTaskMarks(state, assistantCall(10, [{ id: 'a1', name: 'task_begin' }]))
-  state = applyTaskMarks(state, {
-    seq: 11,
-    type: 'tool/result',
-    data: { message: { role: 'tool', source: { kind: 'file', callId: 'a1' }, content: [{ type: 'text', text: 'Task begun: ghost — 1 open.' }] } }
-  })
-  assert.deepEqual(state.marks, [], 'non-tool source does not pair')
-  assert.equal(Object.keys(state.pending).length, 1, 'intent stays pending')
+test('sibling guard: unreadable carriers degrade to null, never block', () => {
+  assert.equal(siblingTaskMarkCalls({ surface: { nodes: [] }, eventAt: () => null }, 'task_begin'), null, 'no assistant message: no verdict')
+  const textOnly = guardSession([{ seq: 5, type: 'assistant/message', data: { message: { content: [{ type: 'text', text: 'report' }] } } }])
+  assert.equal(lastAssistantToolNames(textOnly), null, 'text-only message carries no calls')
+  assert.equal(siblingTaskMarkCalls(textOnly, 'task_begin'), null, 'text-only carrier: no verdict')
+})
+
+test('sibling guard: reads the LAST assistant message via both access paths', () => {
+  const events = [
+    assistantCall(10, [{ id: 'b1', name: 'task_begin' }]),
+    assistantCall(22, [{ id: 'e1', name: 'task_end' }, { id: 'n1', name: 'task_begin' }])
+  ]
+  for (const legacy of [false, true]) {
+    const s = guardSession(events, { legacy })
+    assert.deepEqual(siblingTaskMarkCalls(s, 'task_begin'), ['task_end'], (legacy ? 'events-snapshot' : 'eventAt') + ' path: the last message is the carrier')
+    assert.deepEqual(lastAssistantToolNames(s), ['task_end', 'task_begin'], (legacy ? 'events-snapshot' : 'eventAt') + ' path: full call order')
+  }
 })
 
