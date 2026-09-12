@@ -168,11 +168,14 @@ export function closeTarget(marks, name) {
  *                                     any parallel partner results — see the
  *                                     parallel-begin guard below; fallback:
  *                                     the begin call itself), endSeq = the
- *                                     close result's own seq — the begin
- *                                     call (with its opening reasoning)
- *                                     stays on the surface as the live
- *                                     bookmark; everything after the end
- *                                     stays on the surface too
+ *                                     close result's own seq — or, when the
+ *                                     close message calls other tools in
+ *                                     parallel, the LAST of their results
+ *                                     (the parallel-end guard below) — the
+ *                                     begin call (with its opening
+ *                                     reasoning) stays on the surface as
+ *                                     the live bookmark; everything after
+ *                                     the end stays on the surface too
  *
  * History: v0.14's G2 gate also deferred while the deliverable sat after
  * a still-open/pending successor anchor — under the then-design the region
@@ -241,11 +244,51 @@ export function deferredArchivePlan(entry, surfaceNodes, events) {
   // result missing or shadowed, or no node between it and the close): fold
   // from the begin call itself — the v0.18 region, whose leading cut is
   // balanced by construction.
-  const endPos = posOf.get(foldResultSeq)
+  let endPos = posOf.get(foldResultSeq)
   // endPos <= beginPos means the surface order contradicts the log order
   // (the close cannot precede its own begin): treat it exactly like a
   // shadowed end — drop rather than fold a bogus region.
   if (endPos === undefined || endPos <= beginPos) return { action: 'drop' }
+  // PARALLEL-END GUARD (found live on dsh 0.1.5, the wxgame session): when
+  // the close-carrying assistant message ALSO calls other tools — the
+  // observed shape was task_end(A) + the successor's task_begin(B) in ONE
+  // message — their results FOLLOW the close result on the surface, and a
+  // cut AT the close result splits those call/result pairs: an unbalanced
+  // END boundary. The drain's shrink walk then commits a region ENDING
+  // BELOW the close result, so the fold never shadows foldResultSeq, the
+  // row never leaves pendingArchives, and every boundary re-plans and
+  // re-summarizes the previous summary node (observed: one task summarized
+  // 5 times, one full call each). Extend the END past the LAST result of
+  // the close message's own calls still on the surface — the mirror of the
+  // parallel-BEGIN guard below — so the committed region shadows the close
+  // result and the row settles on the first fold. A partner task_begin's
+  // "Task begun" result joins the archive; that successor's own anchor
+  // (the shared message) was already inside the span by design, so its
+  // archive row drops at plan time exactly as it always did — closed
+  // unfolded, never re-folded.
+  let endSeq = foldResultSeq
+  const endMsgCallIds = closeMessageCallIds(list, foldResultSeq, entry.name)
+  if (endMsgCallIds !== null) {
+    let endFloorPos = endPos
+    for (const e of list) {
+      if (e === null || typeof e !== 'object' || !Number.isInteger(e.seq)) continue
+      // Bounded by the deliverable message: a call's results always land
+      // before the next assistant message, so anything past it is not a
+      // partner result no matter its id.
+      if (e.seq <= foldResultSeq || e.seq > deliverableSeq) continue
+      if (e.type !== 'tool/result') continue
+      for (const b of blocksOf(messageOf(e))) {
+        if (b === null || typeof b !== 'object' || b.type !== 'tool-result' || typeof b.toolCallId !== 'string'
+          || !endMsgCallIds.has(b.toolCallId)) continue
+        const pos = posOf.get(e.seq)
+        if (pos !== undefined && pos > endFloorPos) endFloorPos = pos
+      }
+    }
+    if (endFloorPos > endPos) {
+      const extended = nodes[endFloorPos]
+      if (typeof extended === 'number') { endSeq = extended; endPos = endFloorPos }
+    }
+  }
   // The FIRST 'Task begun: ' result in log order between the begin anchor
   // and the close (seq bounds are right here: `list` is seq-ordered), kept
   // only when it is still on the surface — its index is the cut floor.
@@ -287,15 +330,55 @@ export function deferredArchivePlan(entry, surfaceNodes, events) {
     }
   }
   // START: the surface node at the position immediately AFTER the floor. The
-  // node AT endPos is the close result, which can never open a region (the
-  // same unbalanced-cut shape as opening at any result), so a floor with no
+  // node AT endPos is the close result (or, after the parallel-END guard,
+  // the last partner result), which can never open a region (the same
+  // unbalanced-cut shape as opening at any result), so a floor with no
   // room left after it falls back to the begin call itself.
   let startSeq = entry.seq
   if (startFloorPos !== -1 && startFloorPos + 1 < endPos) {
     const next = nodes[startFloorPos + 1]
     if (typeof next === 'number') startSeq = next
   }
-  return { action: 'fold', startSeq, endSeq: foldResultSeq, name: entry.name }
+  return { action: 'fold', startSeq, endSeq, name: entry.name }
+}
+
+/**
+ * Tool-call ids of the assistant message that CARRIES this task's close
+ * call — the message whose task_end produced the close result at
+ * `foldResultSeq` — ALL of its calls, partners included (the parallel-END
+ * guard extends the region past the partner results). Resolution is
+ * two-step and pure: ① the tool-result blocks of the close result event
+ * whose rendered text closes THIS task by name yield the close call's id;
+ * ② the assistant message before the result carrying that id yields the
+ * full call set. Null when either step misses (legacy or odd shapes — the
+ * caller then skips the extension, byte-identical to the pre-guard plan).
+ */
+function closeMessageCallIds(list, foldResultSeq, name) {
+  if (typeof name !== 'string' || name.length === 0) return null
+  const closeIds = new Set()
+  for (const e of list) {
+    if (e === null || typeof e !== 'object' || !Number.isInteger(e.seq) || e.seq !== foldResultSeq) continue
+    if (e.type !== 'tool/result') break
+    for (const b of blocksOf(messageOf(e))) {
+      if (b === null || typeof b !== 'object' || b.type !== 'tool-result' || typeof b.toolCallId !== 'string') continue
+      const text = toolResultText(b)
+      const ended = text.indexOf('Task ended: ') === 0 && taskNameFromText(text, 'Task ended: ') === name
+      const folded = text.indexOf('Task folded: ') === 0 && taskNameFromText(text, 'Task folded: ') === name
+      if (ended || folded) closeIds.add(b.toolCallId)
+    }
+    break
+  }
+  if (closeIds.size === 0) return null
+  for (const e of list) {
+    if (e === null || typeof e !== 'object' || !Number.isInteger(e.seq)) continue
+    if (e.seq >= foldResultSeq) continue
+    if (e.type !== 'assistant/message') continue
+    for (const b of blocksOf(messageOf(e))) {
+      if (b === null || typeof b !== 'object' || b.type !== 'tool-call' || typeof b.id !== 'string') continue
+      if (closeIds.has(b.id)) return assistantMessageCallIds(list, e.seq)
+    }
+  }
+  return null
 }
 
 /**
