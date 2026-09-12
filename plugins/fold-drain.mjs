@@ -12,7 +12,9 @@
  * archive closure dropped it in the same pass), the too-small / nothing-
  * committed path, or the plan's 'drop' verdict. A fold whose region had to
  * shrink below the close result does NOT settle: the row stays queued and
- * the next pass re-plans it.
+ * later passes re-plan it — but on the shared backoff schedule, because
+ * every unsettled commit is a whole summarization call (the live cascade
+ * re-billed one per boundary: a single task summarized 5 times).
  * Process-local bookkeeping only — on replay the entries retry once, hit
  * the same outcome, settle again; no persisted state involved.
  *
@@ -45,6 +47,8 @@ export const MAX_FOLD_ATTEMPTS = 5
 export const GIVE_UP_PASSES = 200
 /** Session entries each bookkeeping map keeps before evicting the oldest. */
 export const MAX_TRACKED_SESSIONS = 200
+/** Starved drain calls queued while another session's pass runs (see below). */
+export const MAX_DRAIN_QUEUE = 8
 const REASON_CLIP = 160
 
 function errText(err) {
@@ -96,6 +100,16 @@ function guardedSignal(signal) {
     }
   } catch (err) { /* fall through */ }
   return signal
+}
+
+// Timeout-only guard for a CHAINED pass (a starved drain call that waited
+// out another session's pass): its own hook call already returned, its
+// turn's signal is long gone, so only the lost-signal bound applies.
+function timeoutSignal() {
+  try {
+    if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') return AbortSignal.timeout(120000)
+  } catch (err) { /* fall through */ }
+  return undefined
 }
 
 /**
@@ -153,7 +167,9 @@ async function foldRegion(session, agent, engine, name, startSeq, endSeq, signal
  * archive moving; turn-stopping folds turn-final deliverables while the
  * provider prefix cache is still hot. Same-session dispatch order is
  * serialized by the host loop; the running guard below covers cross-session
- * reentry (subagent sessions share this process).
+ * reentry (subagent sessions share this process) — a starved call QUEUES
+ * its agent and the running pass chains it, instead of dropping it to a
+ * next boundary that may never come.
  *
  * At every agent step boundary, drain queue entries whose post-close
  * assistant message has landed (deferredArchivePlan gate), innermost
@@ -172,6 +188,10 @@ export function createArchiveDrain({ ctx, engineFor, closingTasks }) {
   const autoFoldFailures = new Map() // session.id → Map<name, bucket>
   const autoFoldAttempts = new Map() // session.id → Map<seq, { attempts, nextPass, name }>
   let drainRunning = false
+  // Starved drain calls (another session's pass was mid-flight at their hook
+  // dispatch), drained chained at the end of the running pass — see
+  // processDeferredArchives below.
+  const drainQueue = []
   // One drain pass = one agent step boundary of SOME session in this process;
   // a monotone counter is all the backoff clock needs.
   let drainPass = 0
@@ -234,8 +254,7 @@ export function createArchiveDrain({ ctx, engineFor, closingTasks }) {
     if (bySeq !== undefined) bySeq.delete(seq)
   }
 
-  async function processDeferredArchives(agent, signal) {
-    if (drainRunning) return
+  async function runDrainPass(agent, signal) {
     drainRunning = true
     drainPass += 1
     try {
@@ -288,15 +307,22 @@ export function createArchiveDrain({ ctx, engineFor, closingTasks }) {
           // "next round re-plans and drops it" cleanup can no longer happen.
           // A fold that had to shrink its region BELOW the close result (to
           // avoid an unbalanced boundary) leaves the row queued — and
-          // unsettled — on purpose: the next pass re-plans against the
-          // rewritten surface exactly as it always did.
+          // unsettled — on purpose: a later fold may still shadow the close
+          // result and drop it. But that re-plan is no longer free at every
+          // boundary: each unsettled commit is a full summarization call
+          // (live cascade on dsh 0.1.5: one task re-summarized 5 times), so
+          // the entry joins the shared backoff schedule and a HOLD line
+          // names the state while it stands.
           if (result === null || !archivesOf(ctx, session).some((p) => p.seq === entry.seq)) {
             markArchiveSettled(session, entry.seq)
+            clearArchiveFailure(session, entry.name)
+          } else {
+            const attempt = recordAttempt(session, entry.seq, entry.name)
+            attempt.nextPass = drainPass + (attempt.attempts >= MAX_FOLD_ATTEMPTS ? GIVE_UP_PASSES : backoffPasses(attempt.attempts))
+            recordArchiveFailure(session, entry.name,
+              'fold committed below the close result, attempt ' + attempt.attempts + ' — re-planned with backoff')
+            skipped.add(entry.seq)
           }
-          // No notice message is injected: the committed summary node
-          // itself carries the fold number and artifact path (embedded by
-          // the summarize override before commit).
-          clearArchiveFailure(session, entry.name)
         } catch (err) {
           const classified = classifyCategory(err)
           if (classified.category === 'summary') {
@@ -322,6 +348,36 @@ export function createArchiveDrain({ ctx, engineFor, closingTasks }) {
       }
     } finally {
       drainRunning = false
+    }
+  }
+
+  /**
+   * Public entry, wired to BOTH 'agent/pre-step' and 'agent/turn-stopping'.
+   * Cross-session reentry (subagent sessions share this process) used to
+   * return SILENTLY while another session's pass was mid-flight — deferring
+   * this session's drain to its next step boundary, which AT TURN STOP may
+   * never come: a closed task's archive then sat queued forever (live on
+   * dsh 0.1.5: the wechatide-skill session never folded because a sibling
+   * session's re-fold cascade held the drain across its turn-stop hook).
+   * A starved call now QUEUES its agent; the running pass chains one more
+   * pass for it in its finally, so the fold happens without any further
+   * boundary. The queued pass cannot reuse the starved call's signal — its
+   * turn is already over by then — so it runs under the timeout guard
+   * alone. Bounded queue: entries beyond the cap keep the old semantics
+   * (retried at their own next boundary).
+   */
+  async function processDeferredArchives(agent, signal) {
+    if (drainRunning) {
+      if (drainQueue.length < MAX_DRAIN_QUEUE) drainQueue.push(agent)
+      return
+    }
+    try {
+      await runDrainPass(agent, signal)
+    } finally {
+      while (!drainRunning && drainQueue.length > 0) {
+        const next = drainQueue.shift()
+        await runDrainPass(next, timeoutSignal())
+      }
     }
   }
 

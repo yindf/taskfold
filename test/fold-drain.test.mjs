@@ -201,6 +201,11 @@ test('a waiting entry folds on the next pass once a message lands', async () => 
 // result) the old scan found NO candidate at all (no node satisfies
 // `226 <= s < 216`), so it broke out with a null result and gamma closed
 // unfolded through the silent tooSmall path.
+//
+// Since the unsettled-commit backoff the pass SPLITS in two: the commit that
+// stops below the close result ends pass 1 immediately (the old free re-plan
+// in the SAME pass was the live cascade — one task re-summarized 5 times),
+// and the residual close pair is walked on the next scheduled boundary.
 test('a rejected END boundary shrinks by one surface POSITION, never by seq order', async () => {
   const h = harness([
     assistantCall(177, [{ id: 'b1', name: 'task_begin' }]),
@@ -215,15 +220,30 @@ test('a rejected END boundary shrinks by one surface POSITION, never by seq orde
   // while carrying the newest seq in the log.
   h.session.surface.nodes.splice(3, 0, 220)
 
+  // Pass 1: the walk commits at the summary node's position and stops there.
   await h.drain.processDeferredArchives(h.agent, undefined)
-
   assert.deepEqual(h.attempts.slice(0, 3), [[226, 216], [226, 214], [226, 220]], 'the END walks back one surface POSITION at a time')
   assert.deepEqual(h.folds, [[226, 220]], 'the first acceptable boundary commits')
-  // The residual close pair cannot be cut at either node (its CALL is
-  // unbalanced too), so the walk stops at the minimal region instead of
-  // looping: two more attempts, no more.
-  assert.equal(h.attempts.length, 5, 'the walk stops when the END reaches the START')
-  assert.deepEqual(h.state().pendingArchives.map((p) => p.name), ['gamma'], 'the entry stays queued (its anchor was never shadowed)')
+  // The commit stopped BELOW the close result, so the row survived the
+  // reducer: the entry joins the backoff schedule instead of re-planning
+  // for free — that re-plan is a whole summarization call.
+  assert.equal(h.attempts.length, 3, 'an unsettled commit ends the pass: no free re-plan')
+  const attempt = h.drain.autoFoldAttempts.get(h.session.id).get(177)
+  assert.equal(attempt.attempts, 1)
+  assert.equal(attempt.nextPass, 2, 'attempt 1 backs off one boundary')
+  assert.match(h.drain.autoFoldFailures.get(h.session.id).get('gamma'), /^fold committed below the close result, attempt 1/)
+  assert.deepEqual(h.state().pendingArchives.map((p) => p.name), ['gamma'], 'the entry stays queued (its close result was never shadowed)')
+
+  // Pass 2 (the scheduled retry): the residual close pair cannot be cut at
+  // either node (its CALL is unbalanced too), so the walk stops at the
+  // minimal region — two more attempts, nothing commits, and the null
+  // result settles the entry.
+  await h.drain.processDeferredArchives(h.agent, undefined)
+  assert.deepEqual(h.attempts.slice(3), [[214, 216], [214, 214]], 'the walk stops when the END reaches the START')
+  assert.equal(h.folds.length, 1, 'the retry commits nothing more')
+  assert.ok(h.drain.isSettledArchive(h.session, 177), 'the null result settles the entry in memory')
+  assert.equal(h.drain.autoFoldFailures.get(h.session.id).get('gamma'), undefined, 'settling clears the HOLD line')
+  assert.deepEqual(h.state().pendingArchives.map((p) => p.name), ['gamma'], 'the projection row persists (anchor never shadowed) — settle is in-memory only')
 })
 
 // Retry budget (review-found): ONE fold attempt is a whole summarization call
@@ -280,4 +300,70 @@ test('a cancelled fold is quiet on its first occurrence and visible if it repeat
   assert.equal(h.drain.autoFoldFailures.get(h.session.id), undefined, 'no noise from a single cancellation')
   await h.drain.processDeferredArchives(h.agent, undefined)
   assert.match(h.drain.autoFoldFailures.get(h.session.id).get('interrupted'), /^fold cancelled, attempt 2: /)
+})
+
+// Cross-session starvation (live on dsh 0.1.5): the drain guard is
+// process-global, and subagent sessions share the process. Session A's turn
+// stop fired while session B's re-fold cascade was mid-flight; the guard
+// returned silently, A never saw another step boundary, and its closed task
+// sat queued forever (the wechatide-skill session that never folded). A
+// starved call must QUEUE its agent: the running pass chains one more pass
+// in its finally, so the fold happens even with no further boundary.
+test('a starved cross-session drain call is chained, not dropped', async () => {
+  // Two sessions, one projection state each; ctx.stateOf dispatches by
+  // session object the way the host's sessionProjections does.
+  function mini(id) {
+    const events = [
+      assistantCall(10, [{ id: 'a1', name: 'task_begin' }]),
+      toolResult(11, 'a1', BEGUN(id + ' task', '1 open.')),
+      assistantCall(20, [{ id: 'a2', name: 'task_end' }]),
+      toolResult(21, 'a2', ENDED(id + ' task', 'all closed. Archival queued.')),
+      assistantText(25, id + ' deliverable')
+    ]
+    let state = null
+    for (const e of events) state = applyTaskMarks(state, e)
+    return {
+      agent: { session: { id, events, surface: { nodes: [10, 11, 20, 21, 25] } } },
+      state: () => state,
+      setState(s) { state = s }
+    }
+  }
+  const a = mini('session-a')
+  const b = mini('session-b')
+  const states = new Map([[a.agent.session.id, a], [b.agent.session.id, b]])
+  const ctx = { sessionProjections: { stateOf: (session) => states.get(session.id).state() } }
+
+  // Session A's fold awaits a gate while session B's turn-stop hook fires.
+  const folds = []
+  let releaseA
+  const gate = new Promise((resolve) => { releaseA = resolve })
+  const engine = {
+    async compactRegion(startSeq, endSeq, agent) {
+      const m = states.get(agent.session.id)
+      if (agent.session.id === 'session-a') { const g = gate; await g }
+      folds.push([agent.session.id, startSeq, endSeq])
+      const nodes = agent.session.surface.nodes
+      const startIdx = nodes.indexOf(startSeq)
+      const endIdx = nodes.indexOf(endSeq)
+      m.setState(applyTaskMarks(m.state(), { type: 'compaction/summary', data: { shadowedSeqs: nodes.slice(startIdx, endIdx + 1) } }))
+      agent.session.surface.nodes = nodes.slice(0, startIdx).concat(nodes.slice(endIdx + 1))
+      return { shadowedTokenCount: 500 }
+    }
+  }
+  const drain = createArchiveDrain({ ctx, engineFor: async () => engine, closingTasks: new Map() })
+
+  // B's pass is mid-flight when A's turn-stop hook dispatches: A must return
+  // immediately (never block the hook) but its agent is queued behind B.
+  const passB = drain.processDeferredArchives(b.agent, undefined)
+  const starvedA = drain.processDeferredArchives(a.agent, undefined)
+  await starvedA
+  assert.deepEqual(folds, [['session-b', 20, 21]], 'B folds while A waits in the queue')
+
+  releaseA()
+  await passB
+  // The chained pass folded A with no further boundary of its own.
+  assert.deepEqual(folds, [['session-b', 20, 21], ['session-a', 20, 21]], 'the running pass chains the starved session')
+  assert.ok(drain.isSettledArchive(a.agent.session, 10) && drain.isSettledArchive(b.agent.session, 10), 'both rows settled')
+  assert.equal(a.state(), null, 'A row closed out of its projection')
+  assert.equal(b.state(), null, 'B row closed out of its projection')
 })
