@@ -3,6 +3,57 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.34.3 — one task-mark call per message: enforced at execute time, taught in every prompt layer (2026-09-12)
+
+0.34.2 made the parallel end→begin shape SAFE (the close settles on its first
+fold) but could not make it cheap: a `task_begin(B)` riding the close message
+shares `task_end(A)`'s anchor message, the closing fold swallows it, and B ends
+closed-unfolded — no archive of its own, its content live until a later span
+sweeps it. The live logs also showed WHY models relay: the prompt's shape
+example drew `task_end → task_begin` as an unbroken arrow chain with no message
+boundaries, and the model implemented exactly that as parallel calls. Two
+commits close the shape itself.
+
+- **Fixes**
+  - reject relayed task-mark calls at execute time. The host plugin API has no
+    pre-execution interception hook (`agent/pre-step` gates user messages
+    only, `agent/request` cannot mutate messages), but a tool handler executes
+    with its carrying message as the last assistant message on the surface —
+    so `task_begin`/`task_end` now inspect it via the pure helper
+    `siblingTaskMarkCalls` (dual access paths, event-at-seq and snapshot, the
+    same ones anchoring already uses) and REJECT the call when the message
+    carries another task-mark call (`task_begin`/`task_end`/`task_fold`),
+    with a corrective error naming the re-issue path (`task_end` through the
+    lifecycle hint channel). Both directions reject, so `[task_end(A),
+    task_begin(B)]` leaves nothing changed and the model re-issues each alone:
+    end and start each land on their own message boundary, and every task
+    keeps its own archive. Non-mark partners (`present`, reads) still pass —
+    those shapes were already handled by 0.34.2's PARALLEL-END extension and
+    touch no anchor. An unreadable carrier yields a null verdict and the
+    guard degrades open: older hosts never see a false rejection.
+  - state the standalone-call contract in every prompt layer. The
+    `task-marker-compaction` system-prompt section now declares "ONE
+    task-mark call per message, always" where the discipline begins, names
+    the end→begin relay trap and its anchor-swallowing consequence, and
+    demands the successor's `task_begin` as its own FOLLOWING message; the
+    shape example now carries message boundaries (`task_end "review PR #98"`
+    → report → `task_begin "review PR #99"`, a report after every close);
+    both tool descriptions upgrade the advisory "Call alone in a step" to
+    "This MUST be the only task-mark call in its message … rejected at
+    execute time", each with the concrete consequence and the re-issue
+    instruction. The prompt teaches the rule so a compliant model never pays
+    the rejection round-trip; the guard enforces it for the rest, and 0.34.2's
+    extension stays as the safety net for pre-guard logs and non-mark
+    partners.
+
+Verification: offline suite 163 pass / 0 fail (5 skipped are the React/DOM
+`{ skip: noReact }` cases, environmental; 168 tests total, 12 new since 0.34.2);
+new tests lock the relay rejection in both directions, the single-call pass,
+the non-mark partner exemption, the null-verdict degradation, and that both
+access paths read the LAST assistant message. The summarization request
+envelope is untouched (guard and prompt text only), so the prefix-cache
+verification deltas of previous releases carry over unchanged.
+
 ## 0.34.2 — settle deferred archives on the first fold, never drop a starved drain (2026-09-12)
 
 Two compaction bugs found live on dsh 0.1.5 (the wxgame workspace, plugin
