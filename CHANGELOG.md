@@ -3,6 +3,71 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.34.5 — the handoff shape, stated so a literal reader cannot end the turn (2026-09-15)
+
+A live session (project `yxx`) went quiet right after a task closed. The
+model had closed its task, written the report as a plain text message, and
+planned to start the successor `task_begin` in the "next step" — a step
+that never came. An assistant message with no tool call IS the end of a
+turn (`if (toolCalls.length === 0) return { kind: 'completed' }` in the
+host's agent loop), so the work the model had just promised never started.
+Nothing errored: the turn closed as `completed`, and the fold activity
+running immediately after the report made the UI look busy while it was
+already over. The user's next message was "？".
+
+The trigger was our own wording. The section and both descriptions said a
+task-mark call must stand "alone in a step" / in "its own message", and a
+model reading that literally concluded the report message had to be text
+ONLY. It was obeying the contract we wrote. Two independent passes (a
+five-round implementation review, then a GLM-5.3 prompt audit) confirmed
+the direction of the fix and found the remaining inaccuracies below — and
+found that the shape the 0.34.3 guard rejects fails loudly, while the
+shape that caused this incident was perfectly legal and silently fatal.
+
+- **Fixes (prompts — `616e547`)**
+  - "only" scopes correctly everywhere: it constrains task-mark CALLS.
+    Text, reasoning, `read` and `present` may sit beside the single mark,
+    and the section now says so in those words. Every "alone in a step" /
+    "its own message" phrasing is gone.
+  - the turn-ending rule is stated with BOTH exits: when the turn still
+    has work, the report message must carry the tool call (normally the
+    successor `task_begin`) — a text-only report is a STOP, not a pause;
+    when you are done or waiting on the user, a text-only report is
+    exactly right. The `task_end` description and its result text carry
+    the same exit, and the shape example is now the supported one: the
+    report shares its message with whatever mark comes next.
+  - the rejected shape is described accurately: a second task-mark call in
+    one message fails BOTH calls (the guard is symmetric — see
+    `test/task-marks.test.mjs`), the set is `{task_begin, task_end,
+    task_fold}` rather than begin/end, non-mark partners are unrestricted
+    rather than the enumeration "reads and present", and the other
+    failure reasons are named instead of dropped.
+  - span and timing anchors: the fold span opens after the LAST result of
+    the begin-carrying message (plus parallel partner results), the gate
+    message is named, and folds fire at the step boundary after that
+    message rather than "as soon as it lands".
+  - the nudge channel is described as injected messages. "Runtime context
+    carries lifecycle nudges" was false — nudges arrive through
+    `agent/pre-step` — and a nudge can never arrive after a turn ends,
+    which is exactly why none of the existing nudges fired in the incident
+    above.
+  - size, net against v0.34.4: the three always-visible prompt surfaces
+    (section plus both task-mark descriptions) grew 5674 → 6549 chars
+    (≈ +290 tokens per request). The turn-ending rule needs that space;
+    the audit then trimmed the section from 4020 to 3732 (−288) while
+    keeping every constraint, and rejected a proposed −21.6% rewrite
+    because it paid for its savings with three known semantic errors. The
+    remaining overlap — "mark exclusivity" and "text ends the turn" are
+    each stated in the section AND in both descriptions — is where the
+    next cut should come from.
+- **Verification** — 182 pass / 0 fail across 13 files (181 before; the 6
+  new pins in `test/prompt-contract.test.mjs` decode the prompt literals
+  and assert both directions — new contract present, old phrasings
+  absent). Every edit was checked against the byte-stable latch and the
+  load-bearing `'Task ended: '` reducer prefix before landing. `npm run
+  verify:cache` → 14 judged / 14 pass; the fold summarization envelope is
+  untouched.
+
 ## 0.34.4 — accept the summaries models actually write; make every prompt layer tell the same truth (2026-09-12)
 
 Two five-round reviews — an implementation audit, then a prompt audit —
