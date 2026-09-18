@@ -3,6 +3,63 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.34.6 — dsh 0.1.6-alpha.2 seams — recover-loop waterfall + routed-config spread (2026-09-18)
+
+The 0.1.5-alpha.2 → 0.1.6-alpha.2 host upgrade changed two seams this
+plugin rides. All nine audited seam packages changed implementation files
+(unlike the rc.1→rc.2 round, where only 7 changed and the two imported
+ones were byte-identical), and two of the changes bit:
+
+- **The recover loop.** `summarizeCompaction` now wraps summarize in an
+  error-recovery loop: on failure it calls
+  `ctx.waterfall('compaction/summary-error', …, () => false)` before
+  rethrowing. The ScopedEngine's shim ctx had no `waterfall` — so every
+  scoped-fold summarize failure surfaced as a masking `TypeError`
+  instead of its cause. Seen live before the fix: one failed fold on the
+  running host (`fold failed, attempt 1: this.ctx.waterfall is not a
+  function`), after which the host's own pressure compaction swallowed
+  the span — the documented degradation mode, in production, from a bug
+  that hid its own diagnosis. `shimWaterfall` now delegates to the real
+  cordis Context when it has the method — host recovery listeners
+  (image offload) apply to scoped folds exactly as to the realm engine's
+  — and otherwise runs the caller's own default, preserving pre-0.1.6
+  semantics (rethrow → drain retries at the next boundary). Three
+  offline tests pin the contract (verbatim delegation, default-run
+  fallback, propagation on throw).
+
+- **The prefix-cache anchor.** The zai/glm adapter now threads
+  `reasoningEffort` into the request's token stream. Fold options
+  carried only provider/model — so the fold request diverged from every
+  main request right after the system+tools block and re-billed its
+  whole prefix: measured live, 48.0% hit with tail +8444 (a textbook
+  verify-cache regression signature, caught by exactly the check the
+  flow mandates after every host upgrade). `foldRequestOptions` now
+  mirrors the host `buildRequest()`'s shape — the latest routed
+  requestHeader config rides along, `maxTokens` stripped after the
+  spread (the no-summary-cap product ruling stands; generation params
+  do not affect the input-prefix cache). With the spread: 90.6% hit,
+  tail +712; after the maxTokens strip (final shape): 90.0%/89.7% hit,
+  negative tail.
+
+Verified on 0.1.6-alpha.2: 188/188 offline (the 182 that shipped with
+0.34.5 plus three shimWaterfall tests and three foldRequestOptions
+tests), 12/12 host-API probe against the real engine+assembler, a source
+audit of all nine runtime seam surfaces in the installed host, and live
+folds on the running host with the mounted copy byte-identical to HEAD
+passing `verify-cache --since-restart`.
+
+**Release channels split** (user decision): from this release, `master`
+carries only rc-channel releases and stays at the newest verified rc
+(`v0.34.1`; reset with force-push); alpha-channel releases are committed
+and tagged on the `alpha` branch — this is the first one. The release
+script needed no change: it pushes the current branch and the tag.
+README raw-asset URLs on the alpha branch now point at `/alpha/`.
+
+- **Fixes**
+  - dsh 0.1.6-alpha.2 seams — recover-loop waterfall + routed-config spread
+- **Docs**
+  - alpha channel verified through 0.1.6-alpha.2; channel-branch release policy
+
 ## 0.34.5 — the handoff shape, stated so a literal reader cannot end the turn (2026-09-15)
 
 A live session (project `yxx`) went quiet right after a task closed. The
