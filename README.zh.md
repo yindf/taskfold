@@ -27,11 +27,13 @@
 
 ```sh
 # rc 通道 —— 默认分支（master）
-dsh plugin --profile <你的profile> add github:yindf/taskfold
+dsh plugin --profile web add github:yindf/taskfold
 
 # alpha 通道 —— alpha 分支（引号不能省：# 在 sh 里是注释）
-dsh plugin --profile <你的profile> add "github:yindf/taskfold#alpha"
+dsh plugin --profile web add "github:yindf/taskfold#alpha"
 ```
+
+两条命令均可直接复制使用：`web` 就是 DSH Web GUI 所用的 profile——如果你用别的 profile，换成你的名字即可。
 
 两个分支各自的 README 记录自己通道的「支持的 dsh 版本」——alpha 通道的最新记录在 [alpha 分支](https://github.com/yindf/taskfold/blob/alpha/README.zh.md#支持的-dsh-版本)的 README 上。
 
