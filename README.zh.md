@@ -23,11 +23,19 @@
 
 ## 快速开始
 
+按你 dsh 构建所在的通道选安装命令——每条都取该通道上最新验证过的 Release（见[支持的 dsh 版本](#支持的-dsh-版本)）：
+
 ```sh
-dsh plugin --profile <你的profile> add dsh-taskfold
+# rc 通道 —— 默认分支（master）
+dsh plugin --profile <你的profile> add github:yindf/taskfold
+
+# alpha 通道 —— alpha 分支（引号不能省：# 在 sh 里是注释）
+dsh plugin --profile <你的profile> add "github:yindf/taskfold#alpha"
 ```
 
-已发布到 npm：[`dsh-taskfold`](https://www.npmjs.com/package/dsh-taskfold)——预构建包，免去 dsh 的 `allowBuilds` 构建授权。也可以直接从 GitHub 安装：`add github:yindf/taskfold`。
+两个分支各自的 README 记录自己通道的「支持的 dsh 版本」——alpha 通道的最新记录在 [alpha 分支](https://github.com/yindf/taskfold/blob/alpha/README.zh.md#支持的-dsh-版本)的 README 上。
+
+npm 上也有 [`dsh-taskfold`](https://www.npmjs.com/package/dsh-taskfold)——预构建包，免去 dsh 的 `allowBuilds` 构建授权——但 npm 副本可能落后于通道分支。
 
 重启 dsh——该 profile 下的每个会话都拥有这些工具。之后智能体用命名任务包住自己的工作：
 
