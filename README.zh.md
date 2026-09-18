@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/yindf/taskfold/master/assets/banner.zh.png" width="100%" alt="taskfold —— 给你的编程智能体，近乎无限的上下文" />
+  <img src="https://raw.githubusercontent.com/yindf/taskfold/alpha/assets/banner.zh.png" width="100%" alt="taskfold —— 给你的编程智能体，近乎无限的上下文" />
 </p>
 
 <p align="center"><b>给你的编程智能体，近乎无限的上下文</b></p>
@@ -99,9 +99,9 @@ taskfold 用“好笔记本”的方式解决：干活前，智能体先用 `tas
 
 在 Web GUI 中，当前打开的 task 栈还会以常驻 dock 显示在输入框上方（和 todo 面板一样）：外层任务在前、最内层高亮，附带 folding/pending 计数——直接读会话的 `taskMarks` 投影，不追加任何事件。
 
-<img src="https://raw.githubusercontent.com/yindf/taskfold/master/assets/screenshot-tasks.png" width="100%" alt="常驻输入框上方的任务栈：嵌套的打开任务、最内层高亮，每个已结束任务各占一行 folding">
+<img src="https://raw.githubusercontent.com/yindf/taskfold/alpha/assets/screenshot-tasks.png" width="100%" alt="常驻输入框上方的任务栈：嵌套的打开任务、最内层高亮，每个已结束任务各占一行 folding">
 
-<img src="https://raw.githubusercontent.com/yindf/taskfold/master/assets/screenshot-tasks-collapsed.png" width="100%" alt="同一任务栈折叠成一行，以及 lifecycle 提示交给模型的任务栈行">
+<img src="https://raw.githubusercontent.com/yindf/taskfold/alpha/assets/screenshot-tasks-collapsed.png" width="100%" alt="同一任务栈折叠成一行，以及 lifecycle 提示交给模型的任务栈行">
 
 ## 其他安装方式
 
@@ -109,7 +109,7 @@ taskfold 用“好笔记本”的方式解决：干活前，智能体先用 `tas
 
 ## 支持的 dsh 版本
 
-- **alpha 通道 —— 支持到 `0.1.5-alpha.2`**（2026-09-10 实测：离线测试套件 117 个测试全绿；针对真实 `dsh-compaction-basic`/`dsh-llm`/`dsh-session` 包的宿主 API 探针——引擎类导出、`summarize` 钩子、`BlockAssembler`、会话 surface/`deriveEventMessage` 接口，以及用插件自己的 shim ctx 构造 `ScopedEngine`；经由真实引擎与装配器的端到端折叠——前缀锚定信封、带真行号的围栏式 span 索引、span 字节零改动、归档 footer 行号准确；25 条运行时断言的接缝审计确认 `agent/pre-step`、`agent/turn-stopping`、`sessionProjections.register`/`stateOf`、`systemPrompt.section`/`context`、`tools.register` 与 `dsh-compaction-basic` 的 compaction 判别器形态均未变；以及在运行中的 0.1.5-alpha.2 宿主上活体折叠，挂载副本与本仓库 HEAD blob 逐字节一致。本轮无需改代码。上一轮发现的宿主侧 API 漂移依旧存在：`dsh-session` 仍未导出 `decodeStorageRecord`/`packChunkRuns`，而本插件从不使用它们——只 import `dsh-compaction-basic` 与 `dsh-llm`——因此依赖它们的离线区域事务回放仍不在验证链上，该路径由活体折叠覆盖）。
+- **alpha 通道 —— 支持到 `0.1.6-alpha.2`**（2026-09-18 在 0.34.6 上实测：离线测试套件 188 个测试全绿；针对真实 `dsh-compaction-basic`/`dsh-llm` 包的宿主 API 探针 12/12——引擎类导出、`summarize`/`compactRegion` 原型、当前 chunk 语法的 `BlockAssembler`，以及 `ScopedEngine` 端到端折叠——前缀锚定信封、单一 system 消息、构造式标题、带真行号的围栏式 span 索引；对已安装宿主的全部九个运行时接缝面做源码审计（`agent/pre-step` waterfall、`agent/turn-stopping` serial、`sessionProjections.register`/`stateOf`、`systemPrompt.section`/`context`、`tools.register`、会话 surface API、compaction 判别器）；以及在运行中的 0.1.6-alpha.2 宿主上活体折叠，挂载副本与本仓库 HEAD blob 逐字节一致——折叠通过 `verify-cache --since-restart`（前缀缓存命中 89.7–90.6%，tail 为负）。本次升级需要两处代码改动，均已活体验证：宿主 `summarizeCompaction` 新增错误恢复循环，失败时先调 `ctx.waterfall('compaction/summary-error', …)`——shim ctx 现将其委托给真实 Context（此前 scoped 折叠的 summarize 失败会以 `TypeError` 掩盖真实原因，活体上观察到一次折叠失败、随后宿主自身的压力 compaction 吞掉了该 span）；zai/glm 适配器现在把 `reasoningEffort` 编入请求 token 流，折叠选项因此完整镜像 `buildRequest()` 的路由配置（缺失时折叠在每个主请求的 system+tools 块之后即分歧：命中 48.0%、tail +8444）。它所取代的 `0.1.5-alpha.2` 记录保持原样）。
 - **rc 通道 —— 支持到 `0.1.5-rc.2`**（2026-09-11 在 0.34.1 上实测：离线测试套件 162 个测试全绿；对 rc.1 → rc.2 全部 240 个首方 `@deepseek-ai` 包做逐字节接缝审计——231 个仅 `package.json` 版本字段不同，7 个改了实现文件（消息反馈一组：`dsh-client-ui-message-feedback`、`dsh-message-feedback`、`dsh-command-feedback`、`dsh-client-ui-chat`、`dsh-client-ui-deliverables`、`dsh-client-ui-sidebar`，以及 Web 壳 `dsh-web-frontend`），无包增删，而本插件唯一 import 的两个包 `dsh-compaction-basic` 与 `dsh-llm` 实现逐字节未变；针对真实 rc.2 包的宿主 API 探针——引擎类导出、`summarize` 原型、可继承性，以及 `BlockAssembler` 的 `push`/`blocks`；对两版构建做客户端契约扫描——`conversation.input.dock`、`useProjection`、`__ModuleLoader__`、`slots.inject` 全部相同，且 dock 槽位拥有者 `dsh-client-ui-conversation`、参考消费者 `dsh-client-ui-goal` 与 bundle 注册器 `dsh-client-modules` 逐字节未变；以及在运行中的 0.1.5-rc.2 宿主上活体折叠，挂载副本与本仓库 v0.34.0 tag blob 逐字节一致——1/1 次折叠通过 `verify-cache --since-restart`（前缀缓存命中 98.6%）。本轮无需改代码；它所取代的 `0.1.5-rc.1` 记录保持原样）。`dsh`、`dsh-compaction-basic`、`dsh-llm` 三者版本锁步发布，一个数字覆盖全部耦合面。
 - **上界：未测试、未强制。** dsh 尚未向插件提供宿主版本协商机制，不兼容的宿主不会被自动拒绝——在不兼容的 dsh 上，折叠会降级（任务照常关闭、不折叠），不会损坏数据。每次 dsh 升级后，请复核本节并按实测结果更新。
 - **可选钩子：`agent/turn-stopping`** —— 0.26.0 起归档排干还会在回合结束时运行，让回合末交付的折叠赶在 provider 前缀缓存还热时执行。没有该钩子的宿主保持原来的纯 pre-step 语义（折叠照常发生，只是晚一个回合）；注册语句整体包裹，钩子缺失不会破坏 `apply()`。
@@ -117,7 +117,7 @@ taskfold 用“好笔记本”的方式解决：干活前，智能体先用 `tas
 ## 维护者须知
 
 - 目录：`plugins/`（两个挂载行 `compact-region.mjs` 与 `compact-stats.mjs`，及其共享纯模块 `events.mjs`、`task-marks.mjs`、`fold-instruction.mjs`、`fold-engine.mjs`、`fold-drain.mjs`、`lifecycle-nudges.mjs`、`lifecycle-injection.mjs`、`span-preview.mjs`，以及浏览器半部：`task-stack-ui.mjs`——dock 的唯一事实源，由 `scripts/build-client.mjs` 生成到 `taskfold-client.mjs`）、`scripts/release.mjs`、`scripts/verify-cache.mjs` 与 `scripts/build-client.mjs`、`test/`（`npm test`）、`assets/`（README banner、仓库设置里上传的社交预览图，以及 `screenshots.json` 列出的商店截图）、`docs/`（`docs/README.md` 索引，以及 `docs/design/` 设计笔记与 `docs/adr/` 决策记录——有意不随 npm 包发布）、`CHANGELOG.md`。
-- 发版：`node scripts/release.mjs draft` → 审阅 CHANGELOG 条目 → `node scripts/release.mjs release`（CHANGELOG 是版本唯一事实源）。若本次发版改变了支持的 dsh 版本范围，发版前先更新**两份** README 的“支持的 dsh 版本”一节——release 脚本会提醒。该节保持**每个通道一行**：最新的 alpha 一条、最新的 rc 一条；历史 alpha / rc 条目直接删掉，不要罗列。
+- 发版：`node scripts/release.mjs draft` → 审阅 CHANGELOG 条目 → `node scripts/release.mjs release`（CHANGELOG 是版本唯一事实源）。**通道分支**（0.34.6 起）：`master` 只承载 rc 通道发版——它停留在最新的已验证 rc 版本；alpha 通道发版在 `alpha` 分支上进行，其提交与 tag 承载 alpha 验证过的工作（在 `alpha` 分支上跑 draft/release；脚本推送当前分支与 tag）。若本次发版改变了支持的 dsh 版本范围，发版前先更新**两份** README 的“支持的 dsh 版本”一节——release 脚本会提醒。该节保持**每个通道一行**：最新的 alpha 一条、最新的 rc 一条；历史 alpha / rc 条目直接删掉，不要罗列。
 - **折叠缓存校验是流程的一部分。** 每次 dsh 升级后——以及任何触及折叠信封的发版前——对一份 live 会话日志跑 `node scripts/verify-cache.mjs --since-restart`，并把数字记进 CHANGELOG 条目。若某次折叠的摘要调用重新付费了它的 span——判据是 `uncached − span > --tail-budget`（tail 为正）——脚本以非零码退出，这正是前缀信封不再匹配宿主摘要输入的 signature。离线测试只能钉住结构前提（只有一个 system 消息、严格前缀）；真实缓存命中只能由 live 日志给出。
 - 设计决策与历史见 `CHANGELOG.md`，以及仓库内的 `docs/`（索引见 `docs/README.md`；`docs/design/` 设计笔记与 `docs/adr/` 决策记录随仓库走，不随 npm 包发布）。
 

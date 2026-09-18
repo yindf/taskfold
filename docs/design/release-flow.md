@@ -115,6 +115,16 @@ npm publish、annotated tag、CHANGELOG 人工纠错（草稿本就要求人工�
 - 正确动作：对**同一条** push 命令直接带 `sandbox_permissions: danger-full-access` 重跑（凭据管理器需要真实运行环境），一次成功。v0.24.1 实测：tag + master 一次推齐。
 - 同类：`dsh plugin --profile web update`（写 `~/.dsh/profiles`，工作区之外）同样需要升级权限，属预期，不是故障。
 
+## 通道分支（用户拍板，2026-09-18）
+
+背景：0.34.2–0.34.5 的 alpha 通道发版都落在 master 上，master 与「最新已验证 rc」脱节。决策：
+
+- **master 只承载 rc 通道发版**，停留在最新的已验证 rc 版本（当前 = `v0.34.1`，2026-09-18 起以 `git push --force-with-lease origin v0.34.1:master` 回拨）。
+- **alpha 通道发版在 `alpha` 分支**：分支起点为当时的 master HEAD，提交与 tag 都打在 `alpha` 上。
+- 脚本无需改动：`pushRelease` 推的是 `git push origin HEAD`（当前分支）+ tag；发散检查用的 upstream 取 HEAD 的 upstream，首次推送 alpha 后自然生效。在 alpha 分支上跑 `draft`/`release` 即可。
+- README 内的 raw 资源 URL 在 alpha 分支上指向 `/alpha/`（master 回拨后 `/master/` 路径的资产停留在 rc 时代版本）。
+- npm 包版本号不区分通道（0.34.6 就是 0.34.6）；通道由分支承载。GitHub Release 与 tgz 附件照常。
+
 ## README「支持的 dsh 版本」一节写法（用户拍板，2026-09-09）
 
 - **alpha 一条线、rc 一条线**：每条线只写该通道**实测可用的最新版本**（形如「alpha 通道 —— 支持到 `0.1.5-alpha.1`」），并附该版本的验证记录。
