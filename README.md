@@ -23,11 +23,19 @@ For [DeepSeek Harness](https://www.npmjs.com/package/@deepseek-ai/dsh) (DSH).
 
 ## Quickstart
 
+Pick the install line that matches your dsh build's channel — each command fetches the newest release verified on that channel (see [Supported dsh versions](#supported-dsh-versions)):
+
 ```sh
-dsh plugin --profile <your-profile> add dsh-taskfold
+# rc channel — the default branch (master)
+dsh plugin --profile <your-profile> add github:yindf/taskfold
+
+# alpha channel — the alpha branch (keep the quotes: # starts a comment in sh)
+dsh plugin --profile <your-profile> add "github:yindf/taskfold#alpha"
 ```
 
-Published on npm as [`dsh-taskfold`](https://www.npmjs.com/package/dsh-taskfold) — prebuilt, so it skips dsh's `allowBuilds` build approval. Straight from GitHub also works: `add github:yindf/taskfold`.
+Each branch's README carries its own "Supported dsh versions" record — the alpha channel's current record lives on the [alpha branch](https://github.com/yindf/taskfold/blob/alpha/README.md#supported-dsh-versions).
+
+Also on npm as [`dsh-taskfold`](https://www.npmjs.com/package/dsh-taskfold) — prebuilt, so it skips dsh's `allowBuilds` build approval — though the npm copy can lag behind the channel branches.
 
 Restart dsh — every session on that profile gets the tools. The agent then wraps its work in named tasks:
 
