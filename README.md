@@ -27,11 +27,13 @@ Pick the install line that matches your dsh build's channel — each command fet
 
 ```sh
 # rc channel — the default branch (master)
-dsh plugin --profile <your-profile> add github:yindf/taskfold
+dsh plugin --profile web add github:yindf/taskfold
 
 # alpha channel — the alpha branch (keep the quotes: # starts a comment in sh)
-dsh plugin --profile <your-profile> add "github:yindf/taskfold#alpha"
+dsh plugin --profile web add "github:yindf/taskfold#alpha"
 ```
+
+Both lines are copy-paste ready: `web` is the profile the DSH Web GUI runs on — swap in your own profile name if you use a different one.
 
 Each branch's README carries its own "Supported dsh versions" record — the alpha channel's current record lives on the [alpha branch](https://github.com/yindf/taskfold/blob/alpha/README.md#supported-dsh-versions).
 
