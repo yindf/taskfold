@@ -13,7 +13,7 @@
 //   node test/fold-engine.test.mjs
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { prependFoldHeading, opensWithSectionHeading, stripBoundedPreamble, resolveBlockAssembler, dropDuplicateLeadingSystem, spanMessagesFor } from '../plugins/fold-engine.mjs'
+import { prependFoldHeading, opensWithSectionHeading, stripBoundedPreamble, resolveBlockAssembler, dropDuplicateLeadingSystem, spanMessagesFor, shimWaterfall, foldRequestOptions } from '../plugins/fold-engine.mjs'
 
 const NAME = 'Investigate settings Models page "off" bug'
 const text = (s) => ({ type: 'text', text: s })
@@ -235,4 +235,78 @@ test('resolveBlockAssembler: throws at BUILD time when dsh-llm is unresolvable o
   await assert.rejects(resolveBlockAssembler(async () => { throw new Error('boom') }), /BlockAssembler unavailable: boom/)
   await assert.rejects(resolveBlockAssembler(async () => ({})), /export missing/)
   await assert.rejects(resolveBlockAssembler(async () => null), /export missing/)
+})
+
+// --- shimWaterfall (the 0.1.6-alpha recover-loop seam) ----------------------
+// dsh 0.1.6-alpha's summarizeCompaction wraps summarize in a recover loop:
+// on error it calls ctx.waterfall('compaction/summary-error', payload,
+// () => false) — a listener returning true retries a re-prepared span. The
+// ScopedEngine's shim ctx is not a cordis Context; without the method every
+// scoped-fold error surfaced as a masking TypeError instead of its cause.
+test('shimWaterfall: delegates verbatim when the real Context has the method', () => {
+  const seen = []
+  const ctx = { waterfall: (name, payload, next) => { seen.push([name, payload]); return next !== undefined ? true : 'nodefault' } }
+  const wf = shimWaterfall(ctx)
+  assert.equal(wf('compaction/summary-error', { a: 1 }, () => false), true, 'real listeners run, their verdict wins')
+  assert.deepEqual(seen, [['compaction/summary-error', { a: 1 }]], 'name and payload forwarded verbatim')
+})
+
+test('shimWaterfall: without a real waterfall the caller-supplied default runs', () => {
+  const wf = shimWaterfall({})
+  let called = false
+  assert.equal(wf('compaction/summary-error', {}, () => { called = true; return false }), false)
+  assert.equal(called, true, 'next() is the host\'s own () => false default — original error rethrows, drain retries at the boundary')
+  assert.equal(wf('ev', {}, undefined), false, 'no default at all → false, never undefined')
+  assert.equal(shimWaterfall(null)('ev', {}, () => 42), 42, 'a null ctx still runs the default')
+})
+
+test('shimWaterfall: a real waterfall throwing propagates (never masks, never swallows)', () => {
+  const wf = shimWaterfall({ waterfall: () => { throw new Error('dispatch down') } })
+  assert.throws(() => wf('ev', {}, () => false), /dispatch down/)
+})
+
+// --- foldRequestOptions (the 0.1.6-alpha.2 prefix-cache seam) ----------------
+// The zai/glm adapter on dsh 0.1.6-alpha.2 threads reasoningEffort into the
+// request's token stream; a fold options object without the routed config
+// diverged from every main request right after the system+tools block and
+// re-billed the whole prefix (live: 48.0% → 90.6% hit with the spread).
+test('foldRequestOptions: spreads the routed config (reasoningEffort rides along), maxTokens stripped', () => {
+  const options = foldRequestOptions({
+    latest: { provider: 'p1', model: 'm1', reasoningEffort: 'max', maxTokens: 131072, temperature: 0.7 },
+    target: { provider: 'p2', model: 'm2' },
+    input: {},
+    messages: [],
+    sessionId: 's1',
+    signal: undefined
+  })
+  assert.equal(options.reasoningEffort, 'max', 'adapter knobs from the latest routed request ride along')
+  assert.equal(options.temperature, 0.7, 'unknown future config fields spread too — mirror, do not cherry-pick')
+  assert.equal(options.maxTokens, undefined, 'product ruling: no summary-length cap; generation params never affect the input-prefix cache')
+  assert.equal(options.provider, 'p2', 'resolved fold target overrides the header provider')
+  assert.equal(options.model, 'm2')
+  assert.equal(options.sessionId, 's1')
+  assert.equal(options.purpose, 'compaction')
+  assert.equal('signal' in options, false)
+})
+
+test('foldRequestOptions: no routed header at all still yields a minimal, valid options object', () => {
+  const options = foldRequestOptions({
+    latest: undefined,
+    target: { provider: 'p', model: 'm' },
+    input: { system: 'SYS', tools: [{ name: 't' }] },
+    messages: [{ role: 'user' }],
+    sessionId: 's',
+    signal: 'SIG'
+  })
+  assert.equal(options.provider, 'p')
+  assert.equal(options.system, 'SYS', 'a host that still sends a separate system field keeps it')
+  assert.deepEqual(options.tools, [{ name: 't' }])
+  assert.equal(options.signal, 'SIG')
+  assert.equal(options.maxTokens, undefined)
+})
+
+test('foldRequestOptions: input.system/tools absent → fields absent, never undefined-valued', () => {
+  const options = foldRequestOptions({ latest: {}, target: { provider: 'p', model: 'm' }, input: {}, messages: [], sessionId: 's', signal: undefined })
+  assert.equal('system' in options, false)
+  assert.equal('tools' in options, false)
 })
