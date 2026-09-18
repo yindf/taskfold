@@ -237,6 +237,53 @@ export function spanMessagesFor(session, closingInfo, fallback) {
 }
 
 /**
+ * The shim ctx's waterfall stand-in (dsh 0.1.6-alpha's recover loop calls
+ * ctx.waterfall('compaction/summary-error', payload, () => false) before
+ * rethrowing a failed summarize). Delegates to the real Context when it
+ * has the method — host recovery listeners (image offload returning true)
+ * then apply to scoped folds exactly as they do to the realm engine's —
+ * and otherwise runs the caller's own default (false → rethrow → the
+ * drain's next-boundary retry), preserving pre-0.1.6 semantics.
+ */
+export function shimWaterfall(ctx) {
+  return (name, payload, next) => {
+    if (ctx !== null && typeof ctx === 'object' && typeof ctx.waterfall === 'function') return ctx.waterfall(name, payload, next)
+    return typeof next === 'function' ? next() : false
+  }
+}
+
+/**
+ * Fold request options: mirror the host buildRequest()'s shape so the fold
+ * rides the provider prefix cache. On dsh 0.1.6-alpha.2 the zai/glm adapter
+ * threads reasoningEffort into the request's token stream (thinking
+ * instructions between the system head and the first user message), so a
+ * fold options object missing the routed config diverged from every main
+ * request right after the system+tools block — the fold then re-billed its
+ * whole prefix (measured live: 48.0% hit, tail +8444; with the config
+ * spread: 90.6% hit, tail +712). `latest` is the newest requestHeader()
+ * config when available; its provider/model are overridden by the resolved
+ * fold target. maxTokens is STRIPPED after the spread: the product ruling
+ * imposes no summary-length cap, and generation params do not affect the
+ * provider's input-prefix cache (re-verified live after the strip: 90.0%
+ * hit, negative tail).
+ */
+export function foldRequestOptions({ latest, target, input, messages, sessionId, signal }) {
+  const { maxTokens: _ignoredMaxTokens, ...latestConfig } = latest !== null && latest !== undefined ? latest : {}
+  const src = input !== null && typeof input === 'object' ? input : {}
+  return {
+    ...latestConfig,
+    provider: target.provider,
+    model: target.model,
+    messages,
+    ...(src.system === undefined ? {} : { system: src.system }),
+    ...(src.tools === undefined ? {} : { tools: [...src.tools] }),
+    sessionId,
+    purpose: 'compaction',
+    ...(signal === undefined ? {} : { signal })
+  }
+}
+
+/**
  * Build the scoped engine once. `closingTasks` is the per-session Map the
  * fold drain writes the closing declaration into ({ name, startSeq, endSeq },
  * keyed by sessionId): the name DECLARES the completion (the span's own
@@ -335,20 +382,7 @@ async function buildScopedEngine(ctx, closingTasks) {
           })
         }]
       }]
-      const options = {
-        provider: target.provider,
-        model: target.model,
-        messages,
-        ...(input.system === undefined ? {} : { system: input.system }),
-        ...(input.tools === undefined ? {} : { tools: [...input.tools] }),
-        // NO maxTokens cap on the fold call (product ruling: the mechanism
-        // imposes no length limit on summaries — accuracy governs length,
-        // bounded only by the provider default and the host's
-        // not-smaller-than-span rejection).
-        sessionId: agent.session.id,
-        purpose: 'compaction',
-        ...(signal === undefined ? {} : { signal })
-      }
+      const options = foldRequestOptions({ latest, target, input, messages, sessionId: agent.session.id, signal })
       const assembler = new Assembler()
       for await (const chunk of ctx.llm.stream(options)) assembler.push(chunk)
       const finish = assembler.finish
@@ -433,12 +467,15 @@ async function buildScopedEngine(ctx, closingTasks) {
   // ctx.reflect.provide in the constructor — on a plain shim that is a
   // no-op, so our instance never collides with (or replaces) the realm
   // engine a preset row may have registered for AUTO compaction. The
-  // engine's current-turn path touches only these fields.
+  // engine's current-turn path touches only these fields; `waterfall`
+  // (dsh 0.1.6-alpha's summarize recover loop) delegates or defaults via
+  // shimWaterfall above.
   const shimCtx = {
     tokenMeter: ctx.tokenMeter,
     llm: ctx.llm,
     get: (name) => (typeof ctx.get === 'function' ? ctx.get(name) : undefined),
-    reflect: { provide: () => {} }
+    reflect: { provide: () => {} },
+    waterfall: shimWaterfall(ctx)
   }
   return new ScopedEngine(shimCtx, { auto: false })
 }
