@@ -115,11 +115,23 @@ npm publish、annotated tag、CHANGELOG 人工纠错（草稿本就要求人工�
 - 正确动作：对**同一条** push 命令直接带 `sandbox_permissions: danger-full-access` 重跑（凭据管理器需要真实运行环境），一次成功。v0.24.1 实测：tag + master 一次推齐。
 - 同类：`dsh plugin --profile web update`（写 `~/.dsh/profiles`，工作区之外）同样需要升级权限，属预期，不是故障。
 
-## README「支持的 dsh 版本」一节写法（用户拍板，2026-09-09）
+## 通道分支（用户拍板，2026-09-18）
 
-- **alpha 一条线、rc 一条线**：每条线只写该通道**实测可用的最新版本**（形如「alpha 通道 —— 支持到 `0.1.5-alpha.1`」），并附该版本的验证记录。
-- **历史 alpha / rc 版本一律不写**：某通道出现更新版本后，旧版本条目直接删掉；不做「此前已验证」「最低兼容」这类历史清单。上限之外是否兼容，统一由「上界：未测试、未强制」那条说明。
-- 两份 README（`cmpct/README.md` / `cmpct/README.zh.md`）必须同步；`release.mjs draft` 会打印这条规矩作为提醒。
+背景：0.34.2–0.34.5 的 alpha 通道发版都落在 master 上，master 与「最新已验证 rc」脱节。决策：
+
+- **master 只承载 rc 通道发版**，停留在最新的已验证 rc 版本（当前 = `v0.34.1`，2026-09-18 起以 `git push --force-with-lease origin v0.34.1:master` 回拨）。
+- **alpha 通道发版在 `alpha` 分支**：分支起点为当时的 master HEAD，提交与 tag 都打在 `alpha` 上。
+- 脚本无需改动：`pushRelease` 推的是 `git push origin HEAD`（当前分支）+ tag；发散检查用的 upstream 取 HEAD 的 upstream，首次推送 alpha 后自然生效。在 alpha 分支上跑 `draft`/`release` 即可。
+- README 内的 raw 资源 URL 在 alpha 分支上指向 `/alpha/`（master 回拨后 `/master/` 路径的资产停留在 rc 时代版本）。
+- README 的「支持的 dsh 版本」记录按通道归属（见下节 2026-09-18 修订）：master 只记 rc 一条，alpha 分支只记 alpha 一条；另一通道只链接对方分支，不抄数字。
+- npm 包版本号不区分通道（0.34.6 就是 0.34.6）；通道由分支承载。GitHub Release 与 tgz 附件照常。
+
+## README「支持的 dsh 版本」一节写法（用户拍板，2026-09-09；2026-09-18 随通道分支修订）
+
+- **每个分支只记录本分支构建的实测**（通道归属，2026-09-18）：master（rc 通道安装源）只保留 rc 一条最新验证版本；alpha 分支（`#alpha` 安装源）只保留 alpha 一条。另一通道不抄数字、不留记录，只放一条指向对方分支 README 的链接（含对应语言的锚点：`#supported-dsh-versions` / `#支持的-dsh-版本`）。
+- **为什么不能互抄数字**：master 的构建（如 v0.34.1）没在 0.1.6-alpha.2 上验证过，把 alpha 分支的新数字抄过来会误导新 alpha 用户去用默认安装——真正在该版本上验证过的是 alpha 分支的构建。
+- **每条线只写最新**：本通道出现更新版本后，旧条目直接删掉；不做「此前已验证」「最低兼容」这类历史清单。上限之外是否兼容，统一由「上界：未测试、未强制」那条说明。
+- 两份 README（`cmpct/README.md` / `cmpct/README.zh.md`）内容必须平行；`release.mjs draft` 会打印这条规矩作为提醒。
 
 ## 折叠缓存校验进入流程（用户拍板，2026-09-09）
 
