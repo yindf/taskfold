@@ -123,13 +123,15 @@ npm publish、annotated tag、CHANGELOG 人工纠错（草稿本就要求人工�
 - **alpha 通道发版在 `alpha` 分支**：分支起点为当时的 master HEAD，提交与 tag 都打在 `alpha` 上。
 - 脚本无需改动：`pushRelease` 推的是 `git push origin HEAD`（当前分支）+ tag；发散检查用的 upstream 取 HEAD 的 upstream，首次推送 alpha 后自然生效。在 alpha 分支上跑 `draft`/`release` 即可。
 - README 内的 raw 资源 URL 在 alpha 分支上指向 `/alpha/`（master 回拨后 `/master/` 路径的资产停留在 rc 时代版本）。
+- README 的「支持的 dsh 版本」记录按通道归属（见下节 2026-09-18 修订）：master 只记 rc 一条，alpha 分支只记 alpha 一条；另一通道只链接对方分支，不抄数字。
 - npm 包版本号不区分通道（0.34.6 就是 0.34.6）；通道由分支承载。GitHub Release 与 tgz 附件照常。
 
-## README「支持的 dsh 版本」一节写法（用户拍板，2026-09-09）
+## README「支持的 dsh 版本」一节写法（用户拍板，2026-09-09；2026-09-18 随通道分支修订）
 
-- **alpha 一条线、rc 一条线**：每条线只写该通道**实测可用的最新版本**（形如「alpha 通道 —— 支持到 `0.1.5-alpha.1`」），并附该版本的验证记录。
-- **历史 alpha / rc 版本一律不写**：某通道出现更新版本后，旧版本条目直接删掉；不做「此前已验证」「最低兼容」这类历史清单。上限之外是否兼容，统一由「上界：未测试、未强制」那条说明。
-- 两份 README（`cmpct/README.md` / `cmpct/README.zh.md`）必须同步；`release.mjs draft` 会打印这条规矩作为提醒。
+- **每个分支只记录本分支构建的实测**（通道归属，2026-09-18）：master（rc 通道安装源）只保留 rc 一条最新验证版本；alpha 分支（`#alpha` 安装源）只保留 alpha 一条。另一通道不抄数字、不留记录，只放一条指向对方分支 README 的链接（含对应语言的锚点：`#supported-dsh-versions` / `#支持的-dsh-版本`）。
+- **为什么不能互抄数字**：master 的构建（如 v0.34.1）没在 0.1.6-alpha.2 上验证过，把 alpha 分支的新数字抄过来会误导新 alpha 用户去用默认安装——真正在该版本上验证过的是 alpha 分支的构建。
+- **每条线只写最新**：本通道出现更新版本后，旧条目直接删掉；不做「此前已验证」「最低兼容」这类历史清单。上限之外是否兼容，统一由「上界：未测试、未强制」那条说明。
+- 两份 README（`cmpct/README.md` / `cmpct/README.zh.md`）内容必须平行；`release.mjs draft` 会打印这条规矩作为提醒。
 
 ## 折叠缓存校验进入流程（用户拍板，2026-09-09）
 

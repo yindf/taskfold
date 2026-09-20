@@ -433,7 +433,7 @@ function cmdDraft(opts) {
   insertDraft(renderEntry(version, title, today(), groups))
   console.log('Draft ' + version + ' written to CHANGELOG.md — review/edit it, then run: node scripts/release.mjs release')
   console.log('Reminder: after a dsh upgrade (or any change to the fold envelope), run "node scripts/verify-cache.mjs --since-restart" against a live session log and record the numbers in the CHANGELOG entry — it exits non-zero when a fold re-pays its span.')
-  console.log('Reminder: if this release changes which dsh versions are supported, update the "Supported dsh versions" section in BOTH READMEs (README.md + README.zh.md) before releasing. Keep it to ONE LINE PER CHANNEL — the newest verified alpha, then the newest verified rc — and delete historical alpha/rc entries instead of listing them.')
+  console.log('Reminder: if this release changes which dsh versions are supported, update the "Supported dsh versions" section in BOTH READMEs (README.md + README.zh.md) before releasing. Each branch records ONLY its own build\'s verification: one newest-version entry for its home channel (delete superseded ones) and, for the other channel, a LINK to the other branch\'s README — never a copied number.')
 }
 
 function summarizeTitle(commits) {
