@@ -8,8 +8,8 @@
 // consumers.
 //
 // Kept dependency-free (node builtins only) so both bundle plugins can
-// import it without touching the bundle patch — it is a plain module, not a
-// row (same contract as span-preview.mjs).
+// import it without touching the bundle patch — it is a plain module, not
+// a row (same contract as span-preview.mjs).
 
 /**
  * Cross-version event-log accessor: dsh ≤0.1.2-alpha.3 exposed the whole log
@@ -61,7 +61,7 @@ export function toolResultText(block) {
 }
 
 /**
- * The results one 'tool/result' event carries, in EVERY event grammar:
+ * The results one 'tool/result' event carries, in BOTH event grammars:
  *  - v4 (dsh 0.1.7-alpha.1, SESSION_FORMAT_VERSION 4): the message itself is
  *    tool-role — linkage is a MESSAGE-LEVEL `toolCallId` (+ `isError`) and
  *    `content` holds plain text blocks. One result per event.
@@ -69,19 +69,8 @@ export function toolResultText(block) {
  *    `tool-result` BLOCKS, one `toolCallId` each, nested text inside.
  * The host migrates v3 logs to the flattened shape when a session resumes,
  * so a live host only ever produces v4 — but replaying a captured v3 log
- * (offline tests, verify-cache fixtures) must keep parsing.
- *  - RESUME-DERIVED events (live on dsh 0.1.7-alpha.2): a session
- *    re-opened after a restart feeds its projections events re-derived
- *    through the resume path, and there the tool-role message can lose the
- *    message-level `toolCallId` flatten while KEEPING `source.callId` (the
- *    linkage the flatten was generated FROM). Without the fallback every
- *    mark call/result pair failed to pair on resume — the task dock then
- *    showed one stuck 'opening…'/'closing…' row per call ever made (live:
- *    19 rows on one session, 40 on another; the poisoned state also
- *    checkpointed itself back into the projection cache). `source.callId`
- *    is accepted only for `source.kind === 'tool'`, so an unrelated
- *    source-bearing message can never masquerade as a result.
- * Returns [{ callId, text, isError }]; defensive against malformed rows.
+ * (offline tests, verify-cache fixtures) must keep parsing. Returns
+ * [{ callId, text, isError }]; defensive against malformed rows.
  */
 export function toolResultEntries(event) {
   if (event === null || typeof event !== 'object' || event.type !== 'tool/result') return []
@@ -89,9 +78,6 @@ export function toolResultEntries(event) {
   if (message === null) return []
   if (typeof message.toolCallId === 'string') {
     return [{ callId: message.toolCallId, text: textBlocksText(message), isError: message.isError === true }]
-  }
-  if (message.source !== null && typeof message.source === 'object' && message.source.kind === 'tool' && typeof message.source.callId === 'string') {
-    return [{ callId: message.source.callId, text: textBlocksText(message), isError: message.isError === true }]
   }
   const out = []
   for (const block of blocksOf(message)) {
@@ -105,26 +91,12 @@ export function toolResultEntries(event) {
 /**
  * Joined text of every result in a 'tool/result' event — the event-level
  * view of toolResultText (entries joined with '\n', empty fragments
- * skipped). Shape-independent through toolResultEntries — PLUS anonymous
- * tool-result blocks: unlike PAIRING consumers, the text view has no callId
- * requirement (legacy rows and bare fixtures carry tool-result blocks with
- * no linkage at all; the old reader joined every such block and the
- * lifecycle nudges still depend on that), so unlinked blocks keep their
- * text here while toolResultEntries alone serves the pairing consumers.
- * Linked blocks are skipped in the fallback pass — entries already carry
- * their text exactly once.
+ * skipped). Shape-independent through toolResultEntries.
  */
 export function taskResultEventText(event) {
-  if (event === null || typeof event !== 'object' || event.type !== 'tool/result') return ''
-  const message = messageOf(event)
-  if (message === null) return ''
   let out = ''
-  const push = (t) => { if (t.length > 0) out += (out.length > 0 ? '\n' : '') + t }
-  for (const entry of toolResultEntries(event)) push(entry.text)
-  for (const block of blocksOf(message)) {
-    if (block === null || typeof block !== 'object' || block.type !== 'tool-result') continue
-    if (typeof block.toolCallId === 'string') continue // already in entries
-    push(toolResultText(block))
+  for (const entry of toolResultEntries(event)) {
+    if (entry.text.length > 0) out += (out.length > 0 ? '\n' : '') + entry.text
   }
   return out
 }
