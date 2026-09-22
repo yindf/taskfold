@@ -63,6 +63,23 @@ test('messagePreviewLine: all-tool-result messages label as tool, user text stay
   assert.ok(snap.startsWith('  3 harness: Current runtime context'), 'plugin-injected snapshots read harness:')
 })
 
+test('messagePreviewLine: v4 tool-role messages render as correlated results, runtime-context reads harness', () => {
+  // dsh 0.1.7-alpha.1 (SESSION_FORMAT_VERSION 4): tool results are tool-role
+  // messages with MESSAGE-level toolCallId and plain text blocks, and the
+  // retired 'plugin' source kind is replaced by producer kinds
+  // ('runtime-context' probed from a live log). The preview must render the
+  // new shape through the same resultFragment the v3 block path uses.
+  const calls = new Map([['c1', { name: 'grep', args: '{}' }]])
+  const toolLine = messagePreviewLine({ role: 'tool', toolCallId: 'c1', content: [{ type: 'text', text: 'Found 2 matches' }], isError: false }, 5, calls)
+  assert.ok(toolLine.startsWith('  5 tool: ←2 matches · 1 file'), 'v4 tool message correlates with its call for a tool-specific brief')
+  const uncorrelated = messagePreviewLine({ role: 'tool', toolCallId: 'zz', content: [{ type: 'text', text: 'plain output' }] }, 6)
+  assert.ok(uncorrelated.startsWith('  6 tool: ←plain output'), 'unknown call id clips the raw text like the v3 path')
+  const failed = messagePreviewLine({ role: 'tool', toolCallId: 'c1', content: [{ type: 'text', text: 'boom' }], isError: true }, 7)
+  assert.ok(failed.startsWith('  7 tool: ←ERROR: boom'), 'message-level isError flags the fragment')
+  const snap = messagePreviewLine({ role: 'user', content: [{ type: 'text', text: 'Current runtime context. This snapshot supersedes…' }], source: { kind: 'runtime-context', form: 'snapshot' } }, 3)
+  assert.ok(snap.startsWith('  3 harness: Current runtime context'), 'any non-user producer kind reads harness:')
+})
+
 test('renderSpanPreview: every message line, no elision, true numbering', () => {
   const lines = renderSpanPreview(span())
   assert.equal(lines[0], 'Span preview (4 messages, one per line — same order/numbering as the JSONL artifact):')

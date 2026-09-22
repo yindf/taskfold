@@ -145,6 +145,24 @@ test('failed task_fold calls never mislabel folds', () => {
   assert.equal(folds[0].title, undefined, 'failed call does not label the next fold')
 })
 
+test('legacy titling retires calls on v4-grammar results (migrated logs)', () => {
+  // dsh 0.1.7-alpha.1 migrates resumed v3 logs to tool-role result messages
+  // with message-level linkage. attachFoldTitles must still retire a
+  // task_fold call at its result, or a later summary inherits a stale title.
+  const resultV4 = (seq, callId) => ({
+    seq,
+    type: 'tool/result',
+    data: { message: { role: 'tool', toolCallId: callId, source: { kind: 'tool', callId }, content: [{ type: 'text', text: 'Task folded: x — all closed.' }], isError: false } }
+  })
+  const events = [
+    foldCallEvent(11, 'c1', 'will fail'),
+    resultV4(12, 'c1'),
+    summaryEvent(13, [10, 11], '- untitled auto-fold body')
+  ]
+  const folds = collectFolds(events)
+  assert.equal(folds[0].title, undefined, 'v4 result retires the in-flight call — no stale title')
+})
+
 test('deferred folds are titled by their summary heading, not the call window', () => {
   // v9: the fold commits at a step boundary, long after the call/result
   // window — the in-flight path misses it, and the '# <name>' heading the

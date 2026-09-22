@@ -35,6 +35,31 @@ function toolResult(callId, text, seq) {
   return event
 }
 
+/** tool/result in the v4 grammar (dsh 0.1.7-alpha.1, SESSION_FORMAT_VERSION
+ *  4, probed from a live log): the message is tool-role, linkage is
+ *  MESSAGE-level (toolCallId / isError), content holds plain text blocks.
+ *  This is also the shape the host migrates resumed v3 logs into, so every
+ *  reader must treat it as the PRIMARY live grammar. */
+function toolResultV4(callId, text, seq) {
+  const event = {
+    type: 'tool/result',
+    data: {
+      turn: 1,
+      step: 4,
+      message: {
+        role: 'tool',
+        source: { kind: 'tool', callId },
+        toolCallId: callId,
+        content: [{ type: 'text', text }],
+        isError: false,
+        id: 'm-' + callId + '-' + String(seq === undefined ? 0 : seq)
+      }
+    }
+  }
+  if (seq !== undefined) event.seq = seq
+  return event
+}
+
 const BEGIN_OK = (n) => 'Task begun: ' + n + ' — 1 open.'
 const END_OK = (n) => 'Task folded: ' + n + ' — all closed. Folded #9 (1200 tokens). Original context saved: C:\\tmp\\x.json'
 // legacy v3/v4 success texts (still present in existing logs) — kept so the
@@ -111,6 +136,51 @@ test('begin/end round trip: named push and pop-by-name', () => {
   assert.deepEqual(state.pendingArchives, [{ seq: 200, name: 'beta', foldResultSeq: 401 }], 'shadowed anchor drops its archive entry')
   state = applyTaskMarks(state, { seq: 600, type: 'compaction/summary', data: { shadowedSeqs: [200, 400, 401], shadowedTokenCount: 9 } })
   assert.equal(state, null, 'all archives settled; state normalizes to null')
+})
+
+test('v4 grammar round trip: flattened tool-role results drive the same state machine', () => {
+  // dsh 0.1.7-alpha.1 moved tool-result linkage from tool-result BLOCKS to
+  // the message itself (role 'tool', message-level toolCallId, plain text
+  // content). Found live: pending intents registered but marks never pushed
+  // — the reducer's block scan matched nothing, every task_begin stayed
+  // "begin pending" forever, task_end saw "(none)" open, and no fold ever
+  // queued while the host's own pressure compaction did all the work.
+  let state = null
+  state = applyTaskMarks(state, assistantCall(100, [{ id: 'c1', name: 'task_begin' }]))
+  state = applyTaskMarks(state, toolResultV4('c1', BEGIN_OK('alpha'), 101))
+  assert.deepEqual(state.marks, [{ seq: 100, name: 'alpha' }], 'v4 result pushes the named mark')
+  state = applyTaskMarks(state, assistantCall(200, [{ id: 'c2', name: 'task_begin' }]))
+  state = applyTaskMarks(state, toolResultV4('c2', BEGIN_OK('beta'), 201))
+  assert.deepEqual(state.marks, [{ seq: 100, name: 'alpha' }, { seq: 200, name: 'beta' }])
+  state = applyTaskMarks(state, assistantCall(300, [{ id: 'c3', name: 'task_end' }]))
+  state = applyTaskMarks(state, toolResultV4('c3', 'Task ended: beta — 1 open. Archival queued.', 301))
+  assert.deepEqual(state.marks, [{ seq: 100, name: 'alpha' }], 'v4 close pops by name')
+  assert.deepEqual(state.pendingArchives, [{ seq: 200, name: 'beta', foldResultSeq: 301 }],
+    'v4 close queues the deferred archive')
+  // A failed v4 close keeps the mark (isError rides the message; the text
+  // decides — same contract as v3).
+  state = applyTaskMarks(state, assistantCall(400, [{ id: 'c4', name: 'task_end' }]))
+  state = applyTaskMarks(state, toolResultV4('c4', 'task_end failed (invalid): no open task named "beta"', 401))
+  assert.deepEqual(state.marks, [{ seq: 100, name: 'alpha' }], 'failure text does not pop')
+  // Archive closure keys on shadowed seqs exactly like the v3 path.
+  state = applyTaskMarks(state, { seq: 500, type: 'compaction/summary', data: { shadowedSeqs: [200, 300, 301], shadowedTokenCount: 9 } })
+  assert.deepEqual(state.pendingArchives, [], 'shadowed close settles the archive')
+})
+
+test('v3 and v4 grammars replay to the identical projection state', () => {
+  const run = (resultFactory) => {
+    let state = null
+    state = applyTaskMarks(state, assistantCall(100, [{ id: 'c1', name: 'task_begin' }]))
+    state = applyTaskMarks(state, resultFactory('c1', BEGIN_OK('alpha'), 101))
+    state = applyTaskMarks(state, assistantCall(200, [{ id: 'c2', name: 'task_begin' }]))
+    state = applyTaskMarks(state, resultFactory('c2', BEGIN_OK('beta'), 201))
+    state = applyTaskMarks(state, assistantCall(300, [{ id: 'c3', name: 'task_end' }]))
+    state = applyTaskMarks(state, resultFactory('c3', 'Task ended: beta — 1 open. Archival queued.', 301))
+    state = applyTaskMarks(state, { seq: 400, type: 'compaction/summary', data: { shadowedSeqs: [200, 300, 301], shadowedTokenCount: 9 } })
+    return state
+  }
+  assert.deepEqual(run(toolResultV4), run(toolResult),
+    'the grammar change is pure plumbing — same events, same state')
 })
 
 test('archive closure keys on the close result, not only the begin anchor', () => {
@@ -505,6 +575,43 @@ test('deferredArchivePlan: parallel-end guard — the end extends past the partn
   // degrades to no extension (the old plan), never to a bogus region.
   const legacy = deferredArchivePlan(p, nodes, events.filter((e) => e !== ended))
   assert.equal(legacy.endSeq, 25, 'missing close event skips the extension entirely')
+})
+
+test('deferredArchivePlan: v4 grammar events plan the same regions (begun scan + both guards)', () => {
+  // A resumed session migrates its WHOLE history into the v4 shape, so the
+  // plan's event scans must read message-level linkage: the begun-result
+  // floor (via taskResultEventText), the parallel-begin partner results, and
+  // the close-message call set (closeMessageCallIds step ①).
+  const p = { seq: 10, name: 'alpha', foldResultSeq: 25 }
+  const v4 = (seq, callId, text) => ({
+    seq,
+    type: 'tool/result',
+    data: { message: { role: 'tool', source: { kind: 'tool', callId }, toolCallId: callId, content: [{ type: 'text', text }], isError: false } }
+  })
+  const beginMsg = assistantMsg(10, [
+    { type: 'tool-call', id: 'b1', name: 'task_begin', arguments: '{"name":"alpha"}' },
+    { type: 'tool-call', id: 'p1', name: 'grep', arguments: '{}' }
+  ])
+  const begun = v4(11, 'b1', 'Task begun: alpha — 1 open.')
+  const partner = v4(12, 'p1', '3 matches')
+  const closeMsg = assistantMsg(22, [
+    { type: 'tool-call', id: 'e1', name: 'task_end', arguments: '{}' },
+    { type: 'tool-call', id: 'n1', name: 'task_begin', arguments: '{}' }
+  ])
+  const ended = v4(25, 'e1', 'Task ended: alpha — 1 open. Archival queued.')
+  const nextBegun = v4(26, 'n1', 'Task begun: beta — 1 open.')
+  const deliverable = assistantMsg(30, [{ type: 'text', text: 'report' }])
+  const events = [beginMsg, begun, partner, closeMsg, ended, nextBegun, deliverable]
+  const nodes = [10, 11, 12, 22, 25, 26, 30]
+  const plan = deferredArchivePlan(p, nodes, events)
+  assert.equal(plan.action, 'fold')
+  assert.equal(plan.startSeq, 22, 'v4 parallel-begin floor: the span opens past the partner result (12)')
+  assert.equal(plan.endSeq, 26, 'v4 parallel-end extension: the end passes the successor begin result (26)')
+  // The same events minus the partner/successor results (shadowed): the
+  // guards find no candidates and the region keeps the single-call shape.
+  const shadowed = deferredArchivePlan(p, [10, 11, 22, 25, 30], [beginMsg, begun, closeMsg, ended, deliverable])
+  assert.equal(shadowed.startSeq, 22, 'no partner result on the surface → floor stays at the begun result')
+  assert.equal(shadowed.endSeq, 25, 'no close-message partner result → no end extension')
 })
 
 test('deferredArchivePlan: the region start follows SURFACE POSITION, not seq magnitude', () => {

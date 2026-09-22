@@ -15,7 +15,10 @@ import {
   DECOMPOSE_NUDGE_MIN_ROUNDS, DECOMPOSE_NUDGE_MAX_ROUNDS
 } from '../plugins/lifecycle-nudges.mjs'
 
-const result = (seq, text) => ({ seq, type: 'tool/result', data: { message: { content: [{ type: 'tool-result', content: [{ type: 'text', text }] }] } } })
+// Shape-accurate v3 tool/result (block-level linkage — real persisted events
+// always carry toolCallId; the text-level readers must not depend on it, but
+// the fixture stays honest about the grammar).
+const result = (seq, text) => ({ seq, type: 'tool/result', data: { message: { content: [{ type: 'tool-result', toolCallId: 'c' + seq, content: [{ type: 'text', text }] }] } } })
 const assistant = (seq) => ({ seq, type: 'assistant/message', data: { message: { content: [{ type: 'text', text: 'step' }] } } })
 const mark = (seq, name) => ({ seq, name })
 
@@ -46,6 +49,26 @@ test('latestNestedOutcomeSeq: a nested begin/end advances the anchor, other resu
   assert.equal(latestNestedOutcomeSeq([result(12, 'grep output')], 5), 5, 'no lifecycle result -> own seq')
   assert.equal(latestNestedOutcomeSeq([], 7), 7)
   assert.equal(latestNestedOutcomeSeq(null, 7), 7)
+})
+
+test('latestNestedOutcomeSeq: v4 grammar results are read identically', () => {
+  // dsh 0.1.7-alpha.1: tool results are tool-role messages with plain text
+  // blocks — taskResultEventText must extract their text so lifecycle
+  // outcomes (begin/end anchors, the close grace) keep working on live logs.
+  const resultV4 = (seq, text) => ({
+    seq,
+    type: 'tool/result',
+    data: { message: { role: 'tool', toolCallId: 'c' + seq, source: { kind: 'tool', callId: 'c' + seq }, content: [{ type: 'text', text }], isError: false } }
+  })
+  const events = [
+    resultV4(11, 'Task begun: outer'),
+    assistant(20),
+    resultV4(21, 'grep output'),
+    assistant(22),
+    resultV4(23, 'Task ended: inner — all closed. Archival queued.')
+  ]
+  assert.equal(latestNestedOutcomeSeq(events, 5), 23, 'v4 lifecycle outcome advances the anchor')
+  assert.equal(latestNestedOutcomeSeq([resultV4(11, 'Task begun: outer'), resultV4(12, 'grep output')], 5), 11, 'v4 non-lifecycle results do not')
 })
 
 test('taskAgeRounds: counts rounds after the anchor, capped at 101', () => {
