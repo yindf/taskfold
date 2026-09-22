@@ -26,7 +26,7 @@
  * Everything in this module is pure (or a thin ctx-keyed state accessor),
  * so tests exercise it offline without a host.
  */
-import { sessionEvents, messageOf, blocksOf, toolResultText, toolResultEntries, taskResultEventText } from './events.mjs'
+import { sessionEvents, messageOf, blocksOf, toolResultEntries, taskResultEventText } from './events.mjs'
 
 /** Session-projection key under which the open-mark stack is published. */
 export const TASK_MARKS_KEY = 'taskMarks'
@@ -277,9 +277,8 @@ export function deferredArchivePlan(entry, surfaceNodes, events) {
       // partner result no matter its id.
       if (e.seq <= foldResultSeq || e.seq > deliverableSeq) continue
       if (e.type !== 'tool/result') continue
-      for (const b of blocksOf(messageOf(e))) {
-        if (b === null || typeof b !== 'object' || b.type !== 'tool-result' || typeof b.toolCallId !== 'string'
-          || !endMsgCallIds.has(b.toolCallId)) continue
+      for (const entry of toolResultEntries(e)) {
+        if (!endMsgCallIds.has(entry.callId)) continue
         const pos = posOf.get(e.seq)
         if (pos !== undefined && pos > endFloorPos) endFloorPos = pos
       }
@@ -358,12 +357,11 @@ function closeMessageCallIds(list, foldResultSeq, name) {
   for (const e of list) {
     if (e === null || typeof e !== 'object' || !Number.isInteger(e.seq) || e.seq !== foldResultSeq) continue
     if (e.type !== 'tool/result') break
-    for (const b of blocksOf(messageOf(e))) {
-      if (b === null || typeof b !== 'object' || b.type !== 'tool-result' || typeof b.toolCallId !== 'string') continue
-      const text = toolResultText(b)
+    for (const entry of toolResultEntries(e)) {
+      const text = entry.text
       const ended = text.indexOf('Task ended: ') === 0 && taskNameFromText(text, 'Task ended: ') === name
       const folded = text.indexOf('Task folded: ') === 0 && taskNameFromText(text, 'Task folded: ') === name
-      if (ended || folded) closeIds.add(b.toolCallId)
+      if (ended || folded) closeIds.add(entry.callId)
     }
     break
   }
@@ -415,9 +413,10 @@ function taskNameFromText(text, prefix) {
  *  - `assistant/message`: every tool-call block named task_begin/task_fold
  *    registers a pending intent { kind, anchorSeq: this message's seq }
  *    keyed by the block's callId.
- *  - `tool/result`: when a tool-result block's toolCallId matches a pending
- *    intent, its rendered text decides: 'Task begun: NAME' pushes a named
- *    mark { seq, name }; 'Task folded: NAME' pops the MOST RECENT mark whose
+ *  - `tool/result`: when a result entry's toolCallId (message-level in the
+ *    v4 grammar, block-level before it — see toolResultEntries) matches a
+ *    pending intent, its rendered text decides: 'Task begun: NAME' pushes a
+ *    named mark { seq, name }; 'Task folded: NAME' pops the MOST RECENT mark whose
  *    normalized name matches. The reducer stays name-keyed so logs recorded
  *    before the LIFO rule (or by future variants) replay unchanged; the
  *    TOOL layer (closeTarget) enforces LIFO on new calls — closing anything
