@@ -156,26 +156,49 @@ export function blockBrief(block, calls) {
       inner = block.content.filter((b) => b !== null && typeof b === 'object' && typeof b.text === 'string').map((b) => b.text).join(' ')
     }
     const call = calls !== undefined && typeof block.toolCallId === 'string' ? calls.get(block.toolCallId) : undefined
-    const brief = call === undefined ? clip(inner, TEXT_CLIP) : resultBrief(call.name, inner)
-    return '←' + (block.isError === true ? 'ERROR: ' : '') + brief
+    return resultFragment(inner, call, block.isError === true)
   }
   return '[' + String(block.type === undefined ? 'block' : block.type) + ']'
+}
+
+/**
+ * One tool RESULT fragment ('←…'): correlated with its call when the map has
+ * it (tool-specific brief), error-flagged, clipped. Shared by the v3 block
+ * path (blockBrief) and the v4 message path (messagePreviewLine reads
+ * tool-role messages whose linkage is the MESSAGE-level toolCallId).
+ */
+function resultFragment(inner, call, isError) {
+  const brief = call === undefined ? clip(inner, TEXT_CLIP) : resultBrief(call.name, inner)
+  return '←' + (isError ? 'ERROR: ' : '') + brief
 }
 
 // One preview line per message: `NN role: fragments`. The line number matches
 // the message's 1-based position in the span — and its line in the JSONL
 // artifact written by writeSpanArtifact.
-// Role label: harness tool results arrive as user-role messages, and so do
-// plugin-injected runtime-context snapshots — the preview distinguishes both
-// from genuine user input. All-tool-result messages read `tool:`; messages
-// whose source.kind is 'plugin' (runtime-context snapshots and the like) read
+// Role label: tool results arrive as tool-role messages in the v4 grammar
+// (message-level toolCallId) and as all-tool-result user messages before it,
+// and plugin-injected runtime-context snapshots arrive as user messages too —
+// the preview distinguishes all three from genuine user input. Tool messages
+// read `tool:`; user messages whose source.kind is anything but 'user'
+// (runtime-context snapshots and the like, 'plugin' on old hosts) read
 // `harness:`; everything else keeps its wire role.
 export function messagePreviewLine(message, index, calls) {
   const role = message !== null && typeof message === 'object' && typeof message.role === 'string' ? message.role : '?'
   const blocks = message !== null && typeof message === 'object' && Array.isArray(message.content) ? message.content : []
+  // v4 tool-role message: one result whose linkage is message-level. Render
+  // through the same resultFragment the v3 block path uses, so previews stay
+  // byte-identical across grammars for the same logical content.
+  if (role === 'tool' && message !== null && typeof message === 'object' && typeof message.toolCallId === 'string') {
+    const inner = blocks.filter((b) => b !== null && typeof b === 'object' && b.type === 'text' && typeof b.text === 'string').map((b) => b.text).join('\n')
+    const call = calls !== undefined ? calls.get(message.toolCallId) : undefined
+    const body = resultFragment(inner, call, message.isError === true)
+    const numbered = String(index).padStart(3, ' ') + ' tool: ' + body
+    return numbered.length > LINE_CLIP ? numbered.slice(0, LINE_CLIP - 1) + '…' : numbered
+  }
   const allToolResults = blocks.length > 0 && blocks.every((b) => b !== null && typeof b === 'object' && b.type === 'tool-result')
-  const fromPlugin = message !== null && typeof message === 'object' && message.source !== null && typeof message.source === 'object' && message.source.kind === 'plugin'
-  const label = allToolResults ? 'tool' : fromPlugin ? 'harness' : role
+  const sourceKind = message !== null && typeof message === 'object' && message.source !== null && typeof message.source === 'object' && typeof message.source.kind === 'string' ? message.source.kind : undefined
+  const fromHarness = role === 'user' && sourceKind !== undefined && sourceKind !== 'user'
+  const label = allToolResults ? 'tool' : fromHarness ? 'harness' : role
   const joined = blocks.map((b) => blockBrief(b, calls)).join(' ')
   const body = joined.length > 0 ? joined : '(empty)'
   const numbered = String(index).padStart(3, ' ') + ' ' + label + ': ' + body

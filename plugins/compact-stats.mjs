@@ -20,7 +20,7 @@
 // artifact keeps the exact format (JSONL, one message per line) and
 // numbering. events.mjs carries the shared event-log accessor.
 import { renderSpanPreview, writeSpanArtifact, sessionArtifactDir, artifactLineAt, artifactLines } from './span-preview.mjs'
-import { sessionEvents, messageOf, blocksOf } from './events.mjs'
+import { sessionEvents, messageOf, blocksOf, toolResultEntries } from './events.mjs'
 
 /**
  * Fold shape (pinned against dsh-compaction-basic's commitCompactionBody):
@@ -198,10 +198,8 @@ export function attachFoldTitles(folds, events) {
         }
       }
     } else if (event.type === 'tool/result') {
-      for (const block of content) {
-        if (block !== null && typeof block === 'object' && block.type === 'tool-result' && typeof block.toolCallId === 'string') {
-          pending.delete(block.toolCallId)
-        }
+      for (const entry of toolResultEntries(event)) {
+        pending.delete(entry.callId)
       }
     }
   }
