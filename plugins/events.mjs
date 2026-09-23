@@ -61,7 +61,7 @@ export function toolResultText(block) {
 }
 
 /**
- * The results one 'tool/result' event carries, in BOTH event grammars:
+ * The results one 'tool/result' event carries, in EVERY event grammar:
  *  - v4 (dsh 0.1.7-alpha.1, SESSION_FORMAT_VERSION 4): the message itself is
  *    tool-role — linkage is a MESSAGE-LEVEL `toolCallId` (+ `isError`) and
  *    `content` holds plain text blocks. One result per event.
@@ -69,8 +69,19 @@ export function toolResultText(block) {
  *    `tool-result` BLOCKS, one `toolCallId` each, nested text inside.
  * The host migrates v3 logs to the flattened shape when a session resumes,
  * so a live host only ever produces v4 — but replaying a captured v3 log
- * (offline tests, verify-cache fixtures) must keep parsing. Returns
- * [{ callId, text, isError }]; defensive against malformed rows.
+ * (offline tests, verify-cache fixtures) must keep parsing.
+ *  - RESUME-DERIVED events (0.35.1, live on dsh 0.1.7-alpha.2): a session
+ *    re-opened after a restart feeds its projections events re-derived
+ *    through the resume path, and there the tool-role message can lose the
+ *    message-level `toolCallId` flatten while KEEPING `source.callId` (the
+ *    linkage the flatten was generated FROM). Without the fallback every
+ *    mark call/result pair failed to pair on resume — the task dock then
+ *    showed one stuck 'opening…'/'closing…' row per call ever made (live:
+ *    19 rows on one session, 40 on another; the poisoned state also
+ *    checkpointed itself back into the projection cache). `source.callId`
+ *    is accepted only for `source.kind === 'tool'`, so an unrelated
+ *    source-bearing message can never masquerade as a result.
+ * Returns [{ callId, text, isError }]; defensive against malformed rows.
  */
 export function toolResultEntries(event) {
   if (event === null || typeof event !== 'object' || event.type !== 'tool/result') return []
@@ -78,6 +89,9 @@ export function toolResultEntries(event) {
   if (message === null) return []
   if (typeof message.toolCallId === 'string') {
     return [{ callId: message.toolCallId, text: textBlocksText(message), isError: message.isError === true }]
+  }
+  if (message.source !== null && typeof message.source === 'object' && message.source.kind === 'tool' && typeof message.source.callId === 'string') {
+    return [{ callId: message.source.callId, text: textBlocksText(message), isError: message.isError === true }]
   }
   const out = []
   for (const block of blocksOf(message)) {

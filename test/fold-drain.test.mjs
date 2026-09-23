@@ -302,14 +302,15 @@ test('a cancelled fold is quiet on its first occurrence and visible if it repeat
   assert.match(h.drain.autoFoldFailures.get(h.session.id).get('interrupted'), /^fold cancelled, attempt 2: /)
 })
 
-// Cross-session starvation (live on dsh 0.1.5): the drain guard is
-// process-global, and subagent sessions share the process. Session A's turn
-// stop fired while session B's re-fold cascade was mid-flight; the guard
-// returned silently, A never saw another step boundary, and its closed task
-// sat queued forever (the wechatide-skill session that never folded). A
-// starved call must QUEUE its agent: the running pass chains one more pass
-// in its finally, so the fold happens even with no further boundary.
-test('a starved cross-session drain call is chained, not dropped', async () => {
+// Agent-level single flight (0.35.0, live on dsh 0.1.7-alpha.2): the drain
+// guard used to be process-global, and subagent sessions share the process.
+// A subagent whose last two boundaries — pre-step after the final report and
+// turn-stopping — fell inside the lead session's 37.5 s fold window queued
+// silently and never folded again; its pendingArchives row survived the
+// session as a permanent residual task. The guard is keyed by session id
+// now: a dispatch while ANOTHER session's pass is mid-flight starts its own
+// pass instead of queueing behind the sibling.
+test('cross-session drain calls fold concurrently — no starvation behind a sibling pass', async () => {
   // Two sessions, one projection state each; ctx.stateOf dispatches by
   // session object the way the host's sessionProjections does.
   function mini(id) {
@@ -335,12 +336,19 @@ test('a starved cross-session drain call is chained, not dropped', async () => {
 
   // Session A's fold awaits a gate while session B's turn-stop hook fires.
   const folds = []
+  const timeline = []
   let releaseA
   const gate = new Promise((resolve) => { releaseA = resolve })
   const engine = {
     async compactRegion(startSeq, endSeq, agent) {
       const m = states.get(agent.session.id)
-      if (agent.session.id === 'session-a') { const g = gate; await g }
+      if (agent.session.id === 'session-a') {
+        timeline.push('a:starts, gated')
+        await gate
+        timeline.push('a:commits')
+      } else {
+        timeline.push('b:commits while a is gated')
+      }
       folds.push([agent.session.id, startSeq, endSeq])
       const nodes = agent.session.surface.nodes
       const startIdx = nodes.indexOf(startSeq)
@@ -352,20 +360,60 @@ test('a starved cross-session drain call is chained, not dropped', async () => {
   }
   const drain = createArchiveDrain({ ctx, engineFor: async () => engine, closingTasks: new Map() })
 
-  // B's pass is mid-flight when A's turn-stop hook dispatches: A must return
-  // immediately (never block the hook) but its agent is queued behind B.
+  // A's pass is mid-flight (gated inside compactRegion) when B's turn-stop
+  // hook dispatches: B must fold IMMEDIATELY — the old guard returned
+  // silently here and chained B behind A's gate.
+  const passA = drain.processDeferredArchives(a.agent, undefined)
+  await new Promise((resolve) => setImmediate(resolve)) // let A reach the gate
   const passB = drain.processDeferredArchives(b.agent, undefined)
-  const starvedA = drain.processDeferredArchives(a.agent, undefined)
-  await starvedA
-  assert.deepEqual(folds, [['session-b', 20, 21]], 'B folds while A waits in the queue')
+  await passB
+  assert.deepEqual(folds, [['session-b', 20, 21]], 'B folded while A was still mid-flight — no queue')
+  assert.deepEqual(timeline, ['a:starts, gated', 'b:commits while a is gated'])
+  assert.ok(drain.isSettledArchive(b.agent.session, 10), 'B settled without waiting for a boundary of its own')
 
   releaseA()
-  await passB
-  // The chained pass folded A with no further boundary of its own.
-  assert.deepEqual(folds, [['session-b', 20, 21], ['session-a', 20, 21]], 'the running pass chains the starved session')
-  assert.ok(drain.isSettledArchive(a.agent.session, 10) && drain.isSettledArchive(b.agent.session, 10), 'both rows settled')
+  await passA
+  assert.deepEqual(folds, [['session-b', 20, 21], ['session-a', 20, 21]], 'A folds when its own gate opens')
+  assert.ok(drain.isSettledArchive(a.agent.session, 10), 'both rows settled')
   assert.equal(a.state(), null, 'A row closed out of its projection')
   assert.equal(b.state(), null, 'B row closed out of its projection')
+})
+
+// The theoretical same-session reentry (the host dispatches one session's
+// hooks inside its single step loop, so this cannot happen on a real host):
+// the coalescing latch must keep AT MOST ONE follow-up pass, and the chain
+// must run it without any further boundary.
+test('same-session reentry coalesces into one chained follow-up pass', async () => {
+  const h = harness([
+    assistantCall(10, [{ id: 'a1', name: 'task_begin' }]),
+    toolResult(11, 'a1', BEGUN('latched', '1 open.')),
+    assistantCall(20, [{ id: 'a2', name: 'task_end' }]),
+    toolResult(21, 'a2', ENDED('latched', 'all closed. Archival queued.')),
+    assistantText(25, 'deliverable')
+  ])
+  // Gate the engine so the first pass is observably mid-flight.
+  let release
+  const gate = new Promise((resolve) => { release = resolve })
+  const origCompact = h.engine.compactRegion.bind(h.engine)
+  let calls = 0
+  h.engine.compactRegion = async (startSeq, endSeq, agent, signal) => {
+    calls += 1
+    if (calls === 1) await gate
+    return origCompact(startSeq, endSeq, agent, signal)
+  }
+
+  const pass1 = h.drain.processDeferredArchives(h.agent, undefined)
+  await new Promise((resolve) => setImmediate(resolve)) // pass1 mid-flight
+  // Two reentrant dispatches during the flight: both return immediately,
+  // coalescing to ONE chained follow-up.
+  await h.drain.processDeferredArchives(h.agent, undefined)
+  await h.drain.processDeferredArchives(h.agent, undefined)
+
+  release()
+  await pass1
+  assert.equal(h.folds.length, 1, 'the archive folded exactly once — no double fold')
+  assert.ok(h.drain.isSettledArchive(h.session, 10), 'the row settled')
+  assert.equal(h.state(), null, 'the projection row closed out')
 })
 
 // P1 review-found: a 'summary' rejection (the host's 'not smaller', or a

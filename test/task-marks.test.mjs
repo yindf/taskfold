@@ -167,6 +167,50 @@ test('v4 grammar round trip: flattened tool-role results drive the same state ma
   assert.deepEqual(state.pendingArchives, [], 'shadowed close settles the archive')
 })
 
+// Resume-derived v4 events (0.35.1, live on dsh 0.1.7-alpha.2): a session
+// re-opened after a restart feeds its projections tool/result events whose
+// tool-role message LOST the message-level `toolCallId` flatten but KEPT
+// `source.callId` (the linkage the flatten was generated from). Without the
+// fallback every pair failed to pair on resume — the dock showed one stuck
+// 'opening…'/'closing…' row per task-mark call ever made (19 on one session,
+// 40 on another), marks stayed empty, and the poisoned state checkpointed
+// itself back into the projection cache to survive further restarts.
+function toolResultV4Resume(callId, text, seq) {
+  const event = {
+    type: 'tool/result',
+    data: {
+      turn: 1,
+      step: 4,
+      message: {
+        role: 'tool',
+        source: { kind: 'tool', callId },
+        content: [{ type: 'text', text }],
+        isError: false
+      }
+    }
+  }
+  if (seq !== undefined) event.seq = seq
+  return event
+}
+
+test('resume-derived v4 results (source.callId only, no message-level toolCallId) still pair', () => {
+  let state = null
+  state = applyTaskMarks(state, assistantCall(100, [{ id: 'c1', name: 'task_begin' }]))
+  assert.ok(state !== null && state.pending.c1 !== undefined, 'the begin call registers its intent')
+  state = applyTaskMarks(state, toolResultV4Resume('c1', BEGIN_OK('alpha'), 101))
+  assert.deepEqual(state.marks, [{ seq: 100, name: 'alpha' }], 'source.callId fallback consumes the begin intent')
+  state = applyTaskMarks(state, assistantCall(200, [{ id: 'c2', name: 'task_end' }]))
+  state = applyTaskMarks(state, toolResultV4Resume('c2', 'Task ended: alpha — all closed. Archival queued.', 201))
+  assert.deepEqual(state.marks, [], 'resume-shaped close pops the mark')
+  assert.deepEqual(state.pendingArchives, [{ seq: 100, name: 'alpha', foldResultSeq: 201 }],
+    'resume-shaped close queues the deferred archive')
+  assert.equal(Object.keys(state.pending).length, 0, 'no intent left behind — the dock draws no ghost rows')
+  // A source that is NOT a tool result must never masquerade as one.
+  const bogus = { seq: 300, type: 'tool/result', data: { message: { role: 'tool', source: { kind: 'agent', callId: 'cX' }, content: [{ type: 'text', text: BEGIN_OK('ghost') }] } } }
+  state = applyTaskMarks(state, bogus)
+  assert.equal(state, state, 'a non-tool source extracts no entry and changes nothing')
+})
+
 test('v3 and v4 grammars replay to the identical projection state', () => {
   const run = (resultFactory) => {
     let state = null

@@ -145,7 +145,7 @@ export const TASK_STACK_CSS_ID = 'dsh-taskfold/TaskStack.module.css'
 /**
  * The dock's stylesheet. Geometry/typography are the host's list-dock recipe
  * (composer-aligned width, hairline border, 12px radius, 13px rows, 16x16
- * glyph cell); the rails/nodes/spinner are this widget's own. `var(..., fallback)`
+ * glyph cell); the rails/nodes are this widget's own. `var(..., fallback)`
  * is used for the composer variables, which the conversation package injects at
  * runtime — a missing variable must degrade to full width, never to a broken calc.
  */
@@ -183,13 +183,7 @@ export function taskStackCss() {
     '.tf_nodeClosing{background:var(--dsw-alias-state-warn-primary)}',
     '.tf_name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
     '.tf_nameActive{color:var(--dsw-alias-label-primary);font-weight:500}',
-    '.tf_glyph{display:grid;place-items:center;flex:none;width:16px;height:16px;margin-left:2px}',
-    '.tf_glyphActive{color:var(--dsw-alias-state-business-primary)}',
-    '.tf_glyphClosing{color:var(--dsw-alias-state-warn-primary)}',
-    '.tf_glyphMuted{color:var(--dsw-alias-label-caption)}',
-    '.tf_suffix{flex:none;margin-left:6px;color:var(--dsw-alias-label-caption)}',
-    '.tf_spin{animation:tf-stack-spin 1s linear infinite}',
-    '@keyframes tf-stack-spin{to{transform:rotate(360deg)}}'
+    '.tf_suffix{flex:none;margin-left:6px;color:var(--dsw-alias-label-caption)}'
   ].join('')
 }
 
@@ -225,26 +219,6 @@ function chevronGlyph(h) {
     h('path', { d: 'M3.6 5.4 7 8.8l3.4-3.4', stroke: 'currentColor', strokeWidth: 1.4, strokeLinecap: 'round', strokeLinejoin: 'round' }))
 }
 
-/** Spinner ring: the host's "in progress" language (dashed circle, rotating). */
-function spinnerGlyph(h, spinning) {
-  return h('svg', {
-    width: 14,
-    height: 14,
-    viewBox: '0 0 14 14',
-    fill: 'none',
-    'aria-hidden': 'true',
-    className: spinning === true ? 'tf_spin' : undefined
-  }, h('circle', {
-    cx: 7,
-    cy: 7,
-    r: 5.2,
-    stroke: 'currentColor',
-    strokeWidth: 1.4,
-    strokeLinecap: 'round',
-    strokeDasharray: '8 24'
-  }))
-}
-
 /** Rails + state dot: depth is the leading rail run, state is the dot colour. */
 function railCell(h, depth, state, key) {
   const bars = []
@@ -263,8 +237,7 @@ function pendingRow(h, m) {
   if (m.pending.end > 0) bits.push('closing…')
   return h('li', { key: 'pending', className: 'tf_item' },
     railCell(h, 1, 'pending', 'rail'),
-    h('span', { className: 'tf_name' }, bits.join(' ')),
-    h('span', { className: 'tf_glyph tf_glyphMuted' }, spinnerGlyph(h, true)))
+    h('span', { className: 'tf_name' }, bits.join(' ')))
 }
 
 /**
@@ -304,17 +277,13 @@ export function makeTaskStack(react) {
         className: 'tf_item' + (t.innermost ? ' tf_itemActive' : '')
       },
       railCell(h, t.depth, t.innermost ? 'active' : 'open', 'rail'),
-      h('span', { className: 'tf_name' + (t.innermost ? ' tf_nameActive' : '') }, t.name),
-      t.innermost
-        ? h('span', { className: 'tf_glyph tf_glyphActive' }, spinnerGlyph(h, true))
-        : null))
+      h('span', { className: 'tf_name' + (t.innermost ? ' tf_nameActive' : '') }, t.name)))
     }
     for (const c of m.closing) {
       rows.push(h('li', { key: 'c' + c.seq + ':' + c.name, className: 'tf_item' },
         railCell(h, 1, 'closing', 'rail'),
         h('span', { className: 'tf_name' }, c.name),
-        h('span', { className: 'tf_suffix' }, 'folding…'),
-        h('span', { className: 'tf_glyph tf_glyphClosing' }, spinnerGlyph(h, true))))
+        h('span', { className: 'tf_suffix' }, 'folding…')))
     }
     if (m.pending.begin + m.pending.end > 0) rows.push(pendingRow(h, m))
     return h('div', { className: 'tf_root' },

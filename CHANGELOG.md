@@ -3,6 +3,82 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.35.1 — resume-derived results keep their linkage: stuck pending intents fixed (2026-09-23)
+
+A session re-opened after a restart fed its projections tool/result events
+re-derived through the resume path, and there the tool-role message LOST the
+message-level `toolCallId` flatten while KEEPING `source.callId` — the exact
+linkage the flatten is generated from. The taskMarks reducer registered every
+task_begin/task_end intent from the (intact) assistant call blocks but could
+pair none of their results: marks stayed empty, and the task dock drew one
+stuck `opening…`/`closing…` row per task-mark call the session had EVER made
+(observed live on dsh 0.1.7-alpha.2: 19 rows on one session, 40 on another).
+Sessions BORN in the running process were unaffected — only resumed ones —
+and the offline replay of the very same log files was perfectly clean, which
+is what isolated the divergence to the resume feed's event shape.
+
+Worse, the poisoned projection state has the correct `ver`, so the checkpoint
+cache trusted it on every later restart and wrote it back after each visit —
+the ghost rows were durable.
+
+- **`toolResultEntries` accepts `source.callId`** (events.mjs) when the
+  message-level `toolCallId` is absent, gated on `source.kind === 'tool'` so
+  nothing else can masquerade as a result. The v4 message-level and v3
+  block-level grammars parse exactly as before; the fallback only widens the
+  resume-derived shape.
+- **taskMarks `stateVersion` 10 → 11** (compact-region.mjs): the bump
+  discards every persisted checkpoint row — including the poisoned ones,
+  whose `ver` still matched — forcing one clean refold per session that
+  purges the ghost intents machine-wide.
+
+## 0.35.0 — agent-level fold single flight: no session waits on another's fold (2026-09-23)
+
+The fold drain's running guard was PROCESS-global, so every session in a host
+process (the lead plus each subagent) serialized behind whichever drain pass
+was mid-flight. One fold is a whole summarization call (30–111 s measured),
+which made the conflict window wide, and the coupling had a live victim on
+dsh 0.1.7-alpha.2: a subagent closed its outer task, and both of its
+remaining drain boundaries — the pre-step after the final report and
+turn-stopping — fell inside the lead session's 37.5 s fold window (a fold
+the subagent's own `team_task_update` had just triggered by waking the
+lead's `wait_agent` 6 ms earlier). The starved calls queued silently, the
+chained catch-up pass left no durable trace, a settled subagent never sees
+another step boundary, and the `pendingArchives` row survived the session
+as the permanent residual task the task dock rendered. Replaying the
+session log through the projection confirmed the queued row would have
+planned `'fold'` — the archive never ran, it was never invalid.
+
+- **Per-session single flight.** The running guard is keyed by session id
+  (`runningSessions`), so each session folds ITSELF without waiting on any
+  other session's pass. The cross-session starvation queue (`drainQueue`,
+  `MAX_DRAIN_QUEUE`) is gone entirely; same-session reentry stays
+  structurally excluded by the host's single step loop, and the per-session
+  latch (`chainedAgents`) coalesces the theoretical reentrant dispatch into
+  ONE follow-up pass the running pass chains in its `finally`.
+- **Per-session backoff clock.** The shared `drainPass` counter becomes
+  `drainPasses`, one monotone counter per session: a failing entry's
+  geometric backoff now advances only on the retrying session's own
+  boundaries. The old shared counter ticked on ANY session's boundary,
+  quietly shortening every other session's backoff schedule. Bounded via
+  `MAX_TRACKED_SESSIONS` like the other per-session maps.
+- **Why concurrent folds are safe.** Sessions share no fold state the old
+  guard needed to protect: `closingTasks` was already keyed by sessionId,
+  fold numbers count the session's OWN `compaction/summary` events,
+  artifacts write under the session's own directory, and the host base
+  engine keeps no per-instance call state (its durable lock lives in each
+  session's event log — the host's own auto-compaction already runs
+  per-session in one process). The serialization the guard bought — one
+  summarization call per process at a time — was protection nobody needed,
+  paid for in starved subagents.
+- **Task banner: spinner removed.** The rotating dashed ring sat at the end
+  of the innermost active row, every folding row and the pending-intent
+  row, spinning for the whole life of a task (even while the agent waited
+  on the user) and — on a starved archive — forever. State is already
+  fully carried by the rail node colours, the bold active name and the
+  `folding…`/`opening…` suffixes, so the glyph, its `tf_spin` animation
+  and the glyph CSS classes are gone; the client bundle is regenerated to
+  match.
+
 ## 0.34.7 — dsh 0.1.7-alpha.1 session format v4 — flattened tool-result messages (draft 2026-09-22, amended 2026-09-23) (2026-09-23)
 
 The 0.1.6-alpha.2 → 0.1.7-alpha.1 host upgrade shipped SESSION_FORMAT_VERSION
