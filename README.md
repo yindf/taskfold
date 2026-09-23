@@ -29,7 +29,7 @@ Pick the install line that matches your dsh build's channel — each command fet
 
 ```sh
 # alpha channel — the default branch (alpha)
-dsh plugin --profile web add github:yindf/taskfold
+dsh plugin --profile web add "github:yindf/taskfold#alpha"
 
 # rc channel — the master branch (keep the quotes: # starts a comment in sh)
 dsh plugin --profile web add "github:yindf/taskfold#master"

@@ -29,7 +29,7 @@
 
 ```sh
 # alpha 通道 —— 默认分支（alpha）
-dsh plugin --profile web add github:yindf/taskfold
+dsh plugin --profile web add "github:yindf/taskfold#alpha"
 
 # rc 通道 —— master 分支（引号不能省：# 在 sh 里是注释）
 dsh plugin --profile web add "github:yindf/taskfold#master"
