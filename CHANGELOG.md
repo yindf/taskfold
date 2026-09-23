@@ -93,6 +93,17 @@ and the Fold archive artifact + footer rendering v4 tool messages as
 until its next restart — on resume the fixed reducer replays the log and
 the stuck "begin pending" intents resolve; nothing to repair by hand.
 
+Verified on 0.1.7-alpha.2 (2026-09-23, no code change): 194/194 offline,
+12/12 host-API probe, a byte-level seam diff alpha.1→alpha.2 (eight of nine
+packages version-only; the only implementation change — dsh-tools' additive
+optional projectContent hook — is off the plugin's import surface: it
+dynamically imports just dsh-compaction-basic and dsh-llm, both
+byte-identical), SESSION_FORMAT_VERSION still 4 with no new migration edge,
+and the tfverify headless twin rerun on the upgraded host: the full cycle
+folded at turn end in 22.1 s, verify-cache passing at 87.8% prefix hit,
+tail +488. The upgraded GUI host itself replayed this round's task marks
+correctly on first try.
+
 - **Fixes**
   - dsh 0.1.7-alpha.1 session format v4 — one shape-independent
     tool-result extraction (`toolResultEntries`), v4 message-level linkage
