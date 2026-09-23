@@ -33,8 +33,10 @@ pre-step 语义）。守卫更名 `drainRunning`：同会话并发被宿主单�
 
 - 顶层任务的折叠调用从"冷全价"回到"热 ~97% 命中"；交互等待严格不增（同一等待从
   用户消息之后移到用户阅读回复的窗口里）。
-- 已知残余：120s×K 排干上界（K=回合末放行条数，guardedSignal 逐条限时）；期间
-  turn/end 落盘推迟、agent 显示 running；巨型 span 温暖尝试被 120s 截断后下回合
+- 已知残余：300s×K 排干上界（K=回合末放行条数，guardedSignal 逐条限时；2026-09-23
+  由 120s 上调——实测最大合法折叠摘要 111s，120s 界在活会话里恰好截断该尝试并计为
+  'Request was aborted'，更大 span 将永远撞墙，见 CHANGELOG 0.34.7）；期间
+  turn/end 落盘推迟、agent 显示 running；巨型 span 温暖尝试被截断后下回合
   pre-step 冷重付（低频）；跨会话 drainRunning 争用使 B 会话静默退回冷路径
   （后续项：per-session 守卫）。
 - 观测面：summarize 返回的 usage（含 cacheRead）已随 fold 事件记录，命中率可查。
