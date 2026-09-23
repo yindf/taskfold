@@ -29,7 +29,7 @@ Pick the install line that matches your dsh build's channel — each command fet
 
 ```sh
 # alpha channel — the default branch (alpha)
-dsh plugin --profile web add github:yindf/taskfold
+dsh plugin --profile web add "github:yindf/taskfold#alpha"
 
 # rc channel — the master branch (keep the quotes: # starts a comment in sh)
 dsh plugin --profile web add "github:yindf/taskfold#master"
@@ -122,7 +122,7 @@ Every release attaches a prebuilt `dsh-taskfold-<version>.tgz`. Plugin storefron
 ## Supported dsh versions
 
 - **rc channel — supported through `0.1.5-rc.2`** (verified 2026-09-11 on 0.34.1: the offline suite — 162 tests, all green; a byte-level seam audit of all 240 first-party `@deepseek-ai` packages between `0.1.5-rc.1` and `0.1.5-rc.2` — 231 differ only in their `package.json` version fields, 7 change implementation files (the message-feedback group: `dsh-client-ui-message-feedback`, `dsh-message-feedback`, `dsh-command-feedback`, `dsh-client-ui-chat`, `dsh-client-ui-deliverables`, `dsh-client-ui-sidebar`, plus the `dsh-web-frontend` shell), no package is added or removed, and the two this plugin imports — `dsh-compaction-basic` and `dsh-llm` — are byte-identical in implementation; a host-API probe against the real rc.2 packages — engine class export, its `summarize` prototype, subclassing, and `BlockAssembler` with `push`/`blocks`; a client-contract sweep across both builds — `conversation.input.dock`, `useProjection`, `__ModuleLoader__`, and `slots.inject` all identical, with the dock's owner `dsh-client-ui-conversation`, the reference consumer `dsh-client-ui-goal`, and the bundle registry `dsh-client-modules` byte-identical; and live folding on the running 0.1.5-rc.2 host, where the mounted plugin copy is byte-identical to this repo's v0.34.0 tag blobs — 1/1 fold passes `verify-cache --since-restart` (98.6% prefix-cache hit). No code change was needed; the record it supersedes — `0.1.5-rc.1` — stood as written). `dsh`, `dsh-compaction-basic`, and `dsh-llm` ship version-locked, so one number covers the whole surface.
-- **alpha channel — use the default install** (`dsh plugin --profile web add github:yindf/taskfold`, the default branch — alpha); the alpha build's supported-version record lives in [the alpha branch's README](https://github.com/yindf/taskfold/blob/alpha/README.md#supported-dsh-versions).
+- **alpha channel — use the `#alpha` install** (`dsh plugin --profile web add "github:yindf/taskfold#alpha"`, the alpha branch); the alpha build's supported-version record lives in [the alpha branch's README](https://github.com/yindf/taskfold/blob/alpha/README.md#supported-dsh-versions).
 - **Upper bound: untested, not enforced.** dsh does not yet expose host-version negotiation to plugins, so nothing rejects an incompatible host automatically — on an incompatible dsh, folds degrade (tasks still close, unfolded) rather than corrupt. After each dsh upgrade, re-check this section and update it with test results.
 - **Optional hook: `agent/turn-stopping`** — since 0.26.0 the archive drain also runs at turn end, folding turn-final deliverables while the provider prefix cache is still hot. Hosts without the hook simply keep the previous pre-step-only semantics (folds still happen, one turn later); the registration is wrapped so its absence never breaks `apply()`.
 

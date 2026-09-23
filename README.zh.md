@@ -29,7 +29,7 @@
 
 ```sh
 # alpha 通道 —— 默认分支（alpha）
-dsh plugin --profile web add github:yindf/taskfold
+dsh plugin --profile web add "github:yindf/taskfold#alpha"
 
 # rc 通道 —— master 分支（引号不能省：# 在 sh 里是注释）
 dsh plugin --profile web add "github:yindf/taskfold#master"
@@ -122,7 +122,7 @@ taskfold 用“好笔记本”的方式解决：干活前，智能体先用 `tas
 ## 支持的 dsh 版本
 
 - **rc 通道 —— 支持到 `0.1.5-rc.2`**（2026-09-11 在 0.34.1 上实测：离线测试套件 162 个测试全绿；对 rc.1 → rc.2 全部 240 个首方 `@deepseek-ai` 包做逐字节接缝审计——231 个仅 `package.json` 版本字段不同，7 个改了实现文件（消息反馈一组：`dsh-client-ui-message-feedback`、`dsh-message-feedback`、`dsh-command-feedback`、`dsh-client-ui-chat`、`dsh-client-ui-deliverables`、`dsh-client-ui-sidebar`，以及 Web 壳 `dsh-web-frontend`），无包增删，而本插件唯一 import 的两个包 `dsh-compaction-basic` 与 `dsh-llm` 实现逐字节未变；针对真实 rc.2 包的宿主 API 探针——引擎类导出、`summarize` 原型、可继承性，以及 `BlockAssembler` 的 `push`/`blocks`；对两版构建做客户端契约扫描——`conversation.input.dock`、`useProjection`、`__ModuleLoader__`、`slots.inject` 全部相同，且 dock 槽位拥有者 `dsh-client-ui-conversation`、参考消费者 `dsh-client-ui-goal` 与 bundle 注册器 `dsh-client-modules` 逐字节未变；以及在运行中的 0.1.5-rc.2 宿主上活体折叠，挂载副本与本仓库 v0.34.0 tag blob 逐字节一致——1/1 次折叠通过 `verify-cache --since-restart`（前缀缓存命中 98.6%）。本轮无需改代码；它所取代的 `0.1.5-rc.1` 记录保持原样）。`dsh`、`dsh-compaction-basic`、`dsh-llm` 三者版本锁步发布，一个数字覆盖全部耦合面。
-- **alpha 通道 —— 请用默认安装**（`dsh plugin --profile web add github:yindf/taskfold`，默认分支即 alpha）；alpha 构建的支持版本记录在 [alpha 分支的 README](https://github.com/yindf/taskfold/blob/alpha/README.zh.md#支持的-dsh-版本)。
+- **alpha 通道 —— 请用 `#alpha` 安装**（`dsh plugin --profile web add "github:yindf/taskfold#alpha"`，即 alpha 分支）；alpha 构建的支持版本记录在 [alpha 分支的 README](https://github.com/yindf/taskfold/blob/alpha/README.zh.md#支持的-dsh-版本)。
 - **上界：未测试、未强制。** dsh 尚未向插件提供宿主版本协商机制，不兼容的宿主不会被自动拒绝——在不兼容的 dsh 上，折叠会降级（任务照常关闭、不折叠），不会损坏数据。每次 dsh 升级后，请复核本节并按实测结果更新。
 - **可选钩子：`agent/turn-stopping`** —— 0.26.0 起归档排干还会在回合结束时运行，让回合末交付的折叠赶在 provider 前缀缓存还热时执行。没有该钩子的宿主保持原来的纯 pre-step 语义（折叠照常发生，只是晚一个回合）；注册语句整体包裹，钩子缺失不会破坏 `apply()`。
 
