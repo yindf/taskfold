@@ -3,7 +3,7 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
-## 0.34.7 — dsh 0.1.7-alpha.1 session format v4 — flattened tool-result messages (unreleased draft 2026-09-22, amended 2026-09-23)
+## 0.34.7 — dsh 0.1.7-alpha.1 session format v4 — flattened tool-result messages (draft 2026-09-22, amended 2026-09-23) (2026-09-23)
 
 The 0.1.6-alpha.2 → 0.1.7-alpha.1 host upgrade shipped SESSION_FORMAT_VERSION
 4, and this time the event grammar itself moved. All nine audited seam
