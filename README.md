@@ -21,6 +21,13 @@ Keep long AI coding sessions fast, cheap, and readable: finished work is folded 
 
 For [DeepSeek Harness](https://www.npmjs.com/package/@deepseek-ai/dsh) (DSH).
 
+## Supported dsh versions
+
+- **alpha channel — supported through `0.1.7-alpha.2`** (verified 2026-09-23 on 0.34.7, no code change needed: the offline suite — 194 tests, all green; a host-API probe against the real `dsh-compaction-basic`/`dsh-llm` packages — 12/12, the same pinned seams; a byte-level seam diff alpha.1→alpha.2 across all nine packages — eight are version-only bumps, the only implementation change sits in `dsh-tools` (an additive optional `projectContent` hook on tool definitions), which the plugin never imports: its entire dynamic host-import surface is `dsh-compaction-basic` + `dsh-llm`, both byte-identical this round; `SESSION_FORMAT_VERSION` stays 4 with no new migration edge, so v4 remains the only live grammar; and a live fold on a real 0.1.7-alpha.2 session — the tfverify headless twin rerun against the upgraded host — where a full task cycle (begin → parallel reads → end → text-only report) folded at turn end in 22.1 s and passed `verify-cache`: 87.8% prefix-cache hit, tail +488. The upgraded GUI host itself opened and closed this round's task marks correctly on first try. The 0.1.7-alpha.1 breakage story (session format v4 flattening) lives in CHANGELOG 0.34.7.)
+- **rc channel — use the default install** (`dsh plugin --profile web add github:yindf/taskfold`, the master branch); the rc build's supported-version record lives in [master's README](https://github.com/yindf/taskfold/blob/master/README.md#supported-dsh-versions).
+- **Upper bound: untested, not enforced.** dsh does not yet expose host-version negotiation to plugins, so nothing rejects an incompatible host automatically — on an incompatible dsh, folds degrade (tasks still close, unfolded) rather than corrupt. After each dsh upgrade, re-check this section and update it with test results.
+- **Optional hook: `agent/turn-stopping`** — since 0.26.0 the archive drain also runs at turn end, folding turn-final deliverables while the provider prefix cache is still hot. Hosts without the hook simply keep the previous pre-step-only semantics (folds still happen, one turn later); the registration is wrapped so its absence never breaks `apply()`.
+
 ## Quickstart
 
 Pick the install line that matches your dsh build's channel — each command fetches the newest release verified on that channel (see [Supported dsh versions](#supported-dsh-versions)):
@@ -116,13 +123,6 @@ In the Web GUI, the current open-task stack also shows as a live dock above the 
 ## Other ways to install
 
 Every release attaches a prebuilt `dsh-taskfold-<version>.tgz`. Plugin storefronts offer that asset — or the npm package — instead of the build-from-source command, which also skips dsh's `allowBuilds` approval step — see the [latest release](https://github.com/yindf/taskfold/releases/latest).
-
-## Supported dsh versions
-
-- **alpha channel — supported through `0.1.7-alpha.2`** (verified 2026-09-23 on 0.34.7, no code change needed: the offline suite — 194 tests, all green; a host-API probe against the real `dsh-compaction-basic`/`dsh-llm` packages — 12/12, the same pinned seams; a byte-level seam diff alpha.1→alpha.2 across all nine packages — eight are version-only bumps, the only implementation change sits in `dsh-tools` (an additive optional `projectContent` hook on tool definitions), which the plugin never imports: its entire dynamic host-import surface is `dsh-compaction-basic` + `dsh-llm`, both byte-identical this round; `SESSION_FORMAT_VERSION` stays 4 with no new migration edge, so v4 remains the only live grammar; and a live fold on a real 0.1.7-alpha.2 session — the tfverify headless twin rerun against the upgraded host — where a full task cycle (begin → parallel reads → end → text-only report) folded at turn end in 22.1 s and passed `verify-cache`: 87.8% prefix-cache hit, tail +488. The upgraded GUI host itself opened and closed this round's task marks correctly on first try. The 0.1.7-alpha.1 breakage story (session format v4 flattening) lives in CHANGELOG 0.34.7.)
-- **rc channel — use the default install** (`dsh plugin --profile web add github:yindf/taskfold`, the master branch); the rc build's supported-version record lives in [master's README](https://github.com/yindf/taskfold/blob/master/README.md#supported-dsh-versions).
-- **Upper bound: untested, not enforced.** dsh does not yet expose host-version negotiation to plugins, so nothing rejects an incompatible host automatically — on an incompatible dsh, folds degrade (tasks still close, unfolded) rather than corrupt. After each dsh upgrade, re-check this section and update it with test results.
-- **Optional hook: `agent/turn-stopping`** — since 0.26.0 the archive drain also runs at turn end, folding turn-final deliverables while the provider prefix cache is still hot. Hosts without the hook simply keep the previous pre-step-only semantics (folds still happen, one turn later); the registration is wrapped so its absence never breaks `apply()`.
 
 ## For maintainers
 
