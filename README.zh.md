@@ -28,11 +28,11 @@
 按你 dsh 构建所在的通道选安装命令——每条都取该通道上最新验证过的 Release（见[支持的 dsh 版本](#支持的-dsh-版本)）：
 
 ```sh
-# rc 通道 —— 默认分支（master）
+# alpha 通道 —— 默认分支（alpha）
 dsh plugin --profile web add github:yindf/taskfold
 
-# alpha 通道 —— alpha 分支（引号不能省：# 在 sh 里是注释）
-dsh plugin --profile web add "github:yindf/taskfold#alpha"
+# rc 通道 —— master 分支（引号不能省：# 在 sh 里是注释）
+dsh plugin --profile web add "github:yindf/taskfold#master"
 ```
 
 两条命令均可直接复制使用：`web` 就是 DSH Web GUI 所用的 profile——如果你用别的 profile，换成你的名字即可。
@@ -122,7 +122,7 @@ taskfold 用“好笔记本”的方式解决：干活前，智能体先用 `tas
 ## 支持的 dsh 版本
 
 - **alpha 通道 —— 支持到 `0.1.7-alpha.2`**（2026-09-23 在 0.34.7 上实测，无需改码：离线套件 194 个测试全绿；针对真实 `dsh-compaction-basic`/`dsh-llm` 包的宿主 API 探针 12/12，钉住的接缝不变；九个 seam 包 alpha.1→alpha.2 的字节级 diff——八个为纯版本号提升，唯一实现改动在 `dsh-tools`（工具定义新增可选 `projectContent` 钩子），而插件从不导入它：插件对宿主的全部动态导入面只有 `dsh-compaction-basic` + `dsh-llm`，本轮逐字节未变；`SESSION_FORMAT_VERSION` 仍为 4、无新迁移边，v4 依旧是唯一活体语法；以及在一个真实 0.1.7-alpha.2 会话上的活体折叠——tfverify headless 孪生对升级后宿主重跑——完整任务周期（begin → 并行 read → end → 纯文本报告）在回合末 22.1 秒折叠，通过 `verify-cache`：前缀缓存命中 87.8%，tail +488。升级后的 GUI 宿主自身也一次正确开合了本轮验证的任务标记。0.1.7-alpha.1 的破坏故事（会话格式 v4 拍平）见 CHANGELOG 0.34.7。）
-- **rc 通道 —— 请用默认安装**（`dsh plugin --profile web add github:yindf/taskfold`，即 master 分支）；rc 构建的支持版本记录在 [master 分支的 README](https://github.com/yindf/taskfold/blob/master/README.zh.md#支持的-dsh-版本)。
+- **rc 通道 —— 请用 `#master` 安装**（`dsh plugin --profile web add "github:yindf/taskfold#master"`，即 master 分支）；rc 构建的支持版本记录在 [master 分支的 README](https://github.com/yindf/taskfold/blob/master/README.zh.md#支持的-dsh-版本)。
 - **上界：未测试、未强制。** dsh 尚未向插件提供宿主版本协商机制，不兼容的宿主不会被自动拒绝——在不兼容的 dsh 上，折叠会降级（任务照常关闭、不折叠），不会损坏数据。每次 dsh 升级后，请复核本节并按实测结果更新。
 - **可选钩子：`agent/turn-stopping`** —— 0.26.0 起归档排干还会在回合结束时运行，让回合末交付的折叠赶在 provider 前缀缓存还热时执行。没有该钩子的宿主保持原来的纯 pre-step 语义（折叠照常发生，只是晚一个回合）；注册语句整体包裹，钩子缺失不会破坏 `apply()`。
 
