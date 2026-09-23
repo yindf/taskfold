@@ -21,6 +21,8 @@
 
 面向 [DeepSeek Harness](https://www.npmjs.com/package/@deepseek-ai/dsh)（DSH）。
 
+> **当前支持的最新 dsh 版本：`0.1.7-alpha.2`。** dsh 的 alpha 版本在本分支（alpha）支持；dsh 的 rc 版本在 [`master` 分支](https://github.com/yindf/taskfold/blob/master/README.zh.md#支持的-dsh-版本)支持。
+
 ## 快速开始
 
 按你 dsh 构建所在的通道选安装命令——每条都取该通道上最新验证过的 Release（见[支持的 dsh 版本](#支持的-dsh-版本)）：

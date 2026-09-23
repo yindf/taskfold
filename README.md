@@ -21,6 +21,8 @@ Keep long AI coding sessions fast, cheap, and readable: finished work is folded 
 
 For [DeepSeek Harness](https://www.npmjs.com/package/@deepseek-ai/dsh) (DSH).
 
+> **Latest supported dsh: `0.1.7-alpha.2`.** dsh alpha builds are supported on this branch; dsh rc builds are supported on the [`master` branch](https://github.com/yindf/taskfold/blob/master/README.md#supported-dsh-versions).
+
 ## Quickstart
 
 Pick the install line that matches your dsh build's channel — each command fetches the newest release verified on that channel (see [Supported dsh versions](#supported-dsh-versions)):
