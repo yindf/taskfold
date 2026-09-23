@@ -49,7 +49,7 @@
 
 ### 1.5 LLM 摘要（上轮 P5 裁定）
 
-- 复用 ScopedEngine.summarize；signal 来自 pre-step payload（回合 abort signal），外加 `AbortSignal.any([signal, AbortSignal.timeout(120s)])` 防挂死。
+- 复用 ScopedEngine.summarize；signal 来自 pre-step payload（回合 abort signal），外加 `AbortSignal.any([signal, AbortSignal.timeout(300s)])` 防挂死（2026-09-23 由 120s 上调：实测最大合法摘要 111s，120s 恰好截断它——见 ADR 0001 已知残余）。
 - 取消/超时：引擎补 compaction/end 错误事件，条目保留，下轮重试。
 
 ### 1.6 工具与文案

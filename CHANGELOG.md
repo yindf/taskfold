@@ -3,6 +3,107 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.34.7 — dsh 0.1.7-alpha.1 session format v4 — flattened tool-result messages (unreleased draft 2026-09-22, amended 2026-09-23)
+
+The 0.1.6-alpha.2 → 0.1.7-alpha.1 host upgrade shipped SESSION_FORMAT_VERSION
+4, and this time the event grammar itself moved. All nine audited seam
+packages changed implementation files again (last round: nine of nine too,
+but only two changes bit; this round one change broke the plugin outright):
+
+- **The flattening.** A `tool/result` event's message is no longer a
+  user-role message carrying nested `tool-result` blocks (block-level
+  `toolCallId`, inner text content). It is now a first-class **tool-role
+  message** with a **message-level** `toolCallId` (+ `isError`) and plain
+  text blocks; `developer` messages exist as a new role, the shared `plugin`
+  source kind is retired in favor of producer-declared kinds
+  (`runtime-context` probed from a live log), and resumed v3 logs are
+  **migrated in place** at session resume — v4 is the only grammar a live
+  host ever shows a plugin. The plugin's one shared extraction
+  (`toolResultText` over `tool-result` blocks) parsed every such event as
+  empty, and because the taskMarks projection derives marks from
+  assistant/message tool-call blocks PLUS the rendered result text, the
+  failure mode was precise and total: pending intents registered (the
+  assistant branch was unchanged) but no result ever matched, so marks never
+  pushed — observed live on the running upgraded host as a permanent
+  "task stack — empty; N begin pending" snapshot, `task_end` answering
+  "no open task … open: (none)", and not one fold queued — six pressure
+  compaction rounds ran after that session's upgrade resume, every one of
+  them the host's, none taskfold's. The task tools themselves still answered —
+  `task_begin`'s "1 open" is computed optimistically from the local stack —
+  which made the breakage quiet: everything looked alive except the stack.
+- **One extraction, every reader.** `events.mjs` now exposes
+  `toolResultEntries(event)` → `[{ callId, text, isError }]`, reading the
+  v4 message-level shape and falling back to v3 block-level linkage (kept
+  for captured logs replayed offline; a resumed log is always v4).
+  `taskResultEventText` is rebuilt on it, byte-identical for v3 inputs. Every
+  consumer moved over: the taskMarks reducer's `tool/result` branch (push /
+  pop / pendingArchive queue), `deferredArchivePlan`'s parallel-begin and
+  parallel-end guards and its begun-result scan, `closeMessageCallIds`'
+  close-call resolution, legacy fold titling (`attachFoldTitles` retires a
+  `task_fold` call at its result — a migrated log would otherwise leak a
+  stale title onto a later fold), and lifecycle aging
+  (`latestNestedOutcomeSeq` / `roundsSinceFoldOutcome`). Span previews learn
+  the new message: a `role: 'tool'` message with message-level linkage
+  renders through the same result fragment the v3 block path uses
+  (`NN tool: ←…`, correlated with its call, `ERROR:` flagged), and the
+  retired `plugin` source kind generalizes to any non-`user` producer kind
+  (`harness:`), so runtime-context snapshots stay labeled on both grammars.
+- **Unchanged seams, verified anyway.** The engine surface the fold rides
+  survived: `summarize(input, agent, signal)` as the sole subclass hook, the
+  recover-loop waterfall (0.34.6's shim delegation still applies),
+  `buildSummarizationInput`'s `{tools, messages: [system, …region]}` with
+  the surface-head system message, the commit-path result shape, and
+  `requestHeader().config` (provider/model/reasoningEffort/maxTokens — the
+  0.34.6 routed-config spread carries over untouched).
+  `dsh-session-projection` is byte-identical this round; the BlockAssembler
+  chunk grammar passes the probe's push/blocks/usage/finish checks on the
+  new dsh-llm.
+- **The 120 s guard vs the biggest legal fold.** A live post-fix incident
+  on the verifying session itself: the outermost task's fold (21k-token
+  span behind the ~200k-token prefix-anchored envelope) needs 111 s to
+  summarize, and the drain's two attempts died around that wall — the
+  turn-stopping attempt aborted at 11.6 s (turn teardown kills the hook
+  signal), and the next-morning pre-step attempt aborted at exactly
+  +120.001 s, the guardedSignal bound itself, both billed as `Request was
+  aborted` with backoff between them (this was the HOLD line the user
+  saw as a "stuck task"); attempt 3 fit under the wire and committed.
+  The bound now reads 300 s — ≈3× the largest measured success; the
+  trade is that one doomed call may stall a single step boundary for up
+  to 300 s instead of 120 s. ADR 0001's 已知残余 and the design doc's
+  signal section updated to match.
+
+Verified on 0.1.7-alpha.1: 194/194 offline (the 188 that shipped with
+0.34.6 plus six new grammar tests: a v4 reducer round trip, a v3↔v4
+identical-replay proof, a v4 deferredArchivePlan covering both guards and
+the begun scan, v4 span-preview rendering, v4 legacy-title retirement, and
+v4 lifecycle-anchor reading), 12/12 host-API probe against the real
+engine+assembler, a source audit of all nine runtime seam surfaces in the
+installed host, and a live fold on a real 0.1.7-alpha.1 session — a one-shot
+headless twin of the web profile (profiles/tfverify: package.json with
+bundles `[dsh-base, dsh-headless, dsh-taskfold]` and
+`dsh-taskfold: file:<this repo>`, cordis.patch.yml carrying web's
+provider/model rows; prompt shaped as begin → read two repo files →
+end → text-only report, so the text-only message ends the turn and the
+turn-stopping drain folds while the prefix cache is hot) ran the full
+cycle, which folded at turn end with the constructed
+heading, the five-section summary, a correctly-numbered fenced span index,
+and the Fold archive artifact + footer rendering v4 tool messages as
+`tool: ←…` lines; `verify-cache` passes at 89.8% prefix-cache hit, tail
+−2743. The GUI host that found the bug keeps running the pre-fix plugin
+until its next restart — on resume the fixed reducer replays the log and
+the stuck "begin pending" intents resolve; nothing to repair by hand.
+
+- **Fixes**
+  - dsh 0.1.7-alpha.1 session format v4 — one shape-independent
+    tool-result extraction (`toolResultEntries`), v4 message-level linkage
+    with v3 block-level replay, across the reducer, archive plan, titling,
+    aging, and previews
+  - fold-drain: guardedSignal/timeoutSignal summarization bound 120 s →
+    300 s (a legitimate 111 s fold was aborted at the old wall and
+    re-billed as 'Request was aborted')
+- **Docs**
+  - alpha channel verified through 0.1.7-alpha.1 (both READMEs)
+
 ## 0.34.6 — dsh 0.1.6-alpha.2 seams — recover-loop waterfall + routed-config spread (2026-09-18)
 
 The 0.1.5-alpha.2 → 0.1.6-alpha.2 host upgrade changed two seams this

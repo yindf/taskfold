@@ -20,7 +20,8 @@
  *
  * autoFoldAttempts: per-session Map(begin-anchor seq → { attempts, nextPass,
  * name }) bounding the retry loop. ONE fold attempt costs a whole
- * summarization call (30–70 s), so a deterministic failure (structure
+ * summarization call (30–110 s measured live; the guardedSignal bound is
+ * 300 s), so a deterministic failure (structure
  * receipt, missing host API, provider refusal) must not be re-billed at every
  * step boundary forever: consecutive failures back off geometrically (1, 2,
  * 4, 8 boundaries), and past MAX_FOLD_ATTEMPTS the entry still retries — it is
@@ -91,12 +92,20 @@ function reasonOf(classified) {
 }
 
 // Turn-signal guard: bound the summarization call so a lost abort signal
-// can never wedge a pre-step. Degrades to the raw signal when the newer
-// AbortSignal combinators are unavailable.
+// can never wedge a pre-step. The bound must EXCEED any legitimate fold:
+// a live dsh 0.1.7-alpha.1 session's outermost fold (21k-token span behind
+// a ~200k-token prefix-anchored envelope) took 111 s to summarize, and the
+// old 120 s bound aborted that exact attempt (compaction/end landed at
+// +120.001 s, billed as 'Request was aborted') — a larger fold would have
+// retried into the same wall forever. 300 s keeps the anti-wedge guarantee
+// with ~3x headroom over the largest measured success; the cost is a
+// worst-case 300 s stall at one step boundary for a doomed call.
+// Degrades to the raw signal when the newer AbortSignal combinators are
+// unavailable.
 function guardedSignal(signal) {
   try {
     if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.any === 'function' && typeof AbortSignal.timeout === 'function' && signal !== undefined) {
-      return AbortSignal.any([signal, AbortSignal.timeout(120000)])
+      return AbortSignal.any([signal, AbortSignal.timeout(300000)])
     }
   } catch (err) { /* fall through */ }
   return signal
@@ -107,7 +116,7 @@ function guardedSignal(signal) {
 // turn's signal is long gone, so only the lost-signal bound applies.
 function timeoutSignal() {
   try {
-    if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') return AbortSignal.timeout(120000)
+    if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') return AbortSignal.timeout(300000)
   } catch (err) { /* fall through */ }
   return undefined
 }
