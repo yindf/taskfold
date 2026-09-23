@@ -41,13 +41,13 @@ wire: {
 
 几何与排版逐字取自宿主自己的列表 dock recipe：composer 对齐宽度（`--dsh-composer-side-clearance` / `--dsh-composer-dock-inset`，缺失时回退满宽，绝不让 calc 崩掉）、`.5px` 发丝边 + 12px 圆角 + `--dsw-specific-tip` 表面、13px/20px 行高、16×16 字形格、列表 `max-height:180px` 超出滚动、hover 用 `--dsw-alias-interactive-bg-hover`。
 
-层级不再靠序号：左侧是 **rail + 状态点**——深度 = rail 竖条数（渐变发丝线），状态由点色区分（当前任务 `state-business-primary` 实心、待归档 `state-warn-primary`、普通 `label-caption`）。最内层任务名加粗为 `label-primary` 并带旋转 spinner（`@keyframes tf-stack-spin`）。
+层级不再靠序号：左侧是 **rail + 状态点**——深度 = rail 竖条数（渐变发丝线），状态由点色区分（当前任务 `state-business-primary` 实心、待归档 `state-warn-primary`、普通 `label-caption`）。最内层任务名加粗为 `label-primary`。0.35.0 移除了行尾旋转 spinner——它对活动任务整程旋转（等待用户输入时也转）、对饿死行永久旋转，而状态点、加粗与 `folding…` 后缀已完整表达状态。
 
 行为：
 
 - 折叠/展开由 `defaultCollapsed` + 内部 `useState` 控制；表头 meta 在展开态显示计数（`countsSummary`，如 `3 open · 1 folding`），折叠态/紧凑态显示 `planSummary`（如 `3 open · verify the bundle freshness gate · 1 folding`）。
 - **每个待归档任务一行**：逐行 `li`，各带 `folding…` 后缀与 warn 点（此前是 `closing.join(', ')` 挤在一行，已废弃）。
-- pending 意图渲染为一行 `opening…` / `closing…`（带 spinner）。
+- pending 意图渲染为一行 `opening…` / `closing…`。
 - **空栈完全不渲染**（`visible === false` → `return null`），与宿主 TodoPanel 的"无内容即缺席"一致；不再留空条。
 - 模型读取全程防御式（`taskStackView` 永不抛错），畸形/旧版形状一律退化为空模型。
 
