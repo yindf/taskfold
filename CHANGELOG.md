@@ -3,6 +3,44 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.34.2 — agent-level fold single flight + resume-linkage hardening, backported from the alpha channel (2026-09-23)
+
+Two live-verified fixes backported from the alpha channel's 0.35.0/0.35.1
+releases, adapted to this rc baseline (the alpha incident data is quoted
+verbatim for the record):
+
+- **fold drain: agent-level single flight.** The drain's running guard is now
+  keyed by session id instead of a process-wide boolean, and the backoff
+  clock (`drainPass`) became per-session — one session's fold no longer makes
+  any other session's drain wait, and one session's step boundaries no longer
+  advance another session's backoff schedule. Origin (alpha, dsh
+  0.1.7-alpha.2): a subagent session whose only two drain opportunities (the
+  pre-step and turn-stopping hooks of its final step) both fell inside a
+  sibling session's 37.5 s fold window; the starved retry needed a step
+  boundary that a settled subagent never produces, so the archive row stayed
+  queued forever. Sessions in one process now fold concurrently; every path
+  they touch is per-session by construction (closingTasks is keyed by session
+  id, artifacts are written per session, the durable event-log lock is per
+  session). Same-session reentry — theoretical, the host loop serializes one
+  session's dispatch — merges into one chained pass instead of being dropped.
+- **taskMarks: shape-independent tool-result linkage + stateVersion 11.**
+  `toolResultEntries` (new in events.mjs) reads every event grammar: v3
+  block-level `tool-result` blocks, v4 message-level `toolCallId` on the
+  tool-role message, and the resume-derived shape where the message keeps
+  only `source.callId`. The reducer and the archive-plan guards pair through
+  it. Origin (live on dsh 0.1.7-alpha.2): sessions re-opened after a restart
+  fed the projection resume-derived events; every mark call/result pair
+  failed to pair and the dock showed one stuck `opening…`/`closing…` row per
+  call ever made (19 rows on one session, 40 on another), with the poisoned
+  state checkpointing itself back into the projection cache. stateVersion 11
+  discards those persisted v10 rows; `source.callId` is accepted only for
+  `source.kind === 'tool'`, so a source-bearing non-tool message can never
+  masquerade as a result.
+- **task banner: the spinner glyph is gone.** The rotating glyph said
+  "animation" where the rail dot, the bold name, and the `folding…` suffix
+  already carry the state; static, it read as a broken spinner. Status
+  expression is unchanged otherwise.
+
 ## 0.34.1 — dsh 0.1.5-rc.2 verified, and the release flow publishes its own tarball (2026-09-11)
 
 dsh moved from `0.1.5-rc.1` to `0.1.5-rc.2`, and this round verified the plugin

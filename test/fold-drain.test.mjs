@@ -281,3 +281,120 @@ test('a cancelled fold is quiet on its first occurrence and visible if it repeat
   await h.drain.processDeferredArchives(h.agent, undefined)
   assert.match(h.drain.autoFoldFailures.get(h.session.id).get('interrupted'), /^fold cancelled, attempt 2: /)
 })
+
+// AGENT-LEVEL SINGLE FLIGHT (backported from the alpha channel): the drain's
+// running guard is keyed by session id. Cross-session: a fold in flight for
+// session A must not defer session B's drain — B folds immediately. Live
+// origin (alpha, dsh 0.1.7-alpha.2): a subagent session whose ONLY two drain
+// opportunities both fell inside a sibling 37.5 s fold window lost its
+// archive forever, because the queued retry needed a step boundary that a
+// settled subagent never produces.
+test('cross-session drain calls fold concurrently — no starvation behind a sibling pass', async () => {
+  const mk = (id) => {
+    const events = [
+      assistantCall(10, [{ id: id + '-1', name: 'task_begin' }]),
+      toolResult(11, id + '-1', BEGUN(id, '1 open.')),
+      assistantCall(20, [{ id: id + '-2', name: 'task_end' }]),
+      toolResult(21, id + '-2', ENDED(id, 'all closed. Archival queued.')),
+      assistantText(25, id + ' deliverable')
+    ]
+    let state = null
+    for (const e of events) state = applyTaskMarks(state, e)
+    const session = { id, events, surface: { nodes: [10, 11, 20, 21, 25] } }
+    return { session, agent: { session } }
+  }
+  const A = mk('sess-a')
+  const B = mk('sess-b')
+  const states = new Map([[A.session.id, null], [B.session.id, null]])
+  // Re-derive per-session state the way the harness does, then key it by id.
+  for (const pair of [[A, A.session.events], [B, B.session.events]]) {
+    let s = null
+    for (const e of pair[1]) s = applyTaskMarks(s, e)
+    states.set(pair[0].session.id, s)
+  }
+  const ctx = { sessionProjections: { stateOf: (session) => states.get(session.id) } }
+  const order = []
+  let releaseA
+  let enteredAResolve
+  const enteredA = new Promise((r) => { enteredAResolve = r })
+  const engine = {
+    async compactRegion(startSeq, endSeq, agent) {
+      const session = agent.session
+      if (session.id === A.session.id) {
+        enteredAResolve()
+        await new Promise((r) => { releaseA = r })
+      }
+      order.push(session.id)
+      const nodes = session.surface.nodes
+      const startIdx = nodes.indexOf(startSeq)
+      const endIdx = nodes.indexOf(endSeq)
+      const shadowed = nodes.slice(startIdx, endIdx + 1)
+      session.surface.nodes = nodes.slice(0, startIdx).concat(nodes.slice(endIdx + 1))
+      states.set(session.id, applyTaskMarks(states.get(session.id), { type: 'compaction/summary', data: { shadowedSeqs: shadowed } }))
+      return { shadowedTokenCount: 1000 }
+    }
+  }
+  const drain = createArchiveDrain({ ctx, engineFor: async () => engine, closingTasks: new Map() })
+
+  const pA = drain.processDeferredArchives(A.agent, undefined)
+  await enteredA
+  // A's fold is mid-flight; B's drain must NOT wait for it (the old
+  // process-level guard returned silently here, deferring B to a boundary
+  // that might never come at turn stop).
+  const pB = drain.processDeferredArchives(B.agent, undefined)
+  await pB
+  assert.deepEqual(order, ['sess-b'], 'B folded while A was still in flight')
+  releaseA()
+  await pA
+  assert.deepEqual(order, ['sess-b', 'sess-a'], 'A folded after its release')
+  assert.equal(states.get(A.session.id), null, 'A row closed out of the projection')
+  assert.equal(states.get(B.session.id), null, 'B row closed out of the projection')
+})
+
+// The same-session guard exists only for theoretical reentry (the host loop
+// serializes one session's dispatch): a reentrant call merges into ONE
+// chained pass instead of being dropped to a boundary a settled session may
+// never reach. After the in-flight fold commits, the chained pass re-plans,
+// finds the row gone, and bills zero extra summarization calls.
+test('same-session reentry chains one pass instead of dropping it', async () => {
+  const events = [
+    assistantCall(10, [{ id: 'r1', name: 'task_begin' }]),
+    toolResult(11, 'r1', BEGUN('reentry', '1 open.')),
+    assistantCall(20, [{ id: 'r2', name: 'task_end' }]),
+    toolResult(21, 'r2', ENDED('reentry', 'all closed. Archival queued.')),
+    assistantText(25, 'deliverable')
+  ]
+  let state = null
+  for (const e of events) state = applyTaskMarks(state, e)
+  const session = { id: 'sess-r', events, surface: { nodes: [10, 11, 20, 21, 25] } }
+  const agent = { session }
+  const ctx = { sessionProjections: { stateOf: () => state } }
+  const attempts = []
+  let release
+  let enteredResolve
+  const entered = new Promise((r) => { enteredResolve = r })
+  const engine = {
+    async compactRegion(startSeq, endSeq) {
+      attempts.push([startSeq, endSeq])
+      enteredResolve()
+      await new Promise((r) => { release = r })
+      const nodes = session.surface.nodes
+      const startIdx = nodes.indexOf(startSeq)
+      const endIdx = nodes.indexOf(endSeq)
+      const shadowed = nodes.slice(startIdx, endIdx + 1)
+      session.surface.nodes = nodes.slice(0, startIdx).concat(nodes.slice(endIdx + 1))
+      state = applyTaskMarks(state, { type: 'compaction/summary', data: { shadowedSeqs: shadowed } })
+      return { shadowedTokenCount: 1000 }
+    }
+  }
+  const drain = createArchiveDrain({ ctx, engineFor: async () => engine, closingTasks: new Map() })
+
+  const p1 = drain.processDeferredArchives(agent, undefined)
+  await entered
+  const p2 = drain.processDeferredArchives(agent, undefined) // reentrant while p1's fold is in flight
+  await p2 // merged and returned, never dropped
+  release()
+  await p1
+  assert.equal(attempts.length, 1, 'the chained pass re-planned a settled row and billed nothing')
+  assert.equal(state, null, 'row closed out of the projection')
+})

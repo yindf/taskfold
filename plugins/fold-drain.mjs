@@ -98,6 +98,16 @@ function guardedSignal(signal) {
   return signal
 }
 
+// Timeout-only guard for a CHAINED pass (same-session reentry that waited
+// out this session's own pass): its own hook call already returned, its
+// turn's signal is long gone, so only the lost-signal bound applies.
+function timeoutSignal() {
+  try {
+    if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') return AbortSignal.timeout(120000)
+  } catch (err) { /* fall through */ }
+  return undefined
+}
+
 /**
  * Shared fold core: run engine.compactRegion over [startSeq..endSeq] with
  * the balanced-boundary node-by-node fallback (a rejected compactRegion
@@ -151,14 +161,26 @@ async function foldRegion(session, agent, engine, name, startSeq, endSeq, signal
  * processDeferredArchives(agent, signal) is wired into BOTH 'agent/pre-step'
  * and 'agent/turn-stopping' (compact-region.mjs): pre-step keeps every queued
  * archive moving; turn-stopping folds turn-final deliverables while the
- * provider prefix cache is still hot. Same-session dispatch order is
- * serialized by the host loop; the running guard below covers cross-session
- * reentry (subagent sessions share this process).
+ * provider prefix cache is still hot.
+ *
+ * AGENT-LEVEL SINGLE FLIGHT: the running guard is keyed by session id — a
+ * fold in one session never makes another session's drain wait (backported
+ * from the alpha channel, where a subagent session whose ONLY two drain
+ * opportunities both fell inside a sibling session's 37.5 s fold window
+ * lost its archive forever: the queued retry needed a step boundary that a
+ * settled subagent never produces). Sessions in one process fold
+ * concurrently; every path they touch is per-session by construction —
+ * closingTasks is keyed by session id, fold artifacts are written into the
+ * session's own directory, and the durable event-log lock is per session.
+ * The same-session guard covers only theoretical reentry (the host loop
+ * already serializes one session's dispatch): a reentrant call merges into
+ * ONE chained pass instead of being dropped to a boundary that may never
+ * come at turn stop.
  *
  * At every agent step boundary, drain queue entries whose post-close
  * assistant message has landed (deferredArchivePlan gate), innermost
- * (highest seq) first. Serial
- * by construction; the projection state is re-read before EACH entry
+ * (highest seq) first. Serial by construction within the session; the
+ * projection state is re-read before EACH entry
  * because a committed fold rewrites the surface (the previous entry's
  * summary may shadow the next entry's anchor — the reducer then drops it
  * and the re-read no longer lists it). A 'wait' verdict skips that
@@ -171,10 +193,16 @@ export function createArchiveDrain({ ctx, engineFor, closingTasks }) {
   const settledArchives = new Map() // session.id → Set<seq>
   const autoFoldFailures = new Map() // session.id → Map<name, bucket>
   const autoFoldAttempts = new Map() // session.id → Map<seq, { attempts, nextPass, name }>
-  let drainRunning = false
-  // One drain pass = one agent step boundary of SOME session in this process;
-  // a monotone counter is all the backoff clock needs.
-  let drainPass = 0
+  // Session ids with a drain pass in flight — the agent-level single-flight
+  // guard. Other sessions' passes are NOT waited on: their folds fold.
+  const runningSessions = new Set()
+  // Same-session reentry merges here: one chained pass per session.
+  const chainedAgents = new Map() // session.id → agent
+  // One drain pass = one agent step boundary of THAT session; a monotone
+  // per-session counter is all the backoff clock needs (a process-wide
+  // clock made every session's boundaries advance every other session's
+  // backoff schedule).
+  const drainPasses = new Map() // session.id → pass counter
 
   /**
    * Bound one per-session map. A long-lived host accumulates one entry per
@@ -234,12 +262,13 @@ export function createArchiveDrain({ ctx, engineFor, closingTasks }) {
     if (bySeq !== undefined) bySeq.delete(seq)
   }
 
-  async function processDeferredArchives(agent, signal) {
-    if (drainRunning) return
-    drainRunning = true
-    drainPass += 1
+  async function runDrainPass(agent, signal) {
+    const session = agent.session
+    runningSessions.add(session.id)
+    const pass = (drainPasses.get(session.id) || 0) + 1
+    drainPasses.set(session.id, pass)
+    capSessions(drainPasses, session.id)
     try {
-      const session = agent.session
       // Entries passed over this pass ('wait', or a backoff boundary):
       // skipped, not fatal. Reset when the pass ends so the next boundary
       // re-tries them.
@@ -254,7 +283,7 @@ export function createArchiveDrain({ ctx, engineFor, closingTasks }) {
         // a deterministic failure cannot re-bill a full summarization call at
         // every single step boundary.
         const pendingAttempt = attemptsOf(session, entry.seq)
-        if (pendingAttempt !== undefined && drainPass < pendingAttempt.nextPass) {
+        if (pendingAttempt !== undefined && pass < pendingAttempt.nextPass) {
           skipped.add(entry.seq)
           continue
         }
@@ -305,7 +334,7 @@ export function createArchiveDrain({ ctx, engineFor, closingTasks }) {
             continue
           }
           const attempt = recordAttempt(session, entry.seq, entry.name)
-          attempt.nextPass = drainPass + (attempt.attempts >= MAX_FOLD_ATTEMPTS ? GIVE_UP_PASSES : backoffPasses(attempt.attempts))
+          attempt.nextPass = pass + (attempt.attempts >= MAX_FOLD_ATTEMPTS ? GIVE_UP_PASSES : backoffPasses(attempt.attempts))
           const reason = reasonOf(classified)
           const detail = failureBucket(classified.category) + ', attempt ' + attempt.attempts + (reason === '' ? '' : ': ' + reason)
           // A cancelled fold is the normal shape of an interrupted turn (the
@@ -321,7 +350,36 @@ export function createArchiveDrain({ ctx, engineFor, closingTasks }) {
         }
       }
     } finally {
-      drainRunning = false
+      runningSessions.delete(session.id)
+    }
+  }
+
+  /**
+   * Public entry, wired to BOTH 'agent/pre-step' and 'agent/turn-stopping'.
+   * Per-session single flight: another session's running pass does NOT
+   * defer this one — each session folds its own archives concurrently.
+   * Same-session reentry (theoretical: the host loop serializes one
+   * session's dispatch) merges into ONE chained pass that runs as soon as
+   * this session's current pass ends, so a call arriving at turn stop is
+   * never dropped to a boundary a settled session may never reach. The
+   * chained pass cannot reuse the starved call's signal — its turn is
+   * already over by then — so it runs under the timeout guard alone.
+   */
+  async function processDeferredArchives(agent, signal) {
+    const id = agent.session.id
+    if (runningSessions.has(id)) {
+      if (!chainedAgents.has(id)) chainedAgents.set(id, agent)
+      return
+    }
+    try {
+      await runDrainPass(agent, signal)
+    } finally {
+      for (;;) {
+        const next = chainedAgents.get(id)
+        if (next === undefined || runningSessions.has(id)) break
+        chainedAgents.delete(id)
+        await runDrainPass(next, timeoutSignal())
+      }
     }
   }
 

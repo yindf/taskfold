@@ -26,7 +26,7 @@
  * Everything in this module is pure (or a thin ctx-keyed state accessor),
  * so tests exercise it offline without a host.
  */
-import { sessionEvents, messageOf, blocksOf, toolResultText, taskResultEventText } from './events.mjs'
+import { sessionEvents, messageOf, blocksOf, toolResultText, toolResultEntries, taskResultEventText } from './events.mjs'
 
 /** Session-projection key under which the open-mark stack is published. */
 export const TASK_MARKS_KEY = 'taskMarks'
@@ -279,9 +279,8 @@ export function deferredArchivePlan(entry, surfaceNodes, events) {
         if (e.type !== 'tool/result') continue
         const pos = posOf.get(e.seq)
         if (pos === undefined || pos <= startFloorPos) continue
-        for (const b of blocksOf(messageOf(e))) {
-          if (b !== null && typeof b === 'object' && b.type === 'tool-result' && typeof b.toolCallId === 'string'
-            && callIds.has(b.toolCallId)) { startFloorPos = pos; break }
+        for (const resultEntry of toolResultEntries(e)) {
+          if (callIds.has(resultEntry.callId)) { startFloorPos = pos; break }
         }
       }
     }
@@ -379,16 +378,14 @@ export function applyTaskMarks(state, event) {
   if (event.type === 'tool/result') {
     const seq = Number.isInteger(event.seq) ? event.seq : 0
     let next = null
-    for (const block of blocksOf(messageOf(event))) {
-      if (block === null || typeof block !== 'object' || block.type !== 'tool-result') continue
-      if (typeof block.toolCallId !== 'string') continue
+    for (const entry of toolResultEntries(event)) {
       const base = next === null ? state : next
       const pending = base === null || base.pending === undefined ? undefined : base.pending
-      const intent = pending === undefined ? undefined : pending[block.toolCallId]
+      const intent = pending === undefined ? undefined : pending[entry.callId]
       if (intent === undefined) continue
       if (next === null) next = cloneTaskMarks(base)
-      delete next.pending[block.toolCallId]
-      const text = toolResultText(block)
+      delete next.pending[entry.callId]
+      const text = entry.text
       if (intent.kind === 'begin' && text.indexOf('Task begun: ') === 0) {
         const name = taskNameFromText(text, 'Task begun: ')
         next.marks.push({ seq: intent.anchorSeq, name })

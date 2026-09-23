@@ -551,3 +551,64 @@ test('DETAILED_CHECKPOINT_INSTRUCTION: uncapped, exhaustive, structure-preservin
   assert.notEqual(DETAILED_CHECKPOINT_INSTRUCTION, FOLD_SUMMARY_INSTRUCTION, 'fold and checkpoint instructions stay distinct artifacts')
 })
 
+// RESUME-DERIVED v4 results (backported from the alpha channel's linkage
+// hardening): a session re-opened after a restart feeds the projection
+// events re-derived through the resume path, where the tool-role message
+// can lose the message-level toolCallId flatten while KEEPING source.callId.
+// The pre-fix reducer read only block-level toolCallId, so every mark
+// call/result pair failed to pair on resume — the dock showed one stuck
+// 'opening…'/'closing…' row per call ever made (live on dsh 0.1.7-alpha.2:
+// 19 rows on one session, 40 on another; the poisoned state also
+// checkpointed itself back into the projection cache, surviving restarts
+// until the version bump discarded it).
+function toolResultV4Resume(callId, text, seq) {
+  const event = {
+    type: 'tool/result',
+    data: {
+      message: {
+        role: 'tool',
+        source: { kind: 'tool', callId },
+        content: [{ type: 'text', text }]
+      }
+    }
+  }
+  if (seq !== undefined) event.seq = seq
+  return event
+}
+
+test('resume-derived v4 results (source.callId only, no message-level toolCallId) still pair', () => {
+  let state = null
+  state = applyTaskMarks(state, assistantCall(10, [{ id: 'a1', name: 'task_begin' }]))
+  state = applyTaskMarks(state, toolResultV4Resume('a1', 'Task begun: resume-task — 1 open.', 11))
+  assert.deepEqual(state.marks, [{ seq: 10, name: 'resume-task' }], 'begin pairs through source.callId')
+  assert.equal(Object.keys(state.pending).length, 0, 'intent consumed')
+
+  state = applyTaskMarks(state, assistantCall(20, [{ id: 'a2', name: 'task_end' }]))
+  state = applyTaskMarks(state, toolResultV4Resume('a2', 'Task ended: resume-task — all closed. Archival queued.', 21))
+  assert.deepEqual(state.marks, [], 'end pairs and pops the mark')
+  assert.deepEqual(state.pendingArchives, [{ seq: 10, name: 'resume-task', foldResultSeq: 21 }], 'archive queued for the drain')
+})
+
+test('v4 tool-role results (message-level toolCallId) pair too', () => {
+  let state = null
+  state = applyTaskMarks(state, assistantCall(10, [{ id: 'a1', name: 'task_begin' }]))
+  state = applyTaskMarks(state, {
+    seq: 11,
+    type: 'tool/result',
+    data: { message: { role: 'tool', toolCallId: 'a1', content: [{ type: 'text', text: 'Task begun: v4-task — 1 open.' }] } }
+  })
+  assert.deepEqual(state.marks, [{ seq: 10, name: 'v4-task' }], 'message-level linkage pairs')
+})
+
+test('a source-bearing non-tool message never masquerades as a result', () => {
+  let state = null
+  state = applyTaskMarks(state, assistantCall(10, [{ id: 'a1', name: 'task_begin' }]))
+  state = applyTaskMarks(state, {
+    seq: 11,
+    type: 'tool/result',
+    data: { message: { role: 'tool', source: { kind: 'file', callId: 'a1' }, content: [{ type: 'text', text: 'Task begun: ghost — 1 open.' }] } }
+  })
+  assert.deepEqual(state.marks, [], 'non-tool source does not pair')
+  assert.equal(Object.keys(state.pending).length, 1, 'intent stays pending')
+})
+

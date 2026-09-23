@@ -112,10 +112,12 @@ export default {
       }
     } catch (err) { /* llm service absent: nothing to detail */ }
     // Native-event derivation folds into this projection; the registration's
-    // disposer rides the plugin fiber, so it unloads with us. stateVersion 10
-    // discards persisted rows from earlier reducer generations (v9 keyed
-    // archive closure on the BEGIN anchor — a witness a deferred fold never
-    // shadows, so terminated sessions could persist 'folding…' rows forever).
+    // disposer rides the plugin fiber, so it unloads with us. stateVersion 11
+    // discards persisted rows from earlier reducer generations — including
+    // v10 rows poisoned by pre-linkage-fallback reducers that left every
+    // mark call of a resumed session stuck as a pending intent (the state
+    // then checkpointed itself back into the projection cache; live on
+    // dsh 0.1.7-alpha.2: 19 ghost rows on one session, 40 on another).
     // The host treats a version mismatch as a full replay, not a load failure,
     // so the replay converges those rows through the close-result witness.
     ctx.sessionProjections.register({
@@ -123,7 +125,7 @@ export default {
       stateSchema: taskMarksStateSchema,
       init: () => null,
       apply: applyTaskMarks,
-      stateVersion: 10,
+      stateVersion: 11,
       wire: {
         viewSchema: taskMarksStateSchema,
         view: (state) => state
