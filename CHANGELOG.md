@@ -3,6 +3,68 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.34.8 — dsh 0.1.7-rc.1 verified, and channel-scoped release baselines (2026-09-24)
+
+dsh's rc line jumped two hosts at once — from `0.1.5-rc.2` (the rc channel's
+last recorded host) to `0.1.7-rc.1` — so this verification round audited the
+larger step and found no plugin change needed. The same round fixed the release
+flow for a problem the channel split had left behind: master could not draft at
+all, because the script's "latest tag" was branch-global while the tag
+namespace is shared by both channels.
+
+- **Host upgrade verified — no plugin change.**
+  - the offline suite — 13 suites, 167 tests, 0 fail
+  - a byte-level audit of all 277 first-party `@deepseek-ai` packages common to
+    the 0.1.7-alpha.2 and 0.1.7-rc.1 install trees (alpha.2 being the last host
+    either channel of this plugin had live-verified): no package added or
+    removed, 221 differ only in their `package.json` version fields, 56 change
+    implementation files
+  - of the packages this plugin couples to, `dsh-compaction-basic`,
+    `dsh-session`, and `dsh-agent-loop` are byte-identical in implementation,
+    and `dsh-llm`'s only change is `lib/typert.host.js` (TYPERT type-registry
+    declarations, the `Team*` typing entries) while `lib/index.js` —
+    `BlockAssembler`, the chunk grammar, the export line — is byte-identical
+  - a host-API probe against the real rc.1 packages with this branch's own
+    `fold-engine` copy: engine class export, its `summarize` prototype,
+    ScopedEngine subclassing the actual rc.1 base class, `BlockAssembler` with
+    `push`/`blocks`, and the end-to-end fold path (prefix-anchored envelope
+    with host-head dedup, exactly one system message, the constructed heading
+    with its fenced line-numbered span index, usage passthrough) — 12/12
+  - a client-contract sweep: `conversation.input.dock`, `useProjection`,
+    `__ModuleLoader__`, and `slots.inject` occurrence-identical across both
+    trees (8 / 14 / 11 / 10), with the dock-registration lines themselves
+    character-identical inside the changed owner `dsh-client-ui-conversation`
+    and the bundle registry `dsh-client-modules` byte-identical
+  - live, on the running 0.1.7-rc.1 host: 2/2 folds pass
+    `verify-cache --since-restart` (96.3% and 96.2% prefix-cache hits) — folded
+    by the mounted alpha-channel copy (0.35.1); this branch's own code is
+    covered by the probe and the suite above
+  - one dist-tag note: `0.1.7-rc.1` ships under `next` while `latest` still
+    resolves to `0.1.5-rc.3`, so a bare `npx @deepseek-ai/dsh web` keeps
+    running rc.3 — only `@0.1.7-rc.1` (or `@next`) reaches the new build
+- **Release flow: the tag baseline is now per-branch, and taken versions are
+  refused at draft.** `draft` on master died with "latest tag v0.34.7 is not
+  an ancestor of HEAD": `latestTag()` was branch-global, and the channel split
+  shares one tag namespace — alpha owns `v0.34.3`–`v0.34.7`, and, from before
+  the split, the `v0.34.2` tag itself, while master's own 0.34.2 release commit
+  is untagged (a version twin). Now `latestTag()` lists only tags reachable
+  from HEAD (`--merged`), and `baselineTag()` lets the other branch's tag stand
+  in as this branch's baseline exactly when the branch's own newest tag is
+  below `package.json` and the missing version is tagged somewhere — globally
+  unique, exactly one tag, just not here. A reachable tag above package.json,
+  or a version below it with no tag anywhere, stays a rejection; the ancestry
+  tripwire now guards only the branch's own tag. `draft` also refuses a target
+  version whose tag already exists ("pass --version with a free number")
+  instead of dying at `git tag` deep inside `release` — which is why this
+  release is 0.34.8: 0.34.3–0.34.7 are alpha's, and 0.34.8 is master's next
+  free number below alpha's 0.35.x line.
+
+**Verification** — offline suite 13 suites / 167 tests / 0 fail; host-API
+probe 12/12 against the real rc.1 packages; live `verify-cache
+--since-restart` 2/2 folds pass (96.3% / 96.2% prefix-cache hits) on the
+running 0.1.7-rc.1 host; the taken-version guard probed both ways (0.34.3
+refused with exit 1, 0.34.8 accepted).
+
 ## 0.34.2 — agent-level fold single flight + resume-linkage hardening, backported from the alpha channel (2026-09-23)
 
 Two live-verified fixes backported from the alpha channel's 0.35.0/0.35.1
