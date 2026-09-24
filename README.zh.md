@@ -21,7 +21,7 @@
 
 面向 [DeepSeek Harness](https://www.npmjs.com/package/@deepseek-ai/dsh)（DSH）。
 
-> **当前支持的最新 dsh 版本：`0.1.5-rc.2`。** dsh 的 rc 版本在本分支（master）支持；dsh 的 alpha 版本在 [`alpha` 分支](https://github.com/yindf/taskfold/blob/alpha/README.zh.md#支持的-dsh-版本)支持。
+> **当前支持的最新 dsh 版本：`0.1.7-rc.1`。** dsh 的 rc 版本在本分支（master）支持；dsh 的 alpha 版本在 [`alpha` 分支](https://github.com/yindf/taskfold/blob/alpha/README.zh.md#支持的-dsh-版本)支持。
 
 ## 快速开始
 
@@ -121,7 +121,7 @@ taskfold 用“好笔记本”的方式解决：干活前，智能体先用 `tas
 
 ## 支持的 dsh 版本
 
-- **rc 通道 —— 支持到 `0.1.5-rc.2`**（2026-09-11 在 0.34.1 上实测：离线测试套件 162 个测试全绿；对 rc.1 → rc.2 全部 240 个首方 `@deepseek-ai` 包做逐字节接缝审计——231 个仅 `package.json` 版本字段不同，7 个改了实现文件（消息反馈一组：`dsh-client-ui-message-feedback`、`dsh-message-feedback`、`dsh-command-feedback`、`dsh-client-ui-chat`、`dsh-client-ui-deliverables`、`dsh-client-ui-sidebar`，以及 Web 壳 `dsh-web-frontend`），无包增删，而本插件唯一 import 的两个包 `dsh-compaction-basic` 与 `dsh-llm` 实现逐字节未变；针对真实 rc.2 包的宿主 API 探针——引擎类导出、`summarize` 原型、可继承性，以及 `BlockAssembler` 的 `push`/`blocks`；对两版构建做客户端契约扫描——`conversation.input.dock`、`useProjection`、`__ModuleLoader__`、`slots.inject` 全部相同，且 dock 槽位拥有者 `dsh-client-ui-conversation`、参考消费者 `dsh-client-ui-goal` 与 bundle 注册器 `dsh-client-modules` 逐字节未变；以及在运行中的 0.1.5-rc.2 宿主上活体折叠，挂载副本与本仓库 v0.34.0 tag blob 逐字节一致——1/1 次折叠通过 `verify-cache --since-restart`（前缀缓存命中 98.6%）。本轮无需改代码；它所取代的 `0.1.5-rc.1` 记录保持原样）。`dsh`、`dsh-compaction-basic`、`dsh-llm` 三者版本锁步发布，一个数字覆盖全部耦合面。
+- **rc 通道 —— 支持到 `0.1.7-rc.1`**（2026-09-24 在 0.34.3 上实测：离线测试套件——13 个套件、167 个测试、0 失败；对 0.1.7-alpha.2 与 0.1.7-rc.1 两棵安装树共有的全部 277 个首方 `@deepseek-ai` 包做逐字节审计——alpha.2 是本插件两条通道最后一次活体验证过的宿主——无包增删，221 个仅 `package.json` 版本字段不同，56 个改了实现文件；与本插件耦合的包里，`dsh-compaction-basic`、`dsh-session`、`dsh-agent-loop` 实现逐字节未变，`dsh-llm` 唯一改动是 `lib/typert.host.js`（TYPERT 类型注册表声明、`Team*` 类型条目），而 `lib/index.js`——`BlockAssembler`、分块文法、导出行——逐字节未变；针对本分支的 `fold-engine` 副本与真实 rc.1 包跑宿主 API 探针——引擎类导出、`summarize` 原型、ScopedEngine 继承真实 rc.1 基类、`BlockAssembler` 的 `push`/`blocks`，以及端到端折叠路径（带宿主头去重的前缀锚定信封、只有一个 system 消息、构造出的标题与带行号的围栏 span 索引、用量透传）——12/12；客户端契约扫描——`conversation.input.dock`、`useProjection`、`__ModuleLoader__`、`slots.inject` 在两棵树中出现次数逐一相同（8 / 14 / 11 / 10），且发生改动的 dock 槽位拥有者 `dsh-client-ui-conversation` 中槽位注册语句逐字符相同、bundle 注册器 `dsh-client-modules` 逐字节未变；以及在运行中的 0.1.7-rc.1 宿主上活体折叠——2/2 次折叠通过 `verify-cache --since-restart`（前缀缓存命中 96.3% 与 96.2%），折叠由挂载的 alpha 通道副本（0.35.1）完成，本分支自身代码由上述探针与套件覆盖。本轮无需改代码；它所取代的 `0.1.5-rc.2` 记录保持原样。一条 dist-tag 备注：`0.1.7-rc.1` 走 `next` 发布而 `latest` 仍解析到 `0.1.5-rc.3`，裸 `npx @deepseek-ai/dsh web` 跑的还是 rc.3——只有 `@0.1.7-rc.1`（或 `@next`）能拿到新构建）。`dsh`、`dsh-compaction-basic`、`dsh-llm` 三者版本锁步发布，一个数字覆盖全部耦合面。
 - **alpha 通道 —— 请用 `#alpha` 安装**（`dsh plugin --profile web add "github:yindf/taskfold#alpha"`，即 alpha 分支）；alpha 构建的支持版本记录在 [alpha 分支的 README](https://github.com/yindf/taskfold/blob/alpha/README.zh.md#支持的-dsh-版本)。
 - **上界：未测试、未强制。** dsh 尚未向插件提供宿主版本协商机制，不兼容的宿主不会被自动拒绝——在不兼容的 dsh 上，折叠会降级（任务照常关闭、不折叠），不会损坏数据。每次 dsh 升级后，请复核本节并按实测结果更新。
 - **可选钩子：`agent/turn-stopping`** —— 0.26.0 起归档排干还会在回合结束时运行，让回合末交付的折叠赶在 provider 前缀缓存还热时执行。没有该钩子的宿主保持原来的纯 pre-step 语义（折叠照常发生，只是晚一个回合）；注册语句整体包裹，钩子缺失不会破坏 `apply()`。
