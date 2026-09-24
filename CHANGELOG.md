@@ -3,6 +3,47 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.35.2 — the alpha channel's functional line, merged into the rc channel (2026-09-24)
+
+Since the channel split, every functional fix had landed only on alpha
+(0.34.3–0.35.1) while the rc channel kept verifying and releasing on the
+0.34.2-era code. This release ports alpha's whole functional line onto master
+— 14 commits picked with `-x` provenance, channel docs resolved to master's
+own — so the rc build now carries everything the alpha build does.
+
+- **What came over**
+  - task-mark execute-time enforcement: one task-mark call per message, and
+    the standalone-call contract explicit in every prompt layer
+  - fold-drain hardening: the deferred archive END extended past parallel
+    close-call results; unsettled commits back off geometrically and chain
+    starved drain calls; the summarization guard raised 120s → 300s
+  - fold fixes: bounded preamble tolerance, build-time assembler fail-fast,
+    second-chance summary settle, stale HOLD filter
+  - prompt corrections: stale semantics, end-authority conflicts, standing
+    tokens trimmed; the handoff shape no longer ends the turn
+  - dsh 0.1.6-alpha.2 seam adaptations in fold-engine: recover-loop waterfall
+    + routed-config spread
+  - session format v4: shape-independent tool-result extraction, reducer and
+    archive-plan guards on v4 result linkage, v4 tool-role previews with
+    retiring fold titles
+  - the master-v0.34.2 twin content alpha's v0.35.1 release had absorbed
+    (task-stack-ui, taskfold-client)
+  - tests: both grammars pinned — v4 round trips, plan guards, previews,
+    legacy titles
+- **The merge is byte-exact.** `git diff 5755cc7 HEAD -- plugins test` is
+  empty — this branch's functional tree is identical to alpha's HEAD.
+- **Verified on dsh 0.1.7-rc.1** (README record updated):
+  - offline: 14 suites, 196 tests, 0 fail (up from 13/167 — the
+    prompt-contract suite and the grammar pins came with the merge)
+  - a host-API probe against the real rc.1 packages: 12/12
+  - live on the running rc.1 host: 6/6 folds pass `verify-cache
+    --since-restart` (93.9–96.3% prefix-cache hits), produced by the mounted
+    copy whose plugins files hash-match alpha's v0.34.7 release commit — the
+    same functional code this release carries, exercised live
+- **Version 0.35.2** sorts above alpha's 0.35.1 (whose tag never landed) and
+  keeps the channels' shared tag namespace collision-free; the host-jump
+  audit behind `0.1.7-rc.1` stands as recorded under 0.34.8.
+
 ## 0.34.8 — dsh 0.1.7-rc.1 verified, and channel-scoped release baselines (2026-09-24)
 
 dsh's rc line jumped two hosts at once — from `0.1.5-rc.2` (the rc channel's
