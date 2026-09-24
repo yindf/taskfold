@@ -125,6 +125,7 @@ npm publish、annotated tag、CHANGELOG 人工纠错（草稿本就要求人工�
 - README 内的 raw 资源 URL 在 alpha 分支上指向 `/alpha/`（master 回拨后 `/master/` 路径的资产停留在 rc 时代版本）。
 - README 的「支持的 dsh 版本」记录按通道归属（见下节 2026-09-18 修订）：master 只记 rc 一条，alpha 分支只记 alpha 一条；另一通道只链接对方分支，不抄数字。
 - npm 包版本号不区分通道（0.34.6 就是 0.34.6）；通道由分支承载。GitHub Release 与 tgz 附件照常。
+- （2026-09-24 补充）**tag 基线按分支收敛**：通道分支共享一个 tag 命名空间，`latestTag()` 只看 `--merged HEAD` 可达的 tag。pre-split 历史留下了「双胞胎」：master 自己的 0.34.2 release commit 无 tag，而 v0.34.2 tag 在 alpha 侧——本分支可达最新 tag 落后于 package.json、且缺失版本在别的分支恰好有 tag 时，以那枚 tag 为基线（版本全局唯一、恰有一枚 tag 即算已发布）；落后且处处无 tag 仍判 INVALID，可达 tag 高于 package.json 照旧拒绝。`draft` 侧新增占用检查：目标版本已有 tag 时拒绝并提示用 `--version` 换号（本轮实例：0.34.3–0.34.7 已被 alpha 占用，master 的下一个空位是 0.34.8）。
 
 ## README「支持的 dsh 版本」一节写法（用户拍板，2026-09-09；2026-09-18 随通道分支修订）
 
