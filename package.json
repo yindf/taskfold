@@ -40,6 +40,11 @@
     "verify:cache": "node scripts/verify-cache.mjs",
     "test": "node test/task-marks.test.mjs && node test/fold-drain.test.mjs && node test/span-preview.test.mjs && node test/compact-stats.test.mjs && node test/release.test.mjs && node test/fold-engine.test.mjs && node test/fold-instruction.test.mjs && node test/verify-cache.test.mjs && node test/lifecycle-nudges.test.mjs && node test/lifecycle-injection.test.mjs && node test/client-bundle.test.mjs && node test/task-stack-ui.test.mjs && node test/prompt-contract.test.mjs"
   },
+  "peerDependencies": {
+    "@deepseek-ai/dsh": "^0.1.7-rc.1",
+    "@deepseek-ai/dsh-compaction-basic": "^0.1.7-rc.1",
+    "@deepseek-ai/dsh-llm": "^0.1.7-rc.1"
+  },
   "files": [
     "plugins",
     "cordis.patch.yml",
