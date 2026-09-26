@@ -3,6 +3,30 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.36.0 — declare dsh peerDependencies so the host compatibility gate has a range to check (^0.1.7-rc.1) (2026-09-26)
+
+dsh 0.1.7 hosts check a bundle's `peerDependencies` against the running
+harness version at install and at startup/recomposition; until now this
+plugin declared nothing, so every host — compatible or not — loaded it
+unconditionally. This release declares the whole host-coupling surface:
+`@deepseek-ai/dsh`, `@deepseek-ai/dsh-compaction-basic` (the engine base
+class), and `@deepseek-ai/dsh-llm` (BlockAssembler), all `^0.1.7-rc.1`.
+
+The floor sits on the oldest verified rc build deliberately: semver ranks
+a prerelease below its own release (`0.1.7-rc.1 < 0.1.7`), so a naive
+`^0.1.7` would reject the `0.1.7-rc.*` hosts this plugin is verified on.
+Checked with the real `evaluatePluginCompatibility` on 0.1.7-rc.2: this
+manifest passes, while a `^0.1.7` variant is correctly rejected with the
+allow-version exemption hint. Offline suite: 14 suites, 0 fail. The
+READMEs' bounds note now records the enforced floor. (The alpha branch
+carries the same declaration anchored at `^0.1.7-alpha.2` — its own
+verified floor — released separately on that branch.)
+
+- **Features**
+  - declare dsh peerDependencies so the host compatibility gate has a range to check (^0.1.7-rc.1)
+- **Docs**
+  - the peer floor is enforced on 0.1.7 hosts - rewrite the bounds note for the peerDependencies declaration
+
 ## 0.35.2 — the alpha channel's functional line, merged into the rc channel (2026-09-24)
 
 Since the channel split, every functional fix had landed only on alpha
