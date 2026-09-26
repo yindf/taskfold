@@ -204,10 +204,38 @@ function insertDraft(block) {
   writeFileSync(changelogPath, lines.join('\n'))
 }
 
+// Channel branches share one tag namespace, so "latest tag" must be scoped to
+// tags reachable from HEAD: alpha's v0.34.7 must not read as master's baseline.
+// (Pre-split history makes this load-bearing: alpha owns the v0.34.2 tag while
+// master's own 0.34.2 release commit is untagged.)
 function latestTag() {
-  const r = git(['tag', '--list', 'v*', '--sort=-v:refname'])
+  const r = git(['tag', '--list', 'v*', '--sort=-v:refname', '--merged', 'HEAD'])
   const first = (r.stdout || '').split(/\r?\n/).find((l) => l.trim() !== '')
   return first ? first.replace(/^v/, '') : undefined
+}
+
+/** True when a tag with exactly this version exists on any ref. */
+function tagExists(version) {
+  const r = git(['tag', '--list', 'v' + version], { okNonZero: true })
+  return (r.stdout || '').split(/\r?\n/).some((l) => l.trim() === 'v' + version)
+}
+
+/**
+ * The tag the state machine treats as this branch's latest release. Normally
+ * the newest reachable tag. The one exception is the channel-twin case: this
+ * branch's newest reachable tag is BELOW package.json while the missing
+ * version is tagged on another branch (master's 0.34.2 release vs alpha's
+ * v0.34.2 tag). That version is released and uniquely tagged — just not on
+ * this branch — so the twin tag stands in as the baseline. A version below
+ * package.json with no tag anywhere stays a mismatch (classifyState rejects),
+ * and a reachable tag above package.json passes through for the same reject.
+ */
+function baselineTag(expectedVersion) {
+  const own = latestTag()
+  if (own === undefined || expectedVersion === undefined) return own
+  if (cmpSemver(own, expectedVersion) >= 0) return own
+  if (tagExists(expectedVersion)) return expectedVersion
+  return own
 }
 
 function dirtyFiles() {
@@ -222,10 +250,15 @@ function dirtyFiles() {
 
 function gatherState(remoteHasTag) {
   const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'))
-  const tag = latestTag()
-  if (tag !== undefined) {
-    const probe = git(['merge-base', '--is-ancestor', 'v' + tag, 'HEAD'], { okNonZero: true })
-    if (probe.status !== 0) throw new Error('latest tag v' + tag + ' is not an ancestor of HEAD — tag diverged from master history')
+  const own = latestTag()
+  const tag = baselineTag(pkg.version)
+  // Ancestry tripwire: this branch's own newest tag must be reachable from
+  // HEAD — always true for a --merged listing, so this fires only when a tag
+  // was rewritten out from under the branch. The channel-twin stand-in is
+  // exempt: it belongs to the other branch by design.
+  if (own !== undefined && tag === own) {
+    const probe = git(['merge-base', '--is-ancestor', 'v' + own, 'HEAD'], { okNonZero: true })
+    if (probe.status !== 0) throw new Error('latest tag v' + own + ' is not an ancestor of HEAD — tag diverged from branch history')
   }
   return classifyState({ top: readTopEntry(), packageVersion: pkg.version, tagVersion: tag, dirty: dirtyFiles(), remoteHasTag })
 }
@@ -234,7 +267,8 @@ function report(state, extra) {
   const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'))
   console.log('CHANGELOG top : ' + (readTopEntry() === null ? '(none)' : readTopEntry().version + ' (' + readTopEntry().kind + ')'))
   console.log('package.json  : ' + pkg.version)
-  console.log('latest tag    : ' + (latestTag() === undefined ? '(none)' : 'v' + latestTag()))
+  const baseline = baselineTag(pkg.version)
+  console.log('latest tag    : ' + (baseline === undefined ? '(none)' : 'v' + baseline))
   console.log('dirty files   : ' + (dirtyFiles().join(', ') || '(none)'))
   console.log('state         : ' + state + (extra ? ' — ' + extra : ''))
 }
@@ -405,7 +439,7 @@ function cmdDraft(opts) {
     }
   }
   const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'))
-  const tag = latestTag()
+  const tag = baselineTag(pkg.version)
   const logArgs = tag !== undefined ? ['log', 'v' + tag + '..HEAD'] : ['log', '--reverse', 'HEAD']
   logArgs.push('--pretty=%s%x1f%b%x1e')
   const log = git(logArgs).stdout
@@ -427,6 +461,13 @@ function cmdDraft(opts) {
     semverParts(opts.version) // validate
     if (opts.version !== version) console.log('warning: --version ' + opts.version + ' overrides the inferred ' + version)
     version = opts.version
+  }
+  // Channel branches share one tag namespace: a version already tagged (most
+  // likely by the other channel's release) can never be tagged here — reject
+  // at draft time with guidance instead of dying at `git tag` during release.
+  if (tagExists(version)) {
+    console.error('tag v' + version + ' already exists — the version is taken (possibly by the other channel\'s release); pass --version with a free number.')
+    process.exit(1)
   }
   const title = commits.length === 0 ? '(no changes)' : summarizeTitle(commits)
   assertClientBundleFresh()
