@@ -3,6 +3,36 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.36.1 — declare dsh peerDependencies so the host compatibility gate has a range to check (^0.1.7-alpha.2) (2026-09-26)
+
+dsh 0.1.7 hosts check a bundle's `peerDependencies` against the running
+harness version at install and at startup/recomposition; until now this
+plugin declared nothing, so every host — compatible or not — loaded it
+unconditionally. This release declares the whole host-coupling surface:
+`@deepseek-ai/dsh`, `@deepseek-ai/dsh-compaction-basic` (the engine base
+class), and `@deepseek-ai/dsh-llm` (BlockAssembler), all `^0.1.7-alpha.2`
+— the alpha channel's own verified floor (0.1.7-alpha.1 stays rejected:
+it is the build that broke the session format). The floor deliberately
+also admits rc hosts — semver ranks `alpha.2 < rc.1`, so this range keeps
+the alpha build loadable on `0.1.7-rc.*` too — checked with the real
+`evaluatePluginCompatibility` against both 0.1.7-alpha.2 and 0.1.7-rc.2.
+Offline suite: 14 suites, 0 fail.
+
+Housekeeping in the same round: the 0.35.1 release had lost its tag
+(branch pushed, tag not), so `v0.35.1` was recreated at its release
+commit and the flow resumed it as PENDING — both pushes completed.
+Releasing beside master's newer tags also required the channel-scoped
+release baselines backported from master (0.34.8's fix), included here.
+The READMEs' bounds note now records the enforced floor. (Master carries
+the same declaration anchored at `^0.1.7-rc.1`, released there as 0.36.0.)
+
+- **Features**
+  - declare dsh peerDependencies so the host compatibility gate has a range to check (^0.1.7-alpha.2)
+- **Fixes**
+  - backport channel-scoped release baselines from master so alpha can release beside newer master tags
+- **Docs**
+  - the peer floor is enforced on 0.1.7 hosts - rewrite the bounds note for the peerDependencies declaration
+
 ## 0.35.1 — resume-derived results keep their linkage: stuck pending intents fixed (2026-09-23)
 
 A session re-opened after a restart fed its projections tool/result events
