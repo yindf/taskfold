@@ -21,7 +21,7 @@
 
 面向 [DeepSeek Harness](https://www.npmjs.com/package/@deepseek-ai/dsh)（DSH）。
 
-> **当前支持的最新 dsh 版本：`0.1.7-rc.1`。** dsh 的 rc 版本在本分支（master）支持；dsh 的 alpha 版本在 [`alpha` 分支](https://github.com/yindf/taskfold/blob/alpha/README.zh.md#支持的-dsh-版本)支持。
+> **当前支持的最新 dsh 版本：`0.1.7-rc.2`。** dsh 的 rc 版本在本分支（master）支持；dsh 的 alpha 版本在 [`alpha` 分支](https://github.com/yindf/taskfold/blob/alpha/README.zh.md#支持的-dsh-版本)支持。
 
 ## 快速开始
 
@@ -132,7 +132,7 @@ taskfold 用“好笔记本”的方式解决：干活前，智能体先用 `tas
 
 ## 支持的 dsh 版本
 
-- **rc 通道 —— 支持到 `0.1.7-rc.1`**（2026-09-24 在 0.35.2 上实测——本版把 alpha 通道截至 v0.35.1 的全部功能线字节级合并进 master：`git diff <alpha-HEAD> HEAD -- plugins test` 为空。离线测试套件——14 个套件、196 个测试、0 失败；针对本分支的 `fold-engine` 副本与真实 rc.1 包跑宿主 API 探针——引擎类导出、ScopedEngine 继承真实 rc.1 基类、`BlockAssembler`，以及端到端折叠路径（带宿主头去重的前缀锚定信封、只有一个 system 消息、带行号的围栏 span 索引、用量透传）——12/12，含本轮并入的 0.1.6-alpha.2 接缝适配（recover-loop waterfall、routed-config spread）；以及在运行中的 0.1.7-rc.1 宿主上活体折叠——6/6 次折叠通过 `verify-cache --since-restart`（前缀缓存命中 93.9–96.3%），由挂载副本产出，其 plugins 文件哈希匹配 alpha 的 v0.34.7 发布提交——即本版合并进来的同一份功能代码的活体运行。`0.1.7-rc.1` 背后的宿主跳变逐字节审计与客户端契约扫描维持 0.34.8 CHANGELOG 条目的记录。一条 dist-tag 备注：`0.1.7-rc.1` 走 `next` 发布而 `latest` 仍解析到 `0.1.5-rc.3`，裸 `npx @deepseek-ai/dsh web` 跑的还是 rc.3——只有 `@0.1.7-rc.1`（或 `@next`）能拿到新构建）。`dsh`、`dsh-compaction-basic`、`dsh-llm` 三者版本锁步发布，一个数字覆盖全部耦合面。
+- **rc 通道 —— 支持到 `0.1.7-rc.2`**（2026-09-28 在 0.37.0 上实测——设置下限这一发的整个开发周期都跑在 rc.2 宿主上：插件页设置卡（configForms 绑定、插槽注册、设置热改）与任务标记/自动折叠机制全部在运行中的 0.1.7-rc.2 宿主上活体演练；活体缓存校验——承载该周期的会话日志 20/20 次折叠通过 `verify-cache`（前缀缓存命中 92.6–99.9%），由本会话开发成 v0.37.0 的挂载副本产出；离线测试套件——14 个套件、208 个测试、0 失败；兼容门以真实 rc.2 的 `evaluatePluginCompatibility` 复核（见 CHANGELOG 0.36.0）——manifest 的 `^0.1.7-rc.1` peer 范围覆盖 rc.1 直至 0.1.7 正式版。rc.1 背后的宿主跳变逐字节审计与客户端契约扫描维持 0.34.8 CHANGELOG 条目的记录。dist-tag 备注：`0.1.7-rc.2` 现在同时挂在 `latest` 与 `next` 上，裸 `npx @deepseek-ai/dsh web` 即可拿到。`dsh`、`dsh-compaction-basic`、`dsh-llm` 三者版本锁步发布，一个数字覆盖全部耦合面。
 - **alpha 通道 —— 请用 `#alpha` 安装**（`dsh plugin --profile web add "github:yindf/taskfold#alpha"`，即 alpha 分支）；alpha 构建的支持版本记录在 [alpha 分支的 README](https://github.com/yindf/taskfold/blob/alpha/README.zh.md#支持的-dsh-版本)。
 - **边界：下界已强制，上界未测试。** 本发布起，插件把宿主耦合面写进 `peerDependencies`（`@deepseek-ai/dsh`、`@deepseek-ai/dsh-compaction-basic`、`@deepseek-ai/dsh-llm`，均为 `^0.1.7-rc.1`）：dsh 0.1.7 宿主在安装与启动/重组合时检查这些范围，不兼容的宿主将得到 `incompatible-version` 判定、bundle 被跳过，而不是带着不兼容加载。早于该检查机制的宿主没有任何协商——在那些宿主上，折叠会降级（任务照常关闭、不折叠），不会损坏数据。每次 dsh 升级后，请复核本节并按实测结果更新。
 - **可选钩子：`agent/turn-stopping`** —— 0.26.0 起归档排干还会在回合结束时运行，让回合末交付的折叠赶在 provider 前缀缓存还热时执行。没有该钩子的宿主保持原来的纯 pre-step 语义（折叠照常发生，只是晚一个回合）；注册语句整体包裹，钩子缺失不会破坏 `apply()`。
