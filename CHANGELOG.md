@@ -3,6 +3,113 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.37.0 — user-configurable fold floor on the Plugins page: `minSpanTokens` (2026-09-26)
+
+Issue #2: folding a span too small to pay for itself wastes tokens — the
+summarization call (plus its prompt overhead) can approach the span's own
+size, and for tiny tasks the fold costs nearly what it saves. This release
+adds the floor as a first-class plugin setting: the mounted row exports a
+Config schema (attached to the plugin object itself — the loader's
+`unwrapExports` keeps only `exports.default`, so a named `export { Config }`
+never reaches `runtime.Config`) whose volatile `minSpanTokens` field the
+dsh-settings service exposes, validates, and persists through the active
+profile's Cordis patch. The shipped clients do NOT auto-render schemas
+(`autoGenerate` has no schema-driven client yet), so the browser half now
+ships its own "Taskfold" card — `plugins/fold-settings-ui.mjs`, inlined into
+the client bundle — that binds the namespace through `ctx.configForms` and
+registers into the Plugins page's `plugins.bundle.config` slot (keyed by the
+bundle's package name; the official-group `plugins.item` slot stays reserved
+for first-party companions) while the Host serves it. No environment
+variables, no restart:
+
+- The settings card also stages a second volatile field, `showTaskBar`
+  (default true): a Switch on the same card hides the task-stack dock beside
+  the conversation input. The dock registers unconditionally at mount and the
+  card's namespace watch hides/restores it live — an unserved namespace or a
+  missing settings service always means visible, so the dock keeps working on
+  deployments without ui-settings.
+- Every user-facing surface is now localized (en/zh): the settings card and
+  the task-stack dock read their copy through the locale service (dictionaries
+  `settings.taskfold` / `ui.taskfold`; the dock's slot registration declares
+  its namespace so the runtime dispatches a bound reader, with the English
+  dictionary as the built-in fallback for deployments without ui-settings),
+  and the package ships `locale/en.json` + `locale/zh.json` so the Plugins
+  page resolves the bundle's title/description per language instead of always
+  falling back to the English `package.json` description.
+- The browser bundle moved into its own nested package `client/`
+  (`dsh-taskfold-client`, one dedicated `taskfold-client` Loader row in
+  cordis.patch.yml): client-modules requires every package declaring
+  `dsh.client` to have exactly ONE owning Loader row, and with the two
+  legacy-stable host rows (cmpct-region/cmpct-stats) both resolving to the
+  root package it threw "resolves from multiple active Loader sources" and
+  dropped the whole browser half — dock included — from the boot graph. The
+  root package no longer declares `dsh.client`; the bundle is generated to
+  `client/taskfold-client.mjs`.
+
+- `minSpanTokens` (default `2000` — the measured break-even, see
+  `docs/fold-floor.md`; `0` = fold everything, the legacy behavior): the
+  minimum number of ESTIMATED TOKENS a planned region must
+  carry before a summarization call is billed. Below the floor the drain
+  settles the archive BEFORE building the engine — zero LLM work, tooSmall
+  semantics. The floor is re-read from the volatile config ref at every
+  drain pass, so a Settings edit applies at the next step boundary — and
+  LOWERING the floor reopens spans that already settled unfolded under
+  the higher one (their original content is still on the surface); other
+  settles remain final.
+- New pure module `plugins/fold-settings.mjs` (`foldFloorFromConfig`,
+  `estimateTokens`, `spanTokenEstimate`, `belowFoldFloor`): unwrapping is
+  total — an undefined config, a missing field, a throwing ref, or an
+  invalid value (non-integer, negative, absurdly large) all fall back to
+  the default floor (`2000`), never throws, so a bad edit can never
+  silently disable the floor (the drain resolves its per-pass floor
+  through the same `foldFloorFromConfig`, one normalization everywhere).
+  The estimate is POSITIONAL over the surface (which is not seq-ordered),
+  CJK-aware (`0.75` token per CJK char — Han, kana, and Hangul syllables
+  alike — and `4` chars per token otherwise; the rate constants already
+  embed the calibration: against 194 measured `shadowedTokenCount` values
+  from two weeks of live sessions the estimates read ~7% low, a
+  conservative direction), and an unmeasurable span is never
+  skipped: the floor protects against wasted calls, not against folds.
+  (Revision on the same unreleased entry: an earlier draft counted
+  SURFACE NODES — `minSpanNodes` — because span tokens were assumed
+  unknowable before the call; the token heuristic plus the calibration
+  data reversed that.)
+- schemastery (the Config schema library) cannot be imported statically —
+  the installed copy sits in a harness-owned node_modules tree plain ESM
+  resolution never crosses (the same constraint fold-engine.mjs resolves
+  for dsh-compaction-basic). The mounted row requires its CJS build
+  synchronously from a harness anchor instead; when no anchor resolves,
+  `Config` stays undefined and the plugin mounts exactly as before (the
+  form is simply absent, the floor keeps its default).
+- Review hardening (two-agent review of the branch before release):
+  the dock's slot registration no longer declares `locale:` (scoped
+  slots throw on locale-declaring entries when no locale face is
+  installed — the dock must render on every deployment); its
+  dictionaries register in a locale-only fiber (previously gated behind
+  `configForms`, so a locale-without-settings host printed raw keys) and
+  the reader reaches the dock through a lifetime-managed ref with
+  per-call English fallback inside the model. The estimator's CJK
+  classes gained Hangul syllables and dropped the per-character regex
+  (char-code range checks); the settings-card's dead `summary` view and
+  copy keys are gone; the release script bumps and stages the nested
+  `client/package.json` in lockstep with the root; the published package
+  now ships `docs/` (README/settings-card links to `docs/fold-floor.md`
+  resolve inside the tarball) and drops the unused `./client-package`
+  export.
+
+Offline suite: 14 suites, 208 tests, 0 fail (fold-drain floor tests: config/
+volatile-ref totality, the CJK-aware estimator incl. Hangul, positional
+token estimation/unmeasurable-span pass-through, an end-to-end
+below-floor settle with zero `compactRegion` attempts, a live
+settings-getter edit applying at the next pass, idempotent
+reopen/re-settle with no un-settle on raise, and drain-level malformed-
+settings normalization; client-bundle tests additionally pin the
+locale-free dock registration + locale-only dictionary fiber and the
+en/zh key parity of both dictionaries).
+
+- **Features**
+  - user-configurable fold floor on the Settings page: `minSpanTokens` closes spans below the bound unfolded, before any summarization call is billed; edits apply live, and lowering the floor reopens previously settled spans
+
 ## 0.36.0 — declare dsh peerDependencies so the host compatibility gate has a range to check (^0.1.7-rc.1) (2026-09-26)
 
 dsh 0.1.7 hosts check a bundle's `peerDependencies` against the running

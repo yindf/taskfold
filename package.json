@@ -31,8 +31,8 @@
   "main": "plugins/compact-region.mjs",
   "exports": {
     ".": "./plugins/compact-region.mjs",
-    "./client": "./plugins/taskfold-client.mjs",
     "./plugins/*": "./plugins/*",
+    "./locale/*": "./locale/*",
     "./package.json": "./package.json"
   },
   "scripts": {
@@ -47,6 +47,9 @@
   },
   "files": [
     "plugins",
+    "client",
+    "locale",
+    "docs",
     "cordis.patch.yml",
     "README.md",
     "README.zh.md",
@@ -59,9 +62,6 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
-    },
-    "client": {
-      "platform": "web"
     }
   }
 }

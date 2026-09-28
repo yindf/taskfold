@@ -510,7 +510,7 @@ function remoteHasTag(version) {
 export function assertClientBundleFresh(root = repoRoot) {
   const current = readFileSync(clientBundlePath(root), 'utf8')
   if (current !== repoBundleText(root)) {
-    throw new Error('plugins/taskfold-client.mjs is stale — run `node scripts/build-client.mjs` and commit the regenerated bundle first')
+    throw new Error('client/taskfold-client.mjs is stale — run `node scripts/build-client.mjs` and commit the regenerated bundle first')
   }
 }
 
@@ -550,7 +550,19 @@ function cmdRelease() {
   const newPkg = pkgText.replace(new RegExp('"version"\\s*:\\s*"[^"]*"'), '"version": "' + version + '"')
   if (newPkg === pkgText) throw new Error('failed to update package.json version field')
   writeFileSync(pkgPath, newPkg)
-  git(['add', 'CHANGELOG.md', 'package.json'])
+  // The nested browser-bundle package (client/package.json) releases in lockstep
+  // with the root: bump and stage it too, or its version drifts from the tag.
+  const clientPkgPath = path.join(repoRoot, 'client', 'package.json')
+  const staged = ['CHANGELOG.md', 'package.json']
+  if (existsSync(clientPkgPath)) {
+    const clientPkgText = readFileSync(clientPkgPath, 'utf8')
+    const newClientPkg = clientPkgText.replace(new RegExp('"version"\\s*:\\s*"[^"]*"'), '"version": "' + version + '"')
+    if (newClientPkg !== clientPkgText) {
+      writeFileSync(clientPkgPath, newClientPkg)
+      staged.push('client/package.json')
+    }
+  }
+  git(['add', ...staged])
   git(['commit', '-m', 'chore(release): v' + version])
   git(['tag', 'v' + version])
   console.log('Committed and tagged v' + version + '.')

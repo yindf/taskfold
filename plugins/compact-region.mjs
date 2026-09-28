@@ -45,6 +45,7 @@
  *   fold-instruction.mjs the two swapped-in summarization instructions
  *   fold-engine.mjs      self-hosted ScopedEngine + lazy resolution
  *   fold-drain.mjs       the message-gated pre-step auto-folder
+ *   fold-settings.mjs    user-configurable fold floor (Settings page field)
  *   lifecycle-nudges.mjs pure nudge predicates over an events snapshot
  *   lifecycle-injection.mjs the event-only lifecycle hint channel
  */
@@ -55,8 +56,60 @@ import { createFoldEngine } from './fold-engine.mjs'
 import { createArchiveDrain } from './fold-drain.mjs'
 import { todoBridgeLine, taskStackLine, recentWorkCallCount, lastAssistantHasTodoWrite, roundsSinceFoldOutcome, shouldSuggestDecomposition, decomposeHintLine, innermostMark, taskAgeRounds, closePressureLine, CLOSE_PRESSURE_MIN_ROUNDS } from './lifecycle-nudges.mjs'
 import { lifecycleMessage, planLifecycleInjection, renderLifecycleBody } from './lifecycle-injection.mjs'
+import { DEFAULT_MIN_SPAN_TOKENS, MIN_SPAN_TOKENS_MAX, foldFloorFromConfig } from './fold-settings.mjs'
+import nodePath from 'node:path'
+import nodeUrl from 'node:url'
+import { createRequire } from 'node:module'
+
+// --- Config (Settings page form) -------------------------------------
+// The dsh-settings service renders one form per active profile entry from
+// the entry's exported Config schema: every `.volatile()` field becomes a
+// live row keyed by this row's id (cmpct-region), edits are validated
+// against this schema and persisted through the active profile's Cordis
+// patch, and the runtime hands apply(ctx, config) reactive refs that a
+// Settings edit re-resolves without a plugin reload. That replaces the
+// briefly-drafted TASKFOLD_MIN_SPAN_NODES environment variable — same
+// floor, but discoverable, validated, and hot-reloaded.
+//
+// schemastery cannot be imported statically: the installed copy sits in a
+// harness-owned node_modules tree that plain ESM resolution never crosses
+// (the same constraint fold-engine.mjs resolves for dsh-compaction-basic).
+// A synchronous require from a harness anchor file works instead, because
+// @deepseek-ai/schemastery ships a CJS build. When no anchor resolves
+// (exotic embedding, stripped harness), Config stays undefined: the plugin
+// mounts exactly as before, the form is simply absent, and the floor
+// keeps its default of 2000 (docs/fold-floor.md).
+function requireHostPackage(pkgName) {
+  const anchors = []
+  try { anchors.push(nodePath.dirname(nodePath.resolve(process.argv[1]))) } catch (err) { /* ignore */ }
+  try { anchors.push(nodePath.resolve(process.cwd())) } catch (err) { /* ignore */ }
+  for (const dir of anchors) {
+    try {
+      const requireFromAnchor = createRequire(nodeUrl.pathToFileURL(nodePath.join(dir, 'taskfold-anchor.js')).href)
+      return requireFromAnchor(pkgName)
+    } catch (err) { /* next anchor */ }
+  }
+  return undefined
+}
+
+let Config
+try {
+  const z = requireHostPackage('@deepseek-ai/schemastery')
+  if (z !== undefined && typeof z.object === 'function' && typeof z.number === 'function') {
+    Config = z.object({
+      minSpanTokens: z.number().step(1).min(0).max(MIN_SPAN_TOKENS_MAX).default(DEFAULT_MIN_SPAN_TOKENS).volatile()
+        .description('Fold floor (issue #2): the minimum number of estimated tokens a closed task\'s span must carry before a summarization call is billed for it. The count is a CJK-aware heuristic over the span\'s message text, taken before any model call. Spans below the floor close unfolded — their original content stays on the surface. Default 2000: below it a summary\'s fixed overhead outweighs the context saved (docs/fold-floor.md). 0 folds everything (legacy behavior).'),
+      showTaskBar: z.boolean().default(true).volatile()
+        .description('Show the task-stack dock beside the conversation input. The dock lists the session\'s named tasks and their fold state; hiding it does not affect folding itself. Default true.')
+    })
+  }
+} catch (err) { Config = undefined }
 
 export default {
+  // The Config schema must ride ON the plugin object itself: the loader's
+  // unwrapExports() keeps only exports.default, so a named `export { Config }`
+  // never reaches runtime.Config and the Settings form never appears.
+  Config,
   name: 'compact-region',
   // NOTE: 'compaction' is deliberately NOT injected. The engine is ALWAYS
   // the plugin's own ScopedEngine instance (built lazily by fold-engine.mjs
@@ -67,7 +120,7 @@ export default {
   // All dependencies (tools, systemPrompt, sessionProjections, and — via the
   // engine's own ctx use — tokenMeter/llm) are host-plane services.
   inject: ['tools', 'systemPrompt', 'sessionProjections', 'tokenMeter', 'llm'],
-  apply(ctx) {
+  apply(ctx, config) {
     // Detailed stock checkpoints: swap the host's terse instruction for
     // DETAILED_CHECKPOINT_INSTRUCTION at the one seam every compaction call
     // crosses. Discriminator (from the host's summarizeWithLlm): purpose
@@ -142,7 +195,14 @@ export default {
     // drain (writes); see fold-engine.mjs.
     const closingTasks = new Map()
     const engineFor = createFoldEngine(ctx, closingTasks)
-    const drain = createArchiveDrain({ ctx, engineFor, closingTasks })
+    // Fold floor: resolved per drain pass from the volatile config ref, so
+    // a Settings-page edit applies at the next step boundary, no restart.
+    const drain = createArchiveDrain({
+      ctx,
+      engineFor,
+      closingTasks,
+      settings: () => ({ minSpanTokens: foldFloorFromConfig(config) })
+    })
     // Per-session latch for the standalone lifecycle hint: the exact text of
     // the last hint published to that session. In-memory on purpose — a
     // restart loses it and may republish one hint that is still live, which is
