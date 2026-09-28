@@ -327,11 +327,8 @@ export function createArchiveDrain({ ctx, engineFor, closingTasks, settings }) {
       // skipped, not fatal. Reset when the pass ends so the next boundary
       // re-tries them. A floor-settled entry REOPENS in place when the
       // current floor dropped below the one it settled under (a live
-      // Settings-page edit lowering minSpanNodes).
-      const floorNow = (() => {
-        const s = foldSettings()
-        return s !== null && typeof s === 'object' && Number.isInteger(s.minSpanNodes) ? s.minSpanNodes : 0
-      })()
+      // Settings-page edit lowering minSpanTokens).
+      const floorNow = foldFloorFromConfig(foldSettings())
       const skipped = new Set()
       for (;;) {
         const entries = archivesOf(ctx, session)
@@ -353,7 +350,11 @@ export function createArchiveDrain({ ctx, engineFor, closingTasks, settings }) {
         // and with anchors being begin-message seqs the first post-close
         // assistant message can never sit after the earliest successor
         // anchor anyway — the old defer branch was unreachable.
-        const plan = deferredArchivePlan(entry, session.surface.nodes, sessionEvents(session))
+        // ONE event-log snapshot per entry: deferredArchivePlan and
+        // belowFoldFloor both walk it, and events.mjs asks for a single
+        // call per consumer (each snapshot is a full-log copy).
+        const events = sessionEvents(session)
+        const plan = deferredArchivePlan(entry, session.surface.nodes, events)
         if (plan.action === 'wait') {
           skipped.add(entry.seq)
           continue
@@ -363,13 +364,15 @@ export function createArchiveDrain({ ctx, engineFor, closingTasks, settings }) {
           clearArchiveFailure(session, entry.name)
           continue
         }
-        // Fold floor (issue #2): a region below the configured minSpanNodes
+        // Fold floor (issue #2): a region below the configured minSpanTokens
         // (Settings page → profile config) closes UNFOLDED — settle before
         // the engine is even built, so no summarization call is billed for
-        // a span too small to pay for itself. tooSmall semantics: settled
-        // in memory with the floor recorded, reopened when a live edit
-        // LOWERS the floor, re-settled on restart.
-        if (belowFoldFloor(plan, session.surface.nodes, { minSpanNodes: floorNow })) {
+        // a span too small to pay for itself. The count is the CJK-aware
+        // pre-call estimate from fold-settings (the engine's measured
+        // shadowedTokenCount arrives only after the call). tooSmall
+        // semantics: settled in memory with the floor recorded, reopened
+        // when a live edit LOWERS the floor, re-settled on restart.
+        if (belowFoldFloor(plan, session.surface.nodes, { minSpanTokens: floorNow }, events)) {
           markFloorSettled(session, entry.seq, floorNow)
           clearArchiveFailure(session, entry.name)
           continue

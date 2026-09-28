@@ -3,11 +3,11 @@
  *
  * The host serves client bundles as classic scripts in loader-factory form
  * (window.__ModuleLoader__.load({ id, factory })) — a served file cannot
- * contain import/export statements. To keep ONE source of truth for the
- * presentation logic, this script strips the ESM keywords from
- * plugins/task-stack-ui.mjs (which must stay import-free) and splices the
- * body into scripts/taskfold-client.template.mjs, emitting
- * plugins/taskfold-client.mjs. The output is deterministic (no timestamps),
+ * contain import/export statements. To keep ONE source of truth per module,
+ * this script strips the ESM keywords from plugins/task-stack-ui.mjs and
+ * plugins/fold-settings-ui.mjs (both must stay import-free) and splices the
+ * bodies into scripts/taskfold-client.template.mjs, emitting
+ * client/taskfold-client.mjs. The output is deterministic (no timestamps),
  * committed to the repo, and gated for freshness by test/client-bundle.test.mjs.
  */
 import { readFileSync, writeFileSync } from 'node:fs'
@@ -21,10 +21,10 @@ export const CLIENT_ID = 'dsh-taskfold-client'
 export const TASK_STACK_DOCK_ID = 'task-stack'
 
 /**
- * Strip ESM keywords so the module body can run inside the classic-script
- * factory. The shared module only uses `export function` / `export const`
+ * Strip ESM keywords so the module bodies can run inside the classic-script
+ * factory. The shared modules only use `export function` / `export const`
  * declarations, so removing the keyword keeps every binding intact.
- * @param {string} source - raw module source.
+ * @param {string} source - raw module source (task-stack-ui.mjs / fold-settings-ui.mjs).
  * @returns {string} body-embedding-compatible source.
  */
 export function transformModel(source) {
@@ -45,7 +45,8 @@ export function transformModel(source) {
  * Render the bundle text from its inputs (pure; the freshness gate uses it).
  * @param {object} parts
  * @param {string} parts.template - envelope source with placeholders.
- * @param {string} parts.model - transformed model body.
+ * @param {string} parts.model - transformed task-stack-ui body.
+ * @param {string} parts.settingsModel - transformed fold-settings-ui body.
  * @param {string} parts.pkgId - loader id (package name).
  * @param {string} parts.dockId - dock id under conversation.input.dock.
  * @returns {string} deterministic bundle source.

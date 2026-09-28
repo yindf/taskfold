@@ -88,15 +88,79 @@ function asModel(model) {
 }
 
 /**
+ * Locale namespace of the dock's dictionary entries. The bundle wiring binds
+ * a locale reader to this NS when the locale service is available; the dock's
+ * slot registration deliberately does NOT declare `locale:` (scoped slots
+ * throw on locale-declaring entries when no locale face is installed), so the
+ * reader arrives through the wiring instead and every miss falls back to the
+ * English dictionary below.
+ */
+export const TASK_STACK_UI_NS = 'ui.taskfold'
+
+/** English copy. `{n}` fills the count at render time. */
+export const taskStackEn = {
+  title: 'tasks',
+  openCount: '{n} open',
+  foldingCount: '{n} folding',
+  pendingCount: '{n} pending',
+  openingTask: 'opening a task…',
+  closingTask: 'closing a task…',
+  opening: 'opening…',
+  closing: 'closing…',
+  folding: 'folding…'
+}
+
+/** Simplified Chinese copy. */
+export const taskStackZh = {
+  title: '任务',
+  openCount: '{n} 个进行中',
+  foldingCount: '{n} 个折叠中',
+  pendingCount: '{n} 个待处理',
+  openingTask: '正在打开任务…',
+  closingTask: '正在关闭任务…',
+  opening: '打开中…',
+  closing: '关闭中…',
+  folding: '折叠中…'
+}
+
+/** English fallback reader for deployments without the locale service. */
+function enText(key) {
+  return taskStackEn[key] ?? key
+}
+
+/**
+ * Reader resolver: an explicit reader wins per CALL — a reader that yields
+ * nothing for a key (absent service, unregistered dictionary, raw-key stub)
+ * falls through to the English copy. Resolution is per call, not per factory:
+ * the bundle's reader is wired to a lifetime-managed ref that appears and
+ * disappears with the locale service, so a snapshot taken earlier must never
+ * pin the answer.
+ */
+function readerOf(t) {
+  if (typeof t !== 'function') return enText
+  return (key) => {
+    const value = t(key)
+    return typeof value === 'string' && value !== '' ? value : enText(key)
+  }
+}
+
+/** Fill a copy template's {n} placeholder with a count. */
+function fillCount(template, n) {
+  return String(template).replace('{n}', String(n))
+}
+
+/**
  * Count-only tail: 'folding' / 'pending' parts, used by the expanded header
  * and appended to the collapsed summary. '' when there is nothing extra.
+ * `t` is an optional locale reader; without one the English copy prints.
  */
-export function tailSummary(model) {
+export function tailSummary(model, t) {
+  const read = readerOf(t)
   const m = asModel(model)
   const parts = []
-  if (m.closing.length > 0) parts.push(m.closing.length + ' folding')
+  if (m.closing.length > 0) parts.push(fillCount(read('foldingCount'), m.closing.length))
   const pending = m.pending.begin + m.pending.end
-  if (pending > 0) parts.push(pending + ' pending')
+  if (pending > 0) parts.push(fillCount(read('pendingCount'), pending))
   return parts.join(' · ')
 }
 
@@ -104,11 +168,12 @@ export function tailSummary(model) {
  * Expanded header meta: the stack at a glance, without repeating a task name
  * that is already listed below ('3 open · 1 folding').
  */
-export function countsSummary(model) {
+export function countsSummary(model, t) {
+  const read = readerOf(t)
   const m = asModel(model)
   const parts = []
-  if (m.count > 0) parts.push(m.count + ' open')
-  const tail = tailSummary(m)
+  if (m.count > 0) parts.push(fillCount(read('openCount'), m.count))
+  const tail = tailSummary(m, read)
   if (tail !== '') parts.push(tail)
   return parts.join(' · ')
 }
@@ -118,17 +183,17 @@ export function countsSummary(model) {
  * analog of the todos projection's "N of M done": the active task name plus
  * the counts tail. '' when there is nothing worth printing.
  */
-export function planSummary(model) {
+export function planSummary(model, t) {
+  const read = readerOf(t)
   const m = asModel(model)
-  const tail = tailSummary(m)
+  const tail = tailSummary(m, read)
   const suffix = tail === '' ? '' : ' · ' + tail
   if (m.count === 0) {
-    if (m.pending.begin > 0) return 'opening a task…'
-    if (m.pending.end > 0) return 'closing a task…'
+    if (m.pending.begin > 0) return read('openingTask')
+    if (m.pending.end > 0) return read('closingTask')
     return ''
   }
-  const head = m.count === 1 ? '1 open' : m.count + ' open'
-  return head + ' · ' + m.innermost + suffix
+  return fillCount(read('openCount'), m.count) + ' · ' + m.innermost + suffix
 }
 
 /**
@@ -231,10 +296,11 @@ function railCell(h, depth, state, key) {
 }
 
 /** One pending lifecycle intent: 'opening…' while a task_begin is in flight. */
-function pendingRow(h, m) {
+function pendingRow(h, m, t) {
+  const read = readerOf(t)
   const bits = []
-  if (m.pending.begin > 0) bits.push('opening…')
-  if (m.pending.end > 0) bits.push('closing…')
+  if (m.pending.begin > 0) bits.push(read('opening'))
+  if (m.pending.end > 0) bits.push(read('closing'))
   return h('li', { key: 'pending', className: 'tf_item' },
     railCell(h, 1, 'pending', 'rail'),
     h('span', { className: 'tf_name' }, bits.join(' ')))
@@ -251,7 +317,8 @@ export function makeTaskStack(react) {
   const h = react.createElement
   const useState = react.useState
 
-  function TaskStack({ model, compact, defaultCollapsed }) {
+  function TaskStack({ model, compact, defaultCollapsed, t }) {
+    const read = readerOf(t)
     const m = asModel(model)
     const [collapsed, setCollapsed] = useState(defaultCollapsed === true)
     if (!m.visible) return null
@@ -263,29 +330,29 @@ export function makeTaskStack(react) {
       onClick: toggle
     },
     h('span', { className: 'tf_lead' }, stackGlyph(h)),
-    h('span', { className: 'tf_title' }, 'tasks'),
-    h('span', { className: 'tf_meta' }, compact === true || collapsed ? planSummary(m) : countsSummary(m)),
+    h('span', { className: 'tf_title' }, read('title')),
+    h('span', { className: 'tf_meta' }, compact === true || collapsed ? planSummary(m, read) : countsSummary(m, read)),
     h('span', { className: 'tf_chevron' + (collapsed ? '' : ' tf_chevronOpen') }, chevronGlyph(h)))
 
     if (compact === true) {
       return h('div', { className: 'tf_root tf_rootCompact' }, h('div', { className: 'tf_body' }, header))
     }
     const rows = []
-    for (const t of m.open) {
+    for (const task of m.open) {
       rows.push(h('li', {
-        key: 'k' + t.seq + ':' + t.name,
-        className: 'tf_item' + (t.innermost ? ' tf_itemActive' : '')
+        key: 'k' + task.seq + ':' + task.name,
+        className: 'tf_item' + (task.innermost ? ' tf_itemActive' : '')
       },
-      railCell(h, t.depth, t.innermost ? 'active' : 'open', 'rail'),
-      h('span', { className: 'tf_name' + (t.innermost ? ' tf_nameActive' : '') }, t.name)))
+      railCell(h, task.depth, task.innermost ? 'active' : 'open', 'rail'),
+      h('span', { className: 'tf_name' + (task.innermost ? ' tf_nameActive' : '') }, task.name)))
     }
     for (const c of m.closing) {
       rows.push(h('li', { key: 'c' + c.seq + ':' + c.name, className: 'tf_item' },
         railCell(h, 1, 'closing', 'rail'),
         h('span', { className: 'tf_name' }, c.name),
-        h('span', { className: 'tf_suffix' }, 'folding…')))
+        h('span', { className: 'tf_suffix' }, read('folding'))))
     }
-    if (m.pending.begin + m.pending.end > 0) rows.push(pendingRow(h, m))
+    if (m.pending.begin + m.pending.end > 0) rows.push(pendingRow(h, m, read))
     return h('div', { className: 'tf_root' },
       h('div', { className: 'tf_body' },
         header,
@@ -301,12 +368,14 @@ export function makeTaskStack(react) {
  * GoalDock and TodoDock consume the same prop). Read-only surface: the header
  * collapses/expands, nothing else is interactive.
  */
-export function makeTaskStackDock(react) {
+export function makeTaskStackDock(react, readText) {
   const h = react.createElement
   const TaskStack = makeTaskStack(react)
+  const fallback = readerOf(readText)
   function TaskStackDock({ useProjection, t }) {
+    const read = typeof t === 'function' ? t : fallback
     const state = typeof useProjection === 'function' ? useProjection(TASK_STACK_KEY) : undefined
-    return h(TaskStack, { model: taskStackView(state) })
+    return h(TaskStack, { model: taskStackView(state), t: read })
   }
   return TaskStackDock
 }

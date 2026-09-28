@@ -56,7 +56,7 @@ import { createFoldEngine } from './fold-engine.mjs'
 import { createArchiveDrain } from './fold-drain.mjs'
 import { todoBridgeLine, taskStackLine, recentWorkCallCount, lastAssistantHasTodoWrite, roundsSinceFoldOutcome, shouldSuggestDecomposition, decomposeHintLine, innermostMark, taskAgeRounds, closePressureLine, CLOSE_PRESSURE_MIN_ROUNDS } from './lifecycle-nudges.mjs'
 import { lifecycleMessage, planLifecycleInjection, renderLifecycleBody } from './lifecycle-injection.mjs'
-import { DEFAULT_MIN_SPAN_NODES, foldFloorFromConfig } from './fold-settings.mjs'
+import { DEFAULT_MIN_SPAN_TOKENS, MIN_SPAN_TOKENS_MAX, foldFloorFromConfig } from './fold-settings.mjs'
 import nodePath from 'node:path'
 import nodeUrl from 'node:url'
 import { createRequire } from 'node:module'
@@ -78,7 +78,7 @@ import { createRequire } from 'node:module'
 // @deepseek-ai/schemastery ships a CJS build. When no anchor resolves
 // (exotic embedding, stripped harness), Config stays undefined: the plugin
 // mounts exactly as before, the form is simply absent, and the floor
-// keeps its default of 0.
+// keeps its default of 2000 (docs/fold-floor.md).
 function requireHostPackage(pkgName) {
   const anchors = []
   try { anchors.push(nodePath.dirname(nodePath.resolve(process.argv[1]))) } catch (err) { /* ignore */ }
@@ -97,8 +97,10 @@ try {
   const z = requireHostPackage('@deepseek-ai/schemastery')
   if (z !== undefined && typeof z.object === 'function' && typeof z.number === 'function') {
     Config = z.object({
-      minSpanNodes: z.number().step(1).min(0).max(100000).default(DEFAULT_MIN_SPAN_NODES).volatile()
-        .description('Fold floor (issue #2): the minimum number of surface nodes (messages + tool results) a closed task\'s span must cover before a summarization call is billed for it. Spans below the floor close unfolded — their original content stays on the surface. 0 folds everything (legacy behavior).')
+      minSpanTokens: z.number().step(1).min(0).max(MIN_SPAN_TOKENS_MAX).default(DEFAULT_MIN_SPAN_TOKENS).volatile()
+        .description('Fold floor (issue #2): the minimum number of estimated tokens a closed task\'s span must carry before a summarization call is billed for it. The count is a CJK-aware heuristic over the span\'s message text, taken before any model call. Spans below the floor close unfolded — their original content stays on the surface. Default 2000: below it a summary\'s fixed overhead outweighs the context saved (docs/fold-floor.md). 0 folds everything (legacy behavior).'),
+      showTaskBar: z.boolean().default(true).volatile()
+        .description('Show the task-stack dock beside the conversation input. The dock lists the session\'s named tasks and their fold state; hiding it does not affect folding itself. Default true.')
     })
   }
 } catch (err) { Config = undefined }
@@ -199,7 +201,7 @@ export default {
       ctx,
       engineFor,
       closingTasks,
-      settings: () => ({ minSpanNodes: foldFloorFromConfig(config) })
+      settings: () => ({ minSpanTokens: foldFloorFromConfig(config) })
     })
     // Per-session latch for the standalone lifecycle hint: the exact text of
     // the last hint published to that session. In-memory on purpose — a

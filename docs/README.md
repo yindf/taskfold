@@ -1,6 +1,12 @@
 # 文档索引
 
-开发与设计文档。**不随 npm 包发布**——`package.json` 的 `files` 白名单只含 `plugins/`、两份 README、`CHANGELOG.md`、`LICENSE`、`cordis.patch.yml`。
+开发与设计文档。随 npm 包一同发布（`package.json` 的 `files` 白名单含 `docs/`），README 与设置卡帮助文案里的 `docs/fold-floor.md` 链接在安装包内同样可达。
+
+## 根目录 — 度量与决策依据
+
+| 文档 | 主题 |
+| --- | --- |
+| `fold-floor.md` | 折叠下限 `minSpanTokens` 的取值依据：两周会话实测数据、盈亏平衡推导、默认 2000 的由来 |
 
 ## design/ — 设计与实现记录
 

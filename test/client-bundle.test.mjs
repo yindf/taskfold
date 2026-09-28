@@ -39,18 +39,59 @@ test('bundle registers the task-stack dock beside shipped docks', () => {
   assert.ok(committed.includes('"conversation.input.dock"'))
   assert.match(committed, /id: "task-stack"/)
   assert.match(committed, /order: 15/)
-  assert.ok(committed.includes('makeTaskStackDock(react)'))
+  assert.ok(committed.includes('makeTaskStackDock(react,'))
   assert.ok(committed.includes('useProjection'))
+  /* The dock registration must NOT declare a locale namespace: scoped slots
+   * throw on locale-declaring entries when no locale face is installed, and
+   * the dock has to render on every deployment. Localized copy arrives via
+   * the dockReader ref, wired by a locale-only fiber below, with per-call
+   * fallback to the English built-ins inside the model. */
+  assert.equal(committed.includes('locale: TASK_STACK_UI_NS'), false, 'dock registration must stay locale-free')
+  assert.ok(committed.includes('ctx.inject(["locale"], (lctx) => {'), 'a locale-only fiber owns the dictionaries (no configForms dependency)')
+  assert.ok(committed.includes('lctx.locale.register(TASK_STACK_UI_NS'))
+  assert.ok(committed.includes('zh: taskStackZh'))
+  assert.ok(committed.includes('dockReader = lctx.locale.bind(TASK_STACK_UI_NS)'), 'the dock reader follows the locale fiber lifetime')
+})
+
+test('fold-settings dictionaries ship exact en/zh key parity', async () => {
+  const { makeFoldSettingsCard } = await import('../plugins/fold-settings-ui.mjs')
+  const stubReact = { createElement: () => null, Fragment: null }
+  const card = makeFoldSettingsCard(stubReact, {})
+  assert.deepEqual(
+    Object.keys(card.foldSettingsZh).sort(),
+    Object.keys(card.foldSettingsEn).sort(),
+    'every settings-card copy key must exist in both languages'
+  )
+  for (const [key, value] of Object.entries(card.foldSettingsEn)) {
+    assert.equal(typeof card.foldSettingsZh[key], 'string', 'zh missing key: ' + key)
+    assert.ok(value.length > 0 && card.foldSettingsZh[key].length > 0, 'empty copy: ' + key)
+  }
+})
+
+test('package metadata is localized through exported locale files', () => {
+  const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+  assert.equal(pkg.exports['./locale/*'], './locale/*', 'readPluginMeta resolves <pkg>/locale/<lang>.json through exports')
+  assert.ok(pkg.files.includes('locale'), 'the published package must ship its locale directory')
+  const en = JSON.parse(readFileSync(join(root, 'locale', 'en.json'), 'utf8'))
+  const zh = JSON.parse(readFileSync(join(root, 'locale', 'zh.json'), 'utf8'))
+  assert.equal(typeof en?.meta?.title, 'string')
+  assert.equal(typeof en?.meta?.description, 'string')
+  assert.equal(typeof zh?.meta?.title, 'string')
+  assert.equal(typeof zh?.meta?.description, 'string')
+  assert.notEqual(zh.meta.description, en.meta.description, 'zh must carry a real translation, not the English text')
 })
 
 test('bundle registers the fold-floor settings card on the Plugins page', () => {
   assert.ok(committed.includes('require("@deepseek-ai/dsh-client-ui-primitives")'))
   assert.ok(committed.includes('makeFoldSettingsCard(react, primitives)'))
-  assert.ok(committed.includes('"plugins.item"'))
   assert.ok(committed.includes('configForms.get(FoldSettings.FOLD_SETTINGS_PLUGIN_NS)'))
   assert.ok(committed.includes("configForms.whileServed"))
-  assert.ok(committed.includes('id: "taskfold"'))
-  assert.match(committed, /order: 40/)
+  /* The bundle.config slot is the only registration: plugins.item is reserved
+   * for official companions, so a third-party bundle must not pose there. */
+  assert.ok(committed.includes('"plugins.bundle.config"'))
+  assert.ok(committed.includes('key: "dsh-taskfold"'))
+  assert.ok(committed.includes('locale: FoldSettings.FOLD_SETTINGS_NS'))
+  assert.equal(committed.includes('"plugins.item"'), false)
 })
 
 test('transformModel removes ESM keywords and stays embeddable', () => {
@@ -63,7 +104,7 @@ test('transformModel removes ESM keywords and stays embeddable', () => {
 })
 
 test('fold-floor field spec clamps drafts to the schema bounds', async () => {
-  const { minSpanNodesFieldSpec } = await import('../plugins/fold-settings-ui.mjs')
+  const { minSpanTokensFieldSpec } = await import('../plugins/fold-settings-ui.mjs')
   const primitives = { settingsNumberField: (f) => ({
     field: f,
     format: (v) => typeof v === 'number' ? String(v) : '',
@@ -74,13 +115,13 @@ test('fold-floor field spec clamps drafts to the schema bounds', async () => {
       return Number.isFinite(parsed) ? { kind: 'set', value: parsed } : undefined
     }
   }) }
-  const spec = minSpanNodesFieldSpec(primitives)
+  const spec = minSpanTokensFieldSpec(primitives)
   assert.deepEqual(spec.parse('8'), { kind: 'set', value: 8 })
   assert.deepEqual(spec.parse(' 0 '), { kind: 'set', value: 0 })
-  assert.deepEqual(spec.parse('100000'), { kind: 'set', value: 100000 })
+  assert.deepEqual(spec.parse('1000000'), { kind: 'set', value: 1000000 })
   assert.deepEqual(spec.parse(''), { kind: 'clear' })
   assert.equal(spec.parse('-1'), undefined)
-  assert.equal(spec.parse('100001'), undefined)
+  assert.equal(spec.parse('1000001'), undefined)
   assert.equal(spec.parse('3.5'), undefined)
   assert.equal(spec.parse('abc'), undefined)
 })

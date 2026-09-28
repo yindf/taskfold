@@ -27,13 +27,13 @@ wire: {
 - 客户端仅把 `marks` 当栈读（栈序：旧→新，最内层在末尾）；`seq` 全局唯一，旧日志可能重名，**渲染 key 用 `seq` 不用 name**。`pending` 是"正在提交"的意图计数，`pendingArchives` 是已出栈、等待归档的任务。
 - task 名是模型自由文本（允许引号等），渲染走 React 文本节点转义；不做任何 HTML 拼接。
 
-### 2. 客户端半件：`plugins/taskfold-client.mjs`（构建生成）
+### 2. 客户端半件：`client/taskfold-client.mjs`（构建生成，0.37.0 迁入嵌套包）
 
-- **零构建取舍**：宿主把该文件当 classic script 原样吐给浏览器（`window.__ModuleLoader__.load({ id, factory })`），文件里不允许 import/export，因此逻辑必须内联。单一事实源是 `plugins/task-stack-ui.mjs`（纯函数 + react 注入工厂，离线可测）；`scripts/build-client.mjs` 从 `scripts/taskfold-client.template.mjs` 做"剥 ESM 关键字 + 拼装 envelope"的确定性生成，**产物提交入库**（宿主服务的是安装包里的原始字节）。
+- **零构建取舍**：宿主把该文件当 classic script 原样吐给浏览器（`window.__ModuleLoader__.load({ id, factory })`），文件里不允许 import/export，因此逻辑必须内联。事实源是 `plugins/task-stack-ui.mjs` 与 `plugins/fold-settings-ui.mjs`（纯函数 + react 注入工厂，离线可测）；`scripts/build-client.mjs` 从 `scripts/taskfold-client.template.mjs` 做"剥 ESM 关键字 + 拼装 envelope"的确定性生成，**产物提交入库**（宿主服务的是安装包里的原始字节）。
 - **双新鲜度门禁**：`test/client-bundle.test.mjs` 做字节级重建比对；`scripts/release.mjs` 在 draft 与 release 前调 `assertClientBundleFresh()`，陈旧即拒绝发版。注意 `npm pack` 打的是**工作区文件**而非 blob，故 EOL 也必须在门禁意义上一致——由仓库根的 `.gitattributes`（`* text=auto eol=lf`）保证。
-- **依赖面**：bundle 只 `require("react")`（种子词，无需声明），第一方包零依赖 → `dsh.client` 只声明 `{ platform: "web" }`，不填 `inject`。
-- **挂载**：`ctx.slots.inject("conversation.input.dock", () => ctx.slots.register({ name, id: "task-stack", order: 15, locale }, TaskStackDock))`——order 15 落在 goal(10) 与 queue(20) 之间；组件契约 `{ useProjection, t }` 由聊天宿主提供，`useProjection("taskMarks")` 实时取 wire 视图（与 TodoDock 读 `todos` 完全同构）。
-- **manifest**：`exports` 含 `"./client": "./plugins/taskfold-client.mjs"`（`dsh.client` 缺 `exports["./client"]` 会在 boot 期直接抛错）；`"./plugins/*"` 通配保留历史子路径可达性。
+- **依赖面**：bundle 只 `require("react")` 与 `require("@deepseek-ai/dsh-client-ui-primitives")`（均为宿主种子词，无需声明）→ `client/package.json` 的 `dsh.client` 只声明 `{ platform: "web" }`，不填 `inject`。
+- **挂载**：`ctx.slots.inject("conversation.input.dock", () => ctx.slots.register({ name, id: "task-stack", order: 15 }, TaskStackDock))`——order 15 落在 goal(10) 与 queue(20) 之间；组件契约 `{ useProjection }` 由聊天宿主提供，`useProjection("taskMarks")` 实时取 wire 视图（与 TodoDock 读 `todos` 完全同构）。dock 注册**不声明** `locale:`（scoped slots 对声明 locale 的条目在无 locale face 时直接抛错）；本地化读取器由 locale fiber 经生命周期 ref 注入，逐调用回退英文内置。
+- **manifest**：0.37.0 起浏览器半件是独立嵌套包 `client/package.json`（`dsh-taskfold-client`，含 `exports["."] → ./index.mjs` 与 `dsh.client`），`cordis.patch.yml` 以 `- id: taskfold-client` 行挂载 `./client/index.mjs`；根包不再声明 `dsh.client`（多 Loader 源会相互顶掉）。历史布局（根包 `exports["./client"]` 直指 `plugins/taskfold-client.mjs`）已废弃。
 
 ### 3. 视觉与交互（`plugins/task-stack-ui.mjs`）
 
@@ -96,4 +96,4 @@ Task lifecycle: task stack — 3 open, outermost first: "a" > "b" > "c"; 2 foldi
 - **已发布**：v0.34.0（tag `fc76711`），GitHub Release 附带 `dsh-taskfold-0.34.0.tgz`。安装方式 `github:yindf/taskfold#v0.34.0`（钉 tag 可复现）或 `file:<本地 checkout>`（**注意：`pnpm install` 对未变的 `file:` 依赖会报 up-to-date 而不重新硬链，切换来源前先删 `node_modules/dsh-taskfold`；`write`/`edit` 这类换 inode 的保存会切断硬链接**）。
 - **客户端改动**：`node scripts/build-client.mjs` 后**刷新浏览器即可**——combo 路由的 `rev` 由磁盘字节重算，产物提交入库再由宿主按字节框接。
 - **宿主改动**（`task-marks.mjs` / `fold-drain.mjs` / `lifecycle-nudges.mjs` / `compact-region.mjs`）：必须重装（重新链接）+ **重启 dsh**；宿主对"非客户端包"的否定判定会缓存到重启为止，仅刷新页面不够。
-- 无需改 `cordis.patch.yml`：行 id 不变，客户端半件经最近 `package.json` 的 `dsh.client` 声明被自动发现并服务为 `/plugins/dsh-taskfold/client.js`。
+- 无需改 `cordis.patch.yml` 的行 id：客户端半件由嵌套包 `client/package.json`（`dsh-taskfold-client`）的 `dsh.client` 声明被发现，Loader 行 `taskfold-client` 将其服务为该包的 client 脚本。
