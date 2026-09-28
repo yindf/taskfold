@@ -3,6 +3,69 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.37.0 — user-configurable fold floor on the Plugins page: `minSpanNodes` (2026-09-26)
+
+Issue #2: folding a span too small to pay for itself wastes tokens — the
+summarization call (plus its prompt overhead) can approach the span's own
+size, and for tiny tasks the fold costs nearly what it saves. This release
+adds the floor as a first-class plugin setting: the mounted row exports a
+Config schema (attached to the plugin object itself — the loader's
+`unwrapExports` keeps only `exports.default`, so a named `export { Config }`
+never reaches `runtime.Config`) whose volatile `minSpanNodes` field the
+dsh-settings service exposes, validates, and persists through the active
+profile's Cordis patch. The shipped clients do NOT auto-render schemas
+(`autoGenerate` has no schema-driven client yet), so the browser half now
+ships its own "Taskfold" card — `plugins/fold-settings-ui.mjs`, inlined into
+the client bundle — that binds the namespace through `ctx.configForms` and
+registers into the Plugins page's `plugins.item` slot while the Host serves
+it. No environment variables, no restart:
+
+- The browser bundle moved into its own nested package `client/`
+  (`dsh-taskfold-client`, one dedicated `taskfold-client` Loader row in
+  cordis.patch.yml): client-modules requires every package declaring
+  `dsh.client` to have exactly ONE owning Loader row, and with the two
+  legacy-stable host rows (cmpct-region/cmpct-stats) both resolving to the
+  root package it threw "resolves from multiple active Loader sources" and
+  dropped the whole browser half — dock included — from the boot graph. The
+  root package no longer declares `dsh.client`; the bundle is generated to
+  `client/taskfold-client.mjs`.
+
+- `minSpanNodes` (default `0` = fold everything, byte-identical legacy
+  behavior): the minimum number of SURFACE NODES (messages plus tool
+  results — the span preview's own units) a planned region must cover
+  before a summarization call is billed. Below the floor the drain settles
+  the archive BEFORE building the engine — zero LLM work, tooSmall
+  semantics. The floor is re-read from the volatile config ref at every
+  drain pass, so a Settings edit applies at the next step boundary — and
+  LOWERING the floor reopens spans that already settled unfolded under
+  the higher one (their original content is still on the surface); other
+  settles remain final.
+- New pure module `plugins/fold-settings.mjs` (`foldFloorFromConfig`,
+  `spanNodeCount`, `belowFoldFloor`): unwrapping is total — an undefined
+  config, a missing field, a throwing ref, or an invalid value
+  (non-integer, negative, absurdly large) all fall back to `0`, never
+  throws, so a bad edit can never disable folding outright. The count is
+  POSITIONAL over the surface (which is not seq-ordered), and an
+  unmeasurable span is never skipped: the floor protects against wasted
+  calls, not against folds. A token-based bound was deliberately
+  rejected — span tokens are only knowable from the very call the floor
+  exists to avoid.
+- schemastery (the Config schema library) cannot be imported statically —
+  the installed copy sits in a harness-owned node_modules tree plain ESM
+  resolution never crosses (the same constraint fold-engine.mjs resolves
+  for dsh-compaction-basic). The mounted row requires its CJS build
+  synchronously from a harness anchor instead; when no anchor resolves,
+  `Config` stays undefined and the plugin mounts exactly as before (the
+  form is simply absent, the floor keeps its default).
+
+Offline suite: 14 suites, 0 fail (fold-drain reworked floor tests:
+config/volatile-ref totality, positional counting/unmeasurable-span
+pass-through, an end-to-end below-floor settle with zero `compactRegion`
+attempts, and a live settings-getter edit applying at the next pass).
+
+- **Features**
+  - user-configurable fold floor on the Settings page: `minSpanNodes` closes spans below the bound unfolded, before any summarization call is billed; edits apply live, and lowering the floor reopens previously settled spans
+
 ## 0.36.0 — declare dsh peerDependencies so the host compatibility gate has a range to check (^0.1.7-rc.1) (2026-09-26)
 
 dsh 0.1.7 hosts check a bundle's `peerDependencies` against the running

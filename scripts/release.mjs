@@ -510,7 +510,7 @@ function remoteHasTag(version) {
 export function assertClientBundleFresh(root = repoRoot) {
   const current = readFileSync(clientBundlePath(root), 'utf8')
   if (current !== repoBundleText(root)) {
-    throw new Error('plugins/taskfold-client.mjs is stale — run `node scripts/build-client.mjs` and commit the regenerated bundle first')
+    throw new Error('client/taskfold-client.mjs is stale — run `node scripts/build-client.mjs` and commit the regenerated bundle first')
   }
 }
 

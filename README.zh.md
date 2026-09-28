@@ -115,6 +115,12 @@ taskfold 用“好笔记本”的方式解决：干活前，智能体先用 `tas
 
 <img src="https://raw.githubusercontent.com/yindf/taskfold/master/assets/screenshot-tasks-collapsed.png" width="100%" alt="同一任务栈折叠成一行，以及 lifecycle 提示交给模型的任务栈行">
 
+## 设置
+
+折叠有一个用户可配置的下限，在宿主**插件页**的 “Taskfold” 卡片中配置（宿主服务该命名空间期间由浏览器半侧注册）——不用环境变量，也无需重启：
+
+- **`minSpanNodes`**（默认 `0`）——任务关闭后，其折叠区间需要覆盖的最小表面节点数（消息加工具结果）才值得发起一次摘要调用。低于下限的区间**不折叠**直接关闭：drain 在构建折叠引擎之前就将其落定，不为一个太小、得不偿失的区间花任何 token。`0` 折叠一切（默认行为）；无法计量的区间始终折叠。非法值（非整数、负数）回退到 `0`，绝不抛错。修改由表单 schema 校验、持久化到当前 profile 配置，并**即时生效**：下一个步骤边界就按新下限折叠（或落定）——调低下限还会重新打开此前按高下限落定的区间（它们的原文仍在表面上）。
+
 ## 其他安装方式
 
 每个 Release 都附带预构建的 `dsh-taskfold-<版本>.tgz`。插件市场会优先提供该资产（或 npm 包）而不是源码构建命令，同时也免去 dsh 的 `allowBuilds` 构建授权——见[最新 Release](https://github.com/yindf/taskfold/releases/latest)。
@@ -128,7 +134,7 @@ taskfold 用“好笔记本”的方式解决：干活前，智能体先用 `tas
 
 ## 维护者须知
 
-- 目录：`plugins/`（两个挂载行 `compact-region.mjs` 与 `compact-stats.mjs`，及其共享纯模块 `events.mjs`、`task-marks.mjs`、`fold-instruction.mjs`、`fold-engine.mjs`、`fold-drain.mjs`、`lifecycle-nudges.mjs`、`lifecycle-injection.mjs`、`span-preview.mjs`，以及浏览器半部：`task-stack-ui.mjs`——dock 的唯一事实源，由 `scripts/build-client.mjs` 生成到 `taskfold-client.mjs`）、`scripts/release.mjs`、`scripts/verify-cache.mjs` 与 `scripts/build-client.mjs`、`test/`（`npm test`）、`assets/`（README banner、仓库设置里上传的社交预览图，以及 `screenshots.json` 列出的商店截图）、`docs/`（`docs/README.md` 索引，以及 `docs/design/` 设计笔记与 `docs/adr/` 决策记录——有意不随 npm 包发布）、`CHANGELOG.md`。
+- 目录：`plugins/`（两个挂载行 `compact-region.mjs` 与 `compact-stats.mjs`，及其共享纯模块 `events.mjs`、`task-marks.mjs`、`fold-instruction.mjs`、`fold-engine.mjs`、`fold-drain.mjs`、`fold-settings.mjs`、`lifecycle-nudges.mjs`、`lifecycle-injection.mjs`、`span-preview.mjs`，以及浏览器半部：`task-stack-ui.mjs`——dock 的唯一事实源——与 `fold-settings-ui.mjs`——插件页设置卡，均由 `scripts/build-client.mjs` 生成到 `client/taskfold-client.mjs`）、`client/`（嵌套的 `dsh-taskfold-client` 子包——浏览器 bundle 的唯一属主行；一个客户端包只能有一个属主 Loader 行，而根包已有两个 legacy 稳定行）、`scripts/release.mjs`、`scripts/verify-cache.mjs` 与 `scripts/build-client.mjs`、`test/`（`npm test`）、`assets/`（README banner、仓库设置里上传的社交预览图，以及 `screenshots.json` 列出的商店截图）、`docs/`（`docs/README.md` 索引，以及 `docs/design/` 设计笔记与 `docs/adr/` 决策记录——有意不随 npm 包发布）、`CHANGELOG.md`。
 - 发版：`node scripts/release.mjs draft` → 审阅 CHANGELOG 条目 → `node scripts/release.mjs release`（CHANGELOG 是版本唯一事实源）。**通道分支**（0.34.6 起）：`master` 只承载 rc 通道发版——它停留在最新的已验证 rc 版本；alpha 通道发版在 `alpha` 分支上进行，其提交与 tag 承载 alpha 验证过的工作（在 `alpha` 分支上跑 draft/release；脚本推送当前分支与 tag）。若本次发版改变了支持的 dsh 版本范围，发版前先更新**两份** README（README.md + README.zh.md）的“支持的 dsh 版本”一节——release 脚本会提醒。每个分支只记录**本分支构建**的实测：本通道一条最新验证版本（被取代的条目删掉），另一通道只放一条指向对方分支 README 的**链接**——绝不抄版本号。
 - **折叠缓存校验是流程的一部分。** 每次 dsh 升级后——以及任何触及折叠信封的发版前——对一份 live 会话日志跑 `node scripts/verify-cache.mjs --since-restart`，并把数字记进 CHANGELOG 条目。若某次折叠的摘要调用重新付费了它的 span——判据是 `uncached − span > --tail-budget`（tail 为正）——脚本以非零码退出，这正是前缀信封不再匹配宿主摘要输入的 signature。离线测试只能钉住结构前提（只有一个 system 消息、严格前缀）；真实缓存命中只能由 live 日志给出。
 - 设计决策与历史见 `CHANGELOG.md`，以及仓库内的 `docs/`（索引见 `docs/README.md`；`docs/design/` 设计笔记与 `docs/adr/` 决策记录随仓库走，不随 npm 包发布）。

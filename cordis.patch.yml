@@ -23,3 +23,13 @@
 
     - id: cmpct-stats
       name: './plugins/compact-stats.mjs'
+
+    # Dedicated owner row of the browser bundle. client-modules maps each
+    # client package (a package.json declaring dsh.client) to its Loader rows
+    # and refuses a package with more than one active source ("resolves from
+    # multiple active Loader sources"), which is exactly what the two legacy
+    # rows above would do to the root dsh-taskfold package. The client half
+    # therefore lives in the nested client/ package and this row is its
+    # single owner (empty host apply; the browser half does all the work).
+    - id: taskfold-client
+      name: './client/index.mjs'

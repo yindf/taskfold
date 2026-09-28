@@ -43,6 +43,7 @@
  */
 import { sessionEvents } from './events.mjs'
 import { deferredArchivePlan, archivesOf } from './task-marks.mjs'
+import { foldFloorFromConfig, belowFoldFloor } from './fold-settings.mjs'
 
 /** Retry budget for one queued archive (see the header contract). */
 export const MAX_FOLD_ATTEMPTS = 5
@@ -199,8 +200,20 @@ async function foldRegion(session, agent, engine, name, startSeq, endSeq, signal
  * foldable. The skip set dies with the pass — the next boundary retries
  * everything from scratch.
  */
-export function createArchiveDrain({ ctx, engineFor, closingTasks }) {
+export function createArchiveDrain({ ctx, engineFor, closingTasks, settings }) {
+  // Fold floor (issue #2), re-resolved at EVERY evaluation point: settings
+  // may be a getter (production — wraps the plugin's volatile config ref,
+  // so a Settings-page edit applies at the next drain pass, no restart) or
+  // a plain value (tests). Anything falsy folds everything — the exact
+  // pre-0.37.0 behavior.
+  const foldSettings = typeof settings === 'function' ? settings : () => settings
   const settledArchives = new Map() // session.id → Set<seq>
+  // Floor settles with their floor value: lowering the floor reopens them
+  // (a Settings-page edit must apply to ALREADY-SETTLED small spans too —
+  // their original content is still on the surface, so a re-fold is just
+  // a normal summarization call). Raising the floor changes nothing for
+  // them. Other settles ('drop', tooSmall, committed folds) are final.
+  const flooredArchives = new Map() // session.id → Map<seq, floor at settle>
   const autoFoldFailures = new Map() // session.id → Map<name, bucket>
   const autoFoldAttempts = new Map() // session.id → Map<seq, { attempts, nextPass, name }>
   // AGENT-LEVEL single flight: one drain pass per session at a time. The
@@ -238,6 +251,31 @@ export function createArchiveDrain({ ctx, engineFor, closingTasks }) {
   function isSettledArchive(session, seq) {
     const set = settledArchives.get(session.id)
     return set !== undefined && set.has(seq)
+  }
+
+  /** Floor value an entry was settled under, or undefined for non-floor settles. */
+  function floorAtSettle(session, seq) {
+    const bySeq = flooredArchives.get(session.id)
+    return bySeq === undefined ? undefined : bySeq.get(seq)
+  }
+
+  /**
+   * True (and un-settles) when an entry settled below a HIGHER floor should
+   * re-plan under the current, lower one. Called only for settled entries.
+   */
+  function reopenIfFloorLowered(session, seq, floorNow) {
+    const settledFloor = floorAtSettle(session, seq)
+    if (settledFloor === undefined || settledFloor <= floorNow) return false
+    settledArchives.get(session.id).delete(seq)
+    flooredArchives.get(session.id).delete(seq)
+    return true
+  }
+
+  function markFloorSettled(session, seq, floor) {
+    markArchiveSettled(session, seq)
+    let bySeq = flooredArchives.get(session.id)
+    if (bySeq === undefined) { bySeq = new Map(); flooredArchives.set(session.id, bySeq); capSessions(flooredArchives, session.id) }
+    bySeq.set(seq, floor)
   }
 
   function markArchiveSettled(session, seq) {
@@ -287,11 +325,17 @@ export function createArchiveDrain({ ctx, engineFor, closingTasks }) {
     try {
       // Entries passed over this pass ('wait', or a backoff boundary):
       // skipped, not fatal. Reset when the pass ends so the next boundary
-      // re-tries them.
+      // re-tries them. A floor-settled entry REOPENS in place when the
+      // current floor dropped below the one it settled under (a live
+      // Settings-page edit lowering minSpanNodes).
+      const floorNow = (() => {
+        const s = foldSettings()
+        return s !== null && typeof s === 'object' && Number.isInteger(s.minSpanNodes) ? s.minSpanNodes : 0
+      })()
       const skipped = new Set()
       for (;;) {
         const entries = archivesOf(ctx, session)
-          .filter((e) => !isSettledArchive(session, e.seq) && !skipped.has(e.seq))
+          .filter((e) => (!isSettledArchive(session, e.seq) || reopenIfFloorLowered(session, e.seq, floorNow)) && !skipped.has(e.seq))
         if (entries.length === 0) return
         entries.sort((a, b) => b.seq - a.seq)
         const entry = entries[0]
@@ -316,6 +360,17 @@ export function createArchiveDrain({ ctx, engineFor, closingTasks }) {
         }
         if (plan.action === 'drop') {
           markArchiveSettled(session, entry.seq)
+          clearArchiveFailure(session, entry.name)
+          continue
+        }
+        // Fold floor (issue #2): a region below the configured minSpanNodes
+        // (Settings page → profile config) closes UNFOLDED — settle before
+        // the engine is even built, so no summarization call is billed for
+        // a span too small to pay for itself. tooSmall semantics: settled
+        // in memory with the floor recorded, reopened when a live edit
+        // LOWERS the floor, re-settled on restart.
+        if (belowFoldFloor(plan, session.surface.nodes, { minSpanNodes: floorNow })) {
+          markFloorSettled(session, entry.seq, floorNow)
           clearArchiveFailure(session, entry.name)
           continue
         }

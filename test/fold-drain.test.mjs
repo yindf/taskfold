@@ -12,6 +12,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createArchiveDrain } from '../plugins/fold-drain.mjs'
 import { applyTaskMarks } from '../plugins/task-marks.mjs'
+import { foldFloorFromConfig, spanNodeCount, belowFoldFloor, DEFAULT_MIN_SPAN_NODES } from '../plugins/fold-settings.mjs'
 
 /** assistant/message carrying tool-call blocks (shape per dsh-agent-loop). */
 function assistantCall(seq, calls) {
@@ -95,7 +96,7 @@ function harness(events, opts) {
     }
   }
   const agent = { session }
-  const drain = createArchiveDrain({ ctx, engineFor: async () => engine, closingTasks: new Map() })
+  const drain = createArchiveDrain({ ctx, engineFor: async () => engine, closingTasks: new Map(), settings: opts !== undefined && opts.settings !== undefined ? opts.settings : { minSpanNodes: DEFAULT_MIN_SPAN_NODES } })
   return {
     session, agent, ctx, engine, folds, attempts, drain,
     state: () => state,
@@ -143,7 +144,7 @@ test('tool-call-only handoff opens the gate: elder folds without waiting for tex
 
   // Restart: a fresh drain instance (settled memory lost) must NOT re-fold
   // — the shadowed close results route the replayed rows through 'drop'.
-  const drain2 = createArchiveDrain({ ctx: h.ctx, engineFor: async () => h.engine, closingTasks: new Map() })
+  const drain2 = createArchiveDrain({ ctx: h.ctx, engineFor: async () => h.engine, closingTasks: new Map(), settings: { minSpanNodes: DEFAULT_MIN_SPAN_NODES } })
   await drain2.processDeferredArchives(h.agent, undefined)
   assert.equal(h.folds.length, 2, 'restart settles via drop, no duplicate fold')
 })
@@ -443,4 +444,94 @@ test('a summary rejection settles only on the second consecutive occurrence', as
   assert.ok(h.drain.isSettledArchive(h.session, 10), 'two consecutive rejections settle the archive')
   assert.equal(h.drain.autoFoldFailures.get(h.session.id).get('lump'), undefined, 'settling clears the HOLD line')
   assert.deepEqual(h.state().pendingArchives.map((p) => p.name), ['lump'], 'settle is in-memory: the projection row persists (anchor never shadowed)')
+})
+
+// ── Fold floor settings (issue #2) ─────────────────────────────────────────
+// A user-configurable lower bound on folding, set through the host SETTINGS
+// PAGE (the mounted row's Config schema — dsh-settings renders one form per
+// profile entry): spans below minSpanNodes close unfolded — settled BEFORE
+// the engine is built, so no summarization call is billed for a span too
+// small to pay for itself.
+
+test('foldFloorFromConfig: total over plain values, volatile refs, and garbage', () => {
+  assert.equal(DEFAULT_MIN_SPAN_NODES, 0)
+  assert.equal(foldFloorFromConfig(undefined), 0, 'no config object → 0 (fold everything)')
+  assert.equal(foldFloorFromConfig(null), 0)
+  assert.equal(foldFloorFromConfig({}), 0, 'missing field → default')
+  assert.equal(foldFloorFromConfig({ minSpanNodes: 12 }), 12)
+  // The runtime hands apply() reactive refs for volatile fields (a Settings
+  // edit re-resolves them without a plugin reload).
+  let live = 8
+  assert.equal(foldFloorFromConfig({ minSpanNodes: { get: () => live } }), 8, 'volatile ref unwrapped via .get()')
+  live = 2
+  assert.equal(foldFloorFromConfig({ minSpanNodes: { get: () => live } }), 2, 'the SAME ref re-reads live — no factory-time caching')
+  assert.equal(foldFloorFromConfig({ minSpanNodes: { get: () => { throw new Error('gone') } } }), 0, 'a throwing ref → default, never propagates')
+  assert.equal(foldFloorFromConfig({ minSpanNodes: -3 }), 0, 'negative → default')
+  assert.equal(foldFloorFromConfig({ minSpanNodes: 4.5 }), 0, 'non-integer → default')
+  assert.equal(foldFloorFromConfig({ minSpanNodes: 'eight' }), 0, 'garbage → default')
+  assert.equal(foldFloorFromConfig({ minSpanNodes: 1e9 }), 0, 'absurdly large → default (typo guard)')
+})
+
+test('spanNodeCount / belowFoldFloor: positional count over the surface, never skip an unmeasurable span', () => {
+  // Not seq-ordered, exactly like a post-fold surface.
+  const nodes = [10, 11, 40, 22, 23]
+  assert.equal(spanNodeCount(nodes, 10, 23), 5, 'inclusive positional count')
+  assert.equal(spanNodeCount(nodes, 40, 23), 3)
+  assert.equal(spanNodeCount(nodes, 99, 23), -1, 'unlocatable start → -1')
+  assert.equal(spanNodeCount(nodes, 10, 99), -1, 'unlocatable end → -1')
+  assert.equal(spanNodeCount(nodes, 23, 10), -1, 'end before start (positionally) → -1')
+
+  const plan = { action: 'fold', startSeq: 10, endSeq: 11, name: 't' }
+  assert.equal(belowFoldFloor(plan, nodes, { minSpanNodes: 0 }), false, 'floor 0 folds everything')
+  assert.equal(belowFoldFloor(plan, nodes, { minSpanNodes: 3 }), true, '2-node span below a 3 floor')
+  assert.equal(belowFoldFloor({ action: 'wait' }, nodes, { minSpanNodes: 9 }), false, 'non-fold plans never hit the floor')
+  assert.equal(belowFoldFloor({ action: 'fold', startSeq: 77, endSeq: 78, name: 't' }, nodes, { minSpanNodes: 1 }), false, 'unmeasurable span folds — the floor is not a ban')
+  assert.equal(belowFoldFloor(plan, nodes, {}), false, 'missing minSpanNodes → default 0')
+})
+
+test('a span below the configured floor settles unfolded — zero compactRegion attempts', async () => {
+  const events = [
+    assistantCall(10, [{ id: 'a1', name: 'task_begin' }]),
+    toolResult(11, 'a1', BEGUN('tiny', '1 open.')),
+    assistantCall(20, [{ id: 'a2', name: 'task_end' }]),
+    toolResult(21, 'a2', ENDED('tiny', 'all closed. Archival queued.')),
+    assistantText(25, 'deliverable')
+  ]
+  // Same 5-node surface, floor 6: below → unfolded; floor 2: folds.
+  const small = harness(events, { settings: { minSpanNodes: 6 } })
+  await small.drain.processDeferredArchives(small.agent, undefined)
+  assert.deepEqual(small.attempts, [], 'no summarization call billed below the floor')
+  assert.deepEqual(small.folds, [], 'nothing committed')
+  assert.ok(small.drain.isSettledArchive(small.session, 10), 'settled in memory, tooSmall semantics')
+  assert.deepEqual(small.state().pendingArchives.map((p) => p.name), ['tiny'], 'projection row persists — restart re-evaluates the floor')
+
+  const big = harness(events, { settings: { minSpanNodes: 2 } })
+  await big.drain.processDeferredArchives(big.agent, undefined)
+  assert.deepEqual(big.folds, [[20, 21]], 'a span at or above the floor folds normally')
+  assert.equal(big.state(), null, 'the committed fold closed out the projection row')
+})
+
+test('a settings getter re-reads per pass — a Settings-page edit applies without restart', async () => {
+  // Production shape: compact-region passes () => ({ minSpanNodes:
+  // foldFloorFromConfig(config) }) — the volatile ref behind the Settings
+  // form. Simulate the page edit by flipping the ref between passes.
+  let configured = 6
+  const h = harness([
+    assistantCall(10, [{ id: 'a1', name: 'task_begin' }]),
+    toolResult(11, 'a1', BEGUN('floored', '1 open.')),
+    assistantCall(20, [{ id: 'a2', name: 'task_end' }]),
+    toolResult(21, 'a2', ENDED('floored', 'all closed. Archival queued.')),
+    assistantText(25, 'deliverable')
+  ], { settings: () => ({ minSpanNodes: configured }) })
+  // Pass 1: floor 6 above the 2-node region → settles unfolded.
+  await h.drain.processDeferredArchives(h.agent, undefined)
+  assert.deepEqual(h.attempts, [], 'below the floor: no call billed')
+  assert.ok(h.drain.isSettledArchive(h.session, 10), 'settled unfolded')
+
+  // The page edit: floor down to 1. The settle is in-memory (tooSmall
+  // semantics), so the next pass re-plans the row and folds it.
+  configured = 1
+  await h.drain.processDeferredArchives(h.agent, undefined)
+  assert.deepEqual(h.folds, [[20, 21]], 'the edited floor applies at the next drain pass')
+  assert.equal(h.state(), null, 'the projection row closed out')
 })
