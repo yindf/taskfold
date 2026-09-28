@@ -3,7 +3,7 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
-## 0.37.0 — user-configurable fold floor on the Plugins page: `minSpanTokens` (2026-09-26)
+## 0.37.0 — user-configurable fold floor on the Plugins page: `minSpanTokens` (2026-09-28)
 
 Issue #2: folding a span too small to pay for itself wastes tokens — the
 summarization call (plus its prompt overhead) can approach the span's own
