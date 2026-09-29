@@ -3,6 +3,31 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.37.1 — dsh 0.2.0-rc.1: peer floor bump, verified (unreleased draft 2026-09-29)
+
+The dsh monorepo jumped 0.1.7-rc.2 → 0.2.0-rc.1 in lockstep (no package
+removals; five new telemetry/log packages). The compatibility gate rejects the
+0.37.0 manifest on the new host — `^0.1.7-rc.1`'s semver upper bound `<0.2.0`
+excludes the new minor — so this release bumps all three peerDependencies
+(`@deepseek-ai/dsh`, `@deepseek-ai/dsh-compaction-basic`, `@deepseek-ai/dsh-llm`)
+to `^0.2.0-rc.1`. Hosts still on 0.1.7-rc.* keep using v0.37.0, whose floor
+matches them. Verification on the real 0.2.0-rc.1 packages: the gate probe
+(`evaluatePluginCompatibility`: old range rejected, bumped range passes);
+host-API shape probes (`BasicCompactionEngine` default export with
+`compactRegion` on the prototype, `BlockAssembler` export, schemastery CJS
+entry); a client-contract sweep (`conversation.input.dock`,
+`plugins.bundle.config`, configForms `whileServed`, `window.__ModuleLoader__`,
+`SettingsFormModel`, `settingsNumberField` — all present); an end-to-end probe
+host whose `settings/describe` serves `cmpct-region` at
+`{"minSpanTokens":2000,"showTaskBar":true}` with `applies: live`; and the
+offline suite — 14 suites, 208 tests, 0 fail. Both READMEs' "Supported dsh
+versions" records updated (superseded 0.1.7-rc.2 entry replaced per the
+one-entry-per-channel convention; dist-tag note: `0.2.0-rc.1` under `next`,
+`latest` still 0.1.7-rc.2).
+
+  - bump dsh peerDependencies floors to ^0.2.0-rc.1 (all three host-surface packages)
+  - record 0.2.0-rc.1 as the verified rc-channel host in README.md + README.zh.md
+
 ## 0.37.0 — user-configurable fold floor on the Plugins page: `minSpanTokens` (2026-09-28)
 
 Issue #2: folding a span too small to pay for itself wastes tokens — the
