@@ -155,3 +155,27 @@ test('taskStackLine: the whole stack, shape only — byte-stable while the stack
   // Names are model-authored text: quotes are neutralized.
   assert.equal(taskStackLine([mark(5, 'a "b"')], [], []).includes('"a \'b\'"'), true)
 })
+
+test('taskStackLine: below-floor rows are terminal — counted apart, never as folding', () => {
+  const archives = [
+    { seq: 50, name: 'part 1', foldResultSeq: 55 },
+    { seq: 20, name: 'part 2', foldResultSeq: 25 }
+  ]
+  // One folding, one settled below the floor: the hint must not claim two
+  // folds in flight — one of them will never be billed.
+  const split = taskStackLine([], archives, [], 1)
+  assert.equal(split.includes('1 folding, 1 closed below floor.'), true, split)
+  // All below-floor: no folding at all.
+  const allBelow = taskStackLine([], archives, [], 2)
+  assert.equal(allBelow.includes('2 closed below floor.'), true, allBelow)
+  assert.equal(allBelow.includes('folding'), false, 'nothing is folding when every row is below the floor')
+  // Default/zero keeps the legacy byte-stable rendering.
+  assert.equal(taskStackLine([], archives, []), 'Task lifecycle: task stack — empty; 2 folding.')
+  assert.equal(taskStackLine([], archives, [], 0), 'Task lifecycle: task stack — empty; 2 folding.')
+  // Garbage counts clamp instead of going negative.
+  assert.equal(taskStackLine([], archives, [], -5), 'Task lifecycle: task stack — empty; 2 folding.')
+  assert.equal(taskStackLine([], archives, [], 'x'), 'Task lifecycle: task stack — empty; 2 folding.')
+  // An over-large count can never produce a negative folding term.
+  assert.equal(taskStackLine([], archives, [], 99).includes('2 closed below floor.'), true)
+  assert.equal(taskStackLine([], archives, [], 99).includes('folding'), false)
+})

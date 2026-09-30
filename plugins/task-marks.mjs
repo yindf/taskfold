@@ -27,9 +27,22 @@
  * so tests exercise it offline without a host.
  */
 import { sessionEvents, messageOf, blocksOf, toolResultEntries, taskResultEventText } from './events.mjs'
+import { belowFoldFloor } from './fold-settings.mjs'
 
 /** Session-projection key under which the open-mark stack is published. */
 export const TASK_MARKS_KEY = 'taskMarks'
+
+/**
+ * Composite identity of one pendingArchives row, shared by the two consumers
+ * that need to agree on WHICH rows are below the fold floor: the drain's
+ * settle registry (writes; fold-drain.mjs) and the projection view annotator
+ * (reads; compact-region.mjs). Keyed by (seq, name, foldResultSeq) so a
+ * cross-session collision needs all three to match — and the worst case is a
+ * chip briefly mislabeled until that session's own drain pass re-settles it.
+ */
+export function pendingArchiveKey(entry) {
+  return entry.seq + ':' + entry.name + ':' + (Number.isInteger(entry.foldResultSeq) ? entry.foldResultSeq : 0)
+}
 
 /**
  * Structural stand-in for a zod schema: the projection registry only ever
@@ -565,6 +578,36 @@ export function archivesOf(ctx, session) {
   } catch (err) {
     return []
   }
+}
+
+/**
+ * Composite keys (pendingArchiveKey) of the session's queued archives whose
+ * planned region sits BELOW the given fold floor — the rows the drain will
+ * settle closed-unfolded, never billing a summarization call (issue #2).
+ * Freshly computed from the surface + event log on every call, so it is
+ * accurate immediately after a restart (the drain's own settle registry is
+ * in-memory and re-populates only at the first step boundary). Floor <= 0
+ * folds everything, so no row can be below it. Total and defensive like the
+ * other accessors: an unmeasurable span (-1 from spanTokenEstimate) folds,
+ * so it is NOT below-floor.
+ */
+export function belowFloorArchiveKeys(ctx, session, minSpanTokens) {
+  const keys = new Set()
+  if (!Number.isInteger(minSpanTokens) || minSpanTokens <= 0) return keys
+  let nodes
+  let events
+  try {
+    nodes = session.surface.nodes
+    events = sessionEvents(session)
+  } catch (err) {
+    return keys
+  }
+  for (const entry of archivesOf(ctx, session)) {
+    if (entry === null || typeof entry !== 'object') continue
+    const plan = deferredArchivePlan(entry, nodes, events)
+    if (belowFoldFloor(plan, nodes, { minSpanTokens }, events)) keys.add(pendingArchiveKey(entry))
+  }
+  return keys
 }
 
 /**

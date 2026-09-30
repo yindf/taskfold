@@ -35,12 +35,16 @@ export function todoBridgeLine(openNames) {
  * so a number that drifts per round would re-arm the latch every round.
  * Names are model-authored text and are quoted with double quotes escaped.
  */
-export function taskStackLine(marks, archives, pending) {
+export function taskStackLine(marks, archives, pending, belowFloor = 0) {
   const names = (Array.isArray(marks) ? marks : [])
     .filter((m) => m !== null && typeof m === 'object' && typeof m.name === 'string' && m.name !== '')
     .map((m) => '"' + m.name.replace(/"/g, "'") + '"')
-  const folding = (Array.isArray(archives) ? archives : [])
-    .filter((a) => a !== null && typeof a === 'object' && typeof a.name === 'string' && a.name !== '').length
+  const valid = (a) => a !== null && typeof a === 'object' && typeof a.name === 'string' && a.name !== ''
+  const total = (Array.isArray(archives) ? archives : []).filter(valid).length
+  // Below-floor rows are queued-looking but terminal: they will never fold,
+  // so they must not be reported as folding. Counted apart (never negative,
+  // even if the fresh measurement and the archive list disagree momentarily).
+  const folding = Math.max(0, total - (Number.isInteger(belowFloor) && belowFloor > 0 ? belowFloor : 0))
   let begin = 0
   let end = 0
   for (const p of (Array.isArray(pending) ? pending : [])) {
@@ -50,6 +54,7 @@ export function taskStackLine(marks, archives, pending) {
   }
   const counts = []
   if (folding > 0) counts.push(folding + ' folding')
+  if (total - folding > 0) counts.push((total - folding) + ' closed below floor')
   if (begin > 0) counts.push(begin + ' begin pending')
   if (end > 0) counts.push(end + ' end pending')
   const tail = counts.length > 0 ? counts.join(', ') : 'nothing folding or pending'

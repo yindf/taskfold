@@ -78,7 +78,7 @@ test('taskStackView: pending intents and queued closures surface separately', ()
   const m = taskStackView(NESTED)
   assert.deepEqual(m.pending, { begin: 1, end: 1 })
   // one entry per queued closure, keeping seq so rows can be keyed by it
-  assert.deepEqual(m.closing, [{ seq: 25, name: 'old' }, { seq: 27, name: 'older' }])
+  assert.deepEqual(m.closing, [{ seq: 25, name: 'old', belowFloor: false }, { seq: 27, name: 'older', belowFloor: false }])
   // pending entries are NOT part of the open stack
   assert.deepEqual(m.open.map((t) => t.name), ['outer', 'mid', 'inner'])
 })
@@ -132,6 +132,39 @@ test('summaries: a zh reader localizes counts and intents; en keys cover every s
   // key itself through the English fallback
   assert.deepEqual(Object.keys(taskStackZh).sort(), Object.keys(taskStackEn).sort())
   for (const value of Object.values(taskStackEn)) assert.match(value, /\S/)
+})
+
+test('below-floor rows: flagged in the view, counted apart, labeled honestly', () => {
+  // The wire view (compact-region's annotateBelowFloorView) flags rows the
+  // drain settled below the fold floor; the dock must render them as
+  // terminal — never as 'folding…'.
+  const state = {
+    pending: {},
+    marks: [],
+    pendingArchives: [
+      { seq: 5, name: 'small', foldResultSeq: 9, belowFloor: true },
+      { seq: 20, name: 'big', foldResultSeq: 25 }
+    ]
+  }
+  const model = taskStackView(state)
+  assert.equal(model.closing.length, 2)
+  assert.equal(model.belowFloorCount, 1)
+  assert.equal(model.closing[0].belowFloor, true)
+  assert.equal(model.closing[1].belowFloor, false)
+  assert.equal(tailSummary(model), '1 folding · 1 closed below floor')
+  assert.equal(tailSummary(model, (key) => taskStackZh[key]), '1 个折叠中 · 1 个已关闭（低于下限）')
+  // A row the wire did NOT flag (registry empty right after a restart)
+  // renders with the legacy semantics: both count as folding.
+  const unflagged = taskStackView({
+    pending: {},
+    marks: [],
+    pendingArchives: [
+      { seq: 5, name: 'small', foldResultSeq: 9 },
+      { seq: 20, name: 'big', foldResultSeq: 25 }
+    ]
+  })
+  assert.equal(unflagged.belowFloorCount, 0)
+  assert.equal(tailSummary(unflagged), '2 folding')
 })
 
 test('taskStackCss: host card geometry, no browser-default list markers', () => {
@@ -290,6 +323,28 @@ test('makeTaskStackDock: reads the live taskMarks projection through useProjecti
   // v8 persisted shape (no pendingArchives) must not crash the dock
   const v8 = renderToStaticMarkup(h(TaskStackDock, { useProjection: () => ({ pending: {}, marks: [{ seq: 3, name: 'legacy' }] }) }))
   assert.match(v8, />legacy</)
+
+  // a below-floor row (wire-annotated settle) renders the terminal label,
+  // not 'folding…', and keeps out of the folding count
+  const floored = renderToStaticMarkup(h(TaskStackDock, {
+    useProjection: () => ({
+      pending: {},
+      marks: [],
+      pendingArchives: [{ seq: 5, name: 'small', foldResultSeq: 9, belowFloor: true }]
+    })
+  }))
+  assert.match(floored, />small</)
+  assert.match(floored, /closed · below fold floor/)
+  assert.doesNotMatch(floored, /folding…/)
+  const flooredZh = renderToStaticMarkup(h(TaskStackDock, {
+    useProjection: () => ({
+      pending: {},
+      marks: [],
+      pendingArchives: [{ seq: 5, name: 'small', foldResultSeq: 9, belowFloor: true }]
+    }),
+    t: (key) => taskStackZh[key]
+  }))
+  assert.match(flooredZh, /已关闭 · 低于折叠下限/)
 
   // unescaped task names are host-untrusted text: react must escape them
   const evil = renderToStaticMarkup(h(TaskStackDock, {

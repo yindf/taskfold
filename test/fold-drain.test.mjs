@@ -11,7 +11,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createArchiveDrain } from '../plugins/fold-drain.mjs'
-import { applyTaskMarks } from '../plugins/task-marks.mjs'
+import { applyTaskMarks, pendingArchiveKey, belowFloorArchiveKeys } from '../plugins/task-marks.mjs'
 import { foldFloorFromConfig, spanTokenEstimate, belowFoldFloor, estimateTokens, DEFAULT_MIN_SPAN_TOKENS } from '../plugins/fold-settings.mjs'
 
 /** assistant/message carrying tool-call blocks (shape per dsh-agent-loop). */
@@ -96,9 +96,11 @@ function harness(events, opts) {
     }
   }
   const agent = { session }
-  const drain = createArchiveDrain({ ctx, engineFor: async () => engine, closingTasks: new Map(), settings: opts !== undefined && opts.settings !== undefined ? opts.settings : { minSpanTokens: 0 } })
+  const belowFloorKeys = new Set()
+  belowFloorKeys.version = 0
+  const drain = createArchiveDrain({ ctx, engineFor: async () => engine, closingTasks: new Map(), settings: opts !== undefined && opts.settings !== undefined ? opts.settings : { minSpanTokens: 0 }, belowFloorKeys })
   return {
-    session, agent, ctx, engine, folds, attempts, drain,
+    session, agent, ctx, engine, folds, attempts, drain, belowFloorKeys,
     state: () => state,
     append(e) {
       session.events.push(e)
@@ -601,4 +603,36 @@ test('a malformed settings object normalizes to the default floor, not to fold-e
   assert.deepEqual(h.attempts, [], 'the ~12-token span sits below the normalized 2000 floor')
   assert.ok(h.drain.isSettledArchive(h.session, 10), 'settled unfolded, not silently folded')
   assert.deepEqual(h.folds, [])
+})
+
+test('a below-floor settle registers (and a reopen withdraws) its display key', async () => {
+  // The dock's honest 'closed · below fold floor' chip rides on the
+  // drain-shared registry: the settle must publish the row's composite key,
+  // and a floor-lowering reopen must withdraw it — otherwise the chip lies
+  // in both directions ('folding…' forever, or below-floor while folding).
+  let configured = 100000
+  const h = harness([
+    assistantCall(10, [{ id: 'a1', name: 'task_begin' }]),
+    toolResult(11, 'a1', BEGUN('tiny', '1 open.')),
+    assistantCall(20, [{ id: 'a2', name: 'task_end' }]),
+    toolResult(21, 'a2', ENDED('tiny', 'all closed. Archival queued.')),
+    assistantText(25, 'deliverable')
+  ], { settings: () => ({ minSpanTokens: configured }) })
+  await h.drain.processDeferredArchives(h.agent, undefined)
+  const row = h.state().pendingArchives.find((p) => p.name === 'tiny')
+  assert.ok(row, 'projection row persists for the settled span')
+  const key = pendingArchiveKey(row)
+  assert.ok(h.belowFloorKeys.has(key), 'floor settle publishes the composite display key')
+  // The fresh host-side measurement (lifecycle hint path) agrees with the
+  // drain's registry: same plan, same estimator, same floor.
+  assert.deepEqual(belowFloorArchiveKeys(h.ctx, h.session, 100000), new Set([key]))
+  assert.equal(belowFloorArchiveKeys(h.ctx, h.session, 0).size, 0, 'floor 0 folds everything — nothing is below it')
+  const versionAfterSettle = h.belowFloorKeys.version
+  assert.ok(versionAfterSettle > 0, 'the registry version bump lets the wire view re-annotate')
+  // The Settings-page edit: floor down to 1 reopens the settle and folds.
+  configured = 1
+  await h.drain.processDeferredArchives(h.agent, undefined)
+  assert.deepEqual(h.folds, [[20, 21]], 'the reopened span folds under the lowered floor')
+  assert.ok(!h.belowFloorKeys.has(key), 'the reopen withdraws the display key')
+  assert.ok(h.belowFloorKeys.version > versionAfterSettle, 'withdrawals bump the version too')
 })

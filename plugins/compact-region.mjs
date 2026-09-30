@@ -50,7 +50,7 @@
  *   lifecycle-injection.mjs the event-only lifecycle hint channel
  */
 import { sessionEvents } from './events.mjs'
-import { TASK_MARKS_KEY, taskMarksStateSchema, applyTaskMarks, validTaskName, closeTarget, normalizeName, marksOf, archivesOf, pendingOf, lastSurfaceAssistantSeq, siblingTaskMarkCalls } from './task-marks.mjs'
+import { TASK_MARKS_KEY, taskMarksStateSchema, applyTaskMarks, validTaskName, closeTarget, normalizeName, marksOf, archivesOf, pendingOf, belowFloorArchiveKeys, pendingArchiveKey, lastSurfaceAssistantSeq, siblingTaskMarkCalls } from './task-marks.mjs'
 import { DETAILED_CHECKPOINT_INSTRUCTION } from './fold-instruction.mjs'
 import { createFoldEngine } from './fold-engine.mjs'
 import { createArchiveDrain } from './fold-drain.mjs'
@@ -104,6 +104,42 @@ try {
     })
   }
 } catch (err) { Config = undefined }
+
+/**
+ * Wire-view factory for the taskMarks projection: returns the state as-is
+ * (reference-stable — the change feed's Object.is gate must not fire on
+ * unrelated commits) unless one or more pendingArchives rows carry the
+ * below-floor verdict in the drain-shared registry, in which case it returns
+ * a shallow copy with those rows flagged `belowFloor: true` (the hand
+ * validator passes extra keys through untouched). Memoized on the state
+ * reference AND the registry version, so a settle that lands between commits
+ * (no new state object) still re-annotates on the next view computation.
+ * Restart semantics: the registry is empty until the drain's first pass
+ * re-settles the small rows — one boundary of legacy labeling at worst.
+ */
+function annotateBelowFloorView(belowFloorKeys) {
+  let lastState = undefined
+  let lastVersion = -1
+  let lastOut = undefined
+  return (state) => {
+    if (state === null || typeof state !== 'object') return state
+    const archives = Array.isArray(state.pendingArchives) ? state.pendingArchives : null
+    if (archives === null || archives.length === 0 || belowFloorKeys.size === 0) return state
+    if (state === lastState && belowFloorKeys.version === lastVersion) return lastOut
+    let touched = false
+    const pendingArchives = archives.map((a) => {
+      if (a !== null && typeof a === 'object' && belowFloorKeys.has(pendingArchiveKey(a))) {
+        touched = true
+        return { ...a, belowFloor: true }
+      }
+      return a
+    })
+    lastState = state
+    lastVersion = belowFloorKeys.version
+    lastOut = touched ? { ...state, pendingArchives } : state
+    return lastOut
+  }
+}
 
 export default {
   // The Config schema must ride ON the plugin object itself: the loader's
@@ -176,6 +212,16 @@ export default {
     // rows forever. The host treats a version mismatch as a full replay, not
     // a load failure, so the replay converges those rows through the
     // close-result witness.
+    // Below-floor settle registry, shared with the drain (writes) and the
+    // wire view below (reads): rows the drain settled below the fold floor
+    // are terminal — they never fold, so the projection keeps them listed
+    // in pendingArchives forever (no compaction event ever shadows their
+    // close result) and every consumer would misreport them as perpetually
+    // 'folding…'. The view annotates exactly those rows with belowFloor.
+    // `version` is bumped by the drain on every mutation, so the view's
+    // memo knows when to recompute despite the state reference not moving.
+    const belowFloorKeys = new Set()
+    belowFloorKeys.version = 0
     ctx.sessionProjections.register({
       key: TASK_MARKS_KEY,
       stateSchema: taskMarksStateSchema,
@@ -184,7 +230,7 @@ export default {
       stateVersion: 11,
       wire: {
         viewSchema: taskMarksStateSchema,
-        view: (state) => state
+        view: annotateBelowFloorView(belowFloorKeys)
       }
     })
 
@@ -201,7 +247,8 @@ export default {
       ctx,
       engineFor,
       closingTasks,
-      settings: () => ({ minSpanTokens: foldFloorFromConfig(config) })
+      settings: () => ({ minSpanTokens: foldFloorFromConfig(config) }),
+      belowFloorKeys
     })
     // Per-session latch for the standalone lifecycle hint: the exact text of
     // the last hint published to that session. In-memory on purpose — a
@@ -587,7 +634,12 @@ export default {
       // latch (planLifecycleInjection) re-publishes only when the stack
       // really moved — which is exactly when the hint's target may have too.
       if (lines.length > 0) {
-        lines.push(taskStackLine(marks, archivesOf(ctx, session), pendingOf(ctx, session)))
+        // Below-floor rows are counted apart from 'folding': they are
+        // terminal (closed, never folding), so the hint must not claim a
+        // fold is in flight for them. Freshly measured — unlike the drain's
+        // in-memory registry this is restart-accurate immediately.
+        const belowFloor = belowFloorArchiveKeys(ctx, session, foldFloorFromConfig(config))
+        lines.push(taskStackLine(marks, archivesOf(ctx, session), pendingOf(ctx, session), belowFloor.size))
       }
       return lines
     }

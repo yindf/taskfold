@@ -3,6 +3,36 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.37.3 — below-floor settles stop masquerading as 'folding…' (unreleased draft 2026-10-01)
+
+Live regression from the 0.37.0 fold floor: a task closed below
+`minSpanTokens` (observed at 616 estimated tokens against the 2000 default)
+settles in the drain's MEMORY as closed-unfolded — zero LLM calls, by design
+— but nothing ever shadows its close result, so the projection keeps the row
+in `pendingArchives` forever and every consumer rendered it as a fold in
+flight: the dock chip read '发布 0.37.1 折叠中…' indefinitely and the
+lifecycle hint counted '1 folding' that would never be billed.
+
+  - the drain now publishes each below-floor settle into a bounded
+    display registry (composite `seq:name:foldResultSeq` key, withdrawn on
+    a floor-lowering reopen), and the taskMarks wire view annotates exactly
+    those rows `belowFloor: true` — reference-stable (the change feed's
+    Object.is gate stays quiet on unrelated commits) and memoized on the
+    state reference plus a registry version so settles between commits
+    re-annotate on the next view computation
+  - the dock renders flagged rows as terminal: '已关闭 · 低于折叠下限' /
+    'closed · below fold floor', a neutral rail dot, and a separate
+    '{n} closed below floor' count in the header tail — never inside the
+    folding count
+  - the lifecycle hint's stack line measures the queued archives freshly
+    (`belowFloorArchiveKeys`: same plan, same estimator, same floor as the
+    drain — restart-accurate immediately, unlike the in-memory registry)
+    and reports 'N closed below floor' apart from 'N folding'; the default
+    zero keeps the legacy byte-stable rendering
+  - unannotated rows (registry empty right after a restart, before the
+    drain's first pass) keep the legacy 'folding…' label — one boundary of
+    old semantics at worst
+
 ## 0.37.2 — dsh 0.2.0-rc.2: re-verified, no plugin change (2026-09-30)
 
 A same-minor lockstep bump: the whole dsh monorepo moved 0.2.0-rc.1 →
