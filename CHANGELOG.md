@@ -4,7 +4,83 @@ All notable changes to this project are documented per commit series. Since
 0.37.6 every release also ships to npm (`latest`) — before that, the npm copy
 lagged behind the channel branches on purpose.
 
-## 0.37.7 — release flow publishes to npm via NPM_TOKEN (unreleased draft 2026-09-30)
+## 0.37.7 — the Plugins page drops to two named rows, and the release flow publishes to npm (2026-09-30)
+
+The bundle patch declared THREE Loader rows, so the Plugins page listed three
+components for one package: `cmpct-region`, `cmpct-stats`, and
+`taskfold-client`. That was never a duplicate registration — the page renders
+one row per `insert` entry in `cordis.patch.yml` — but two of the three were
+avoidable. The observation tools moved out of their own row: `compact-stats.mjs`
+is now a PLAIN module exporting `registerStatsTools(ctx)`, and `taskfold.mjs`
+(the renamed `compact-region.mjs`, the bundle's single host row) calls it from
+`apply`. Same `ctx.tools` service, same plugin fiber, same two tools — one
+fewer Loader row. The remaining two rows cannot be merged into one: a client
+package is discovered by client-modules FROM a live Loader row, and two rows
+resolving the same package make it throw "resolves from multiple active Loader
+sources", which is why the browser half stays in the nested `client/` package
+with a row of its own.
+
+Both rows are named after the package. Row ids: `cmpct-region` → `taskfold`,
+while `taskfold-client` keeps its name. The host row's specifier moves from the
+relative `./plugins/compact-region.mjs` to the package SUBPATH
+`dsh-taskfold/plugins`, because `readPluginMeta()` returns undefined for
+anything that carries no package name and the boot rewrites a `./…` row name
+into a `file:///` URL before the page reads it — the relative form is why the
+page rendered a raw path with no title, description or icon. The subpath
+resolves through the profile's own `node_modules` (the `dsh plugin add` link)
+into this package's `exports` map, and the row then reads its own
+`<specifier>/locale/*.json` plus `<specifier>/package.json`: `plugins/locale/*.json`
+carries this row's title `Taskfold` and its one-line introduction, and
+`plugins/package.json` — the description fallback — is deliberately absent and
+unexported, so the row's copy can only come from that locale file while
+`package.json` and the package-level `locale/*.json` keep the longer blurb for
+the package page header and the npm listing.
+
+The client row mounts its own package NAME, `dsh-taskfold-client`, which is how
+the official bundles mount their halves (one component = one resolvable package,
+each carrying its own `locale/*.json`). Two host rules leave no other option:
+client-modules' `locatePkgJson()` accepts a path-like name or an exact bare
+package name and drops everything else — a subpath of the root package,
+`dsh-taskfold/client` included, never reaches the boot graph — while a path-like
+name can never be titled, because boot rewrites a `./…` row name into a `file:///`
+URL and `readPluginMeta()` returns undefined for any specifier that carries no
+package name. That path is what the page printed as this row's title. The name
+resolves without publishing a second npm package: `package.json` declares
+`"dsh-taskfold-client": "file:./client"`, and dsh-app-boot publishes a profile
+bundle's resolvable dependencies as `scope: 'profile'` resolution entries
+(`collectProfileScopePackages` → `dependencyClosure`, walking the bundle
+manifest's dependencies/peers). The nested `client/` package already ships inside
+the tarball, so npm/pnpm recreate that link on install; a working tree needs
+`pnpm install` (or the equivalent link) before the row resolves. `client/locale/*.json`
+titles the row `Taskfold Client` (`Taskfold 客户端` in Chinese) and carries its
+one-line introduction, while `client/package.json` still drops its own
+`description` so the row's copy can only come from that locale file. Both rows
+now render the same four lines — title, introduction, row id, module name —
+because `client.js` prints the id and the module name only when the title
+differs from them, and both titles are deliberately distinct from both, the way
+the official bundles' rows are shaped.
+
+The plugin's own `name` is `taskfold` (was `compact-region`).
+
+BREAKING for installs that already saved settings: a row id IS the config key
+of its Settings form (`dsh-settings` keys forms by entry id), so a previously
+saved fold floor / `showTaskBar` under `cmpct-region` is no longer read — the
+new `taskfold` row starts from the schema defaults (2000 / true). The old key
+stays harmless in `cordis.patch.yml`; delete it or re-enter the value on the
+Settings page. Anyone mounting this bundle beside a preset that still carries
+the historical `cmpct-region` / `cmpct-stats` rows must drop those rows first —
+tool names live in a shared registry and duplicate registration fails.
+
+  - `compact-stats.mjs` exports `registerStatsTools(ctx)`; its Cordis plugin object and row are gone
+  - `plugins/compact-region.mjs` → `plugins/taskfold.mjs`; exported plugin `name: 'taskfold'`
+  - `cordis.patch.yml`: host row `name: 'dsh-taskfold/plugins'` (was the relative `./plugins/taskfold.mjs`); client row `name: 'dsh-taskfold-client'` (was the relative `./client/index.mjs`); legacy `cmpct-*` row ids retired
+  - `package.json` `main`/`exports["."]`/`exports["./plugins"]` → `./plugins/taskfold.mjs`; new `plugins/locale/*.json` (title + one-line introduction, both languages) gives the host row its own copy
+  - new `dependencies` entry `"dsh-taskfold-client": "file:./client"`, plus `client/locale/*.json` (title + one-line introduction) and a description-free `client/package.json`: the client row mounts a resolvable bare name and renders as `Taskfold Client`, not as a `file:///` path
+  - test file renamed to `test/taskfold-stats.test.mjs`; `test/client-bundle.test.mjs` pins the host subpath, the declared component dependency, the client row's bare-name specifier, and both row locales — a title plus a short translated introduction, with the title distinct from the row id and the module name so both rows keep the same four-line shape
+  - client bundle regenerated (source comments only); `npm test` green (14 files)
+  - the package blurb (`package.json` plus `locale/{en,zh}.json`) and both row introductions rewritten rather than translated: the Chinese copy now reads as written Chinese instead of translated English, and each row says what its component actually does (the browser row names the task bar and the fold settings, not a calque of "browser half")
+  - the fold-floor settings card binds the renamed row id `taskfold` (`FOLD_SETTINGS_PLUGIN_NS`): dsh-settings serves one config form per profile entry and the card registers `whileServed`, so a stale namespace would have left the card permanently absent with no error anywhere — `test/client-bundle.test.mjs` now pins the constant to the host row's `id:` in `cordis.patch.yml`
+  - README (en/zh) localization + layout sections and `docs/design/task-stack-ui.md` describe the two named rows and the component-package shape; `docs/design-compact-stats.md` keeps the single-row shape
 
 npm rejoins the release pipeline: `node scripts/release.mjs release` (and its
 PENDING resume) now publishes the version to npm whenever the `NPM_TOKEN`
