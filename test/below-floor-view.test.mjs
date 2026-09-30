@@ -30,7 +30,9 @@ test('pruneBelowFloorView: settled rows are removed from the wire value, others 
   assert.deepEqual(pruned.pendingArchives, [row(20, 'big', 25)])
   // memoized: same state + same version → same output reference
   assert.equal(view(state), pruned)
-  // a reopen (key withdrawn) restores the row on the very same state object
+  // a withdrawn key restores the row on the very same state object —
+  // defensive only since 0.37.5 (settles are permanent and the drain never
+  // withdraws), but the view stays correct if a future drain ever does.
   registry.delete('5:small:9')
   registry.version += 1
   assert.equal(view(state), state)

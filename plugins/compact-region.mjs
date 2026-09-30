@@ -144,10 +144,10 @@ export function pruneBelowFloorView(belowFloorKeys) {
  * apply produced a NEW state reference — a below-floor settle mutates
  * nothing in the event log, so without help the pruned view would sit
  * unpushed until the next task-mark event. The wrapper watches the drain's
- * registry `version` (bumped on every settle and reopen) and returns a
+ * registry `version` (bumped on every settle) and returns a
  * content-identical shallow copy on the FIRST event after a bump: exactly
  * one extra state-reference move per mutation, which re-runs the view and
- * ships the pruned (or, on reopen, restored) row. Replay-safe — the clone
+ * ships the pruned row. Replay-safe — the clone
  * changes object identity only, never derived content.
  */
 export function makeSettleAwareApply(belowFloorKeys) {
@@ -662,8 +662,19 @@ export default {
         // terminal (closed, never folding), so the hint must not claim a
         // fold is in flight for them. Freshly measured — unlike the drain's
         // in-memory registry this is restart-accurate immediately.
+        const queued = archivesOf(ctx, session)
         const belowFloor = belowFloorArchiveKeys(ctx, session, foldFloorFromConfig(config))
-        lines.push(taskStackLine(marks, archivesOf(ctx, session), pendingOf(ctx, session), belowFloor.size))
+        // Permanent skips (0.37.5) join the fresh measurement: a row the
+        // session's ledger already judged below the floor never folds —
+        // even after an edit lowered the bound below its span — so it must
+        // not be counted as folding either. Intersected with the queued
+        // rows so ledger leftovers (a row that left the projection through
+        // replay) never skew the count.
+        const queuedKeys = new Set(queued.map((p) => pendingArchiveKey(p)))
+        for (const skipKey of drain.permanentSkips(session)) {
+          if (queuedKeys.has(skipKey)) belowFloor.add(skipKey)
+        }
+        lines.push(taskStackLine(marks, queued, pendingOf(ctx, session), belowFloor.size))
       }
       return lines
     }

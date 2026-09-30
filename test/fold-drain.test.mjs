@@ -10,6 +10,9 @@
 //   node test/fold-drain.test.mjs
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import nodeFs from 'node:fs'
+import nodeOs from 'node:os'
+import nodePath from 'node:path'
 import { createArchiveDrain } from '../plugins/fold-drain.mjs'
 import { applyTaskMarks, pendingArchiveKey, belowFloorArchiveKeys } from '../plugins/task-marks.mjs'
 import { foldFloorFromConfig, spanTokenEstimate, belowFoldFloor, estimateTokens, DEFAULT_MIN_SPAN_TOKENS } from '../plugins/fold-settings.mjs'
@@ -56,12 +59,19 @@ const ENDED = (n, rest) => 'Task ended: ' + n + ' — ' + rest
 function harness(events, opts) {
   let state = null
   for (const e of events) state = applyTaskMarks(state, e)
+  const artifactDir = opts !== undefined && typeof opts.artifactDir === 'string' ? opts.artifactDir : null
   const session = {
     id: 's-' + Math.random().toString(36).slice(2, 8),
     events,
     surface: { nodes: events.filter((e) => e.type === 'assistant/message' || e.type === 'user/message' || e.type === 'tool/result').map((e) => e.seq) }
   }
-  const ctx = { sessionProjections: { stateOf: () => state } }
+  if (artifactDir !== null) session.header = { id: 'test-session' }
+  const ctx = {
+    sessionProjections: { stateOf: () => state },
+    ...(artifactDir !== null
+      ? { get: (name) => name === 'sessionPersistence' ? { locate: () => ({ path: nodePath.join(artifactDir, 'session.v4.jsonl') }) } : undefined }
+      : {})
+  }
   const folds = []
   const attempts = []
   const rejectEnds = new Set(opts !== undefined && Array.isArray(opts.rejectEnds) ? opts.rejectEnds : [])
@@ -536,7 +546,10 @@ test('a span below the configured floor settles unfolded — zero compactRegion 
 test('a settings getter re-reads per pass — a Settings-page edit applies without restart', async () => {
   // Production shape: compact-region passes () => ({ minSpanTokens:
   // foldFloorFromConfig(config) }) — the volatile ref behind the Settings
-  // form. Simulate the page edit by flipping the ref between passes.
+  // form. Simulate the page edit by flipping the ref between passes. Since
+  // 0.37.5 the edit applies to spans NOT YET judged: an already-settled
+  // span keeps its permanent skip, while a span that closes AFTER the edit
+  // folds under the new floor in the very next pass.
   let configured = 100000
   const h = harness([
     assistantCall(10, [{ id: 'a1', name: 'task_begin' }]),
@@ -550,18 +563,26 @@ test('a settings getter re-reads per pass — a Settings-page edit applies witho
   assert.deepEqual(h.attempts, [], 'below the floor: no call billed')
   assert.ok(h.drain.isSettledArchive(h.session, 10), 'settled unfolded')
 
-  // The page edit: floor down to 1. The settle is in-memory (tooSmall
-  // semantics), so the next pass re-plans the row and folds it.
+  // The page edit: floor down to 1. The settled span is skipped FOREVER —
+  // but a second span that closes after the edit was never judged under
+  // the high floor, so it folds under the new one at the next pass.
   configured = 1
+  h.append(assistantCall(30, [{ id: 'a3', name: 'task_begin' }]))
+  h.append(toolResult(31, 'a3', BEGUN('later', '1 open.')))
+  h.append(assistantCall(40, [{ id: 'a4', name: 'task_end' }]))
+  h.append(toolResult(41, 'a4', ENDED('later', 'all closed. Archival queued.')))
+  h.append(assistantText(45, 'deliverable'))
   await h.drain.processDeferredArchives(h.agent, undefined)
-  assert.deepEqual(h.folds, [[20, 21]], 'the edited floor applies at the next drain pass')
-  assert.equal(h.state(), null, 'the projection row closed out')
+  assert.ok(h.drain.isSettledArchive(h.session, 10), 'the earlier settle is permanent: never re-folded')
+  assert.deepEqual(h.folds, [[40, 41]], 'the post-edit span folds under the edited floor at the next pass')
+  assert.equal(h.state().pendingArchives.map((p) => p.name).join(','), 'floored', 'only the permanently skipped row remains queued')
 })
 
-test('floor edits settle and reopen idempotently — no loop, no un-settle on raise', async () => {
-  // H6a: lowering the floor reopens a settled span that is STILL below the
-  // new floor: it re-settles under the new value and the pass terminates
-  // (the re-settle stamps the new floor, so reopenIfFloorLowered goes quiet).
+test('floor edits never reopen a below-floor settle — the skip is permanent', async () => {
+  // 0.37.5: a span the session already judged below the floor never
+  // re-folds, whatever later floor edits say. Retro-folding settled spans
+  // would rewrite the surface and invalidate the provider prefix cache
+  // behind them — a cost no small fold can repay.
   let configured = 100000
   const events = [
     assistantCall(10, [{ id: 'a1', name: 'task_begin' }]),
@@ -576,11 +597,19 @@ test('floor edits settle and reopen idempotently — no loop, no un-settle on ra
 
   configured = 50000 // still far above the region's ~12 tokens
   await h.drain.processDeferredArchives(h.agent, undefined)
-  assert.ok(h.drain.isSettledArchive(h.session, 10), 're-settled under the new floor')
-  assert.deepEqual(h.folds, [], 'still below the new floor: nothing folded')
+  assert.ok(h.drain.isSettledArchive(h.session, 10), 'still settled under the lower floor')
+  assert.deepEqual(h.folds, [], 'nothing folded')
   assert.deepEqual(h.attempts, [], 'no summarization call billed')
 
-  // H6b: raising the floor changes nothing for an already-settled span.
+  // The decisive edit: floor down to 1 — the span WOULD fold if the
+  // verdict were revocable. It is not.
+  configured = 1
+  await h.drain.processDeferredArchives(h.agent, undefined)
+  assert.ok(h.drain.isSettledArchive(h.session, 10), 'a below-floor settle survives any later floor')
+  assert.deepEqual(h.folds, [], 'the settled span never folds retroactively')
+  assert.deepEqual(h.attempts, [], 'no summarization call billed')
+
+  // Raising the floor changes nothing either.
   configured = 200000
   await h.drain.processDeferredArchives(h.agent, undefined)
   assert.ok(h.drain.isSettledArchive(h.session, 10), 'raising the floor never un-settles')
@@ -605,12 +634,11 @@ test('a malformed settings object normalizes to the default floor, not to fold-e
   assert.deepEqual(h.folds, [])
 })
 
-test('a below-floor settle registers (and a reopen withdraws) its display key', async () => {
+test('a below-floor settle registers a display key that no floor edit withdraws', async () => {
   // The dock never shows settled below-floor rows: the host-side wire view
   // prunes exactly the rows whose composite key sits in the drain-shared
-  // registry. The settle must publish the row's key, and a floor-lowering
-  // reopen must withdraw it — otherwise the dock lies in both directions
-  // ('folding…' forever, or a vanished row while it is queued to fold).
+  // registry. The settle publishes the row's key; since settles are
+  // PERMANENT (0.37.5), no floor edit ever withdraws it.
   let configured = 100000
   const h = harness([
     assistantCall(10, [{ id: 'a1', name: 'task_begin' }]),
@@ -625,15 +653,59 @@ test('a below-floor settle registers (and a reopen withdraws) its display key', 
   const key = pendingArchiveKey(row)
   assert.ok(h.belowFloorKeys.has(key), 'floor settle publishes the composite display key')
   // The fresh host-side measurement (lifecycle hint path) agrees with the
-  // drain's registry: same plan, same estimator, same floor.
+  // drain's registry while the floor is unchanged: same plan, same
+  // estimator, same floor.
   assert.deepEqual(belowFloorArchiveKeys(h.ctx, h.session, 100000), new Set([key]))
   assert.equal(belowFloorArchiveKeys(h.ctx, h.session, 0).size, 0, 'floor 0 folds everything — nothing is below it')
   const versionAfterSettle = h.belowFloorKeys.version
   assert.ok(versionAfterSettle > 0, 'the registry version bump lets the wire view re-annotate')
-  // The Settings-page edit: floor down to 1 reopens the settle and folds.
+  // The floor-lowering edit changes nothing the drain decided: the row
+  // stays skipped and its display key stays published.
   configured = 1
   await h.drain.processDeferredArchives(h.agent, undefined)
-  assert.deepEqual(h.folds, [[20, 21]], 'the reopened span folds under the lowered floor')
-  assert.ok(!h.belowFloorKeys.has(key), 'the reopen withdraws the display key')
-  assert.ok(h.belowFloorKeys.version > versionAfterSettle, 'withdrawals bump the version too')
+  assert.deepEqual(h.folds, [], 'the settled span never folds retroactively')
+  assert.ok(h.belowFloorKeys.has(key), 'the display key stays published')
+  assert.equal(h.belowFloorKeys.version, versionAfterSettle, 'no withdrawal — the version does not move')
+})
+
+test('a below-floor settle survives a restart and a lower floor (permanent skip ledger)', async () => {
+  // 0.37.5: the verdict is persisted to floor-skips.jsonl in the session's
+  // taskfold artifact directory. A FRESH drain (fresh in-memory maps, the
+  // way a restarted host rebuilds them) re-settles the row from the ledger
+  // without re-measuring under whatever floor is current then — even when
+  // that floor would now fold the span.
+  const dir = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'tf-skip-'))
+  try {
+    const events = [
+      assistantCall(10, [{ id: 'a1', name: 'task_begin' }]),
+      toolResult(11, 'a1', BEGUN('tiny', '1 open.')),
+      assistantCall(20, [{ id: 'a2', name: 'task_end' }]),
+      toolResult(21, 'a2', ENDED('tiny', 'all closed. Archival queued.')),
+      assistantText(25, 'deliverable')
+    ]
+    const first = harness(events, { artifactDir: dir, settings: { minSpanTokens: 100000 } })
+    await first.drain.processDeferredArchives(first.agent, undefined)
+    assert.ok(first.drain.isSettledArchive(first.session, 10), 'settled unfolded under the high floor')
+    assert.ok(nodeFs.existsSync(nodePath.join(dir, 'taskfold', 'floor-skips.jsonl')), 'the skip ledger exists on disk')
+
+    // Restart simulation: same event log (same seqs, same composite key),
+    // fresh harness — new session id, new in-memory maps — and the floor
+    // now at 1, which WOULD fold the span if the ledger did not exist.
+    const second = harness(events, { artifactDir: dir, settings: { minSpanTokens: 1 } })
+    await second.drain.processDeferredArchives(second.agent, undefined)
+    assert.ok(second.drain.isSettledArchive(second.session, 10), 'the ledger re-settles the row without re-measuring')
+    assert.deepEqual(second.folds, [], 'no retroactive fold across a restart')
+    assert.deepEqual(second.attempts, [], 'no summarization call billed')
+    const row = second.state().pendingArchives.find((p) => p.name === 'tiny')
+    assert.ok(second.belowFloorKeys.has(pendingArchiveKey(row)), 'the dock prune key re-publishes after the restart')
+    // The permanent-skips accessor the lifecycle line unions in agrees.
+    assert.ok(second.drain.permanentSkips(second.session).has(pendingArchiveKey(row)), 'the skip ledger carries the key')
+    // A memory-only harness (no artifact dir) still degrades gracefully:
+    // the fresh drain re-measures under the CURRENT floor — floor 0 folds.
+    const third = harness(events, { settings: { minSpanTokens: 0 } })
+    await third.drain.processDeferredArchives(third.agent, undefined)
+    assert.deepEqual(third.folds, [[20, 21]], 'without a ledger the restart re-derives from the current floor')
+  } finally {
+    nodeFs.rmSync(dir, { recursive: true, force: true })
+  }
 })

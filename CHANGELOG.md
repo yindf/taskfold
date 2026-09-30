@@ -3,6 +3,34 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.37.5 — below-floor skips are permanent: persisted per session, never reopened (unreleased draft 2026-09-30)
+
+First-principles correction, from live use: the plugin exists to keep context
+CHEAP, and retroactively folding spans a later, lower floor would admit
+surface rewrites the prefix cache never planned — every such rewrite
+invalidates the provider prefix cache behind it, a cost no small fold can
+repay. So the reopen machinery (0.37.0–0.37.4: lowering the floor re-settled
+previously skipped spans, both live and after every restart) is GONE. A
+below-floor settle is now an append-only verdict:
+
+- the drain writes each verdict to `floor-skips.jsonl` in the session's
+  taskfold artifact directory — a restart re-settles straight from the
+  ledger instead of re-measuring under whatever floor is current then
+  (degrades to memory-only when no artifact directory resolves)
+- no floor edit reopens a settled span: `reopenIfFloorLowered` and the
+  settle-time floor stamps are removed; the display key is published once
+  and never withdrawn
+- the lifecycle stack line unions the ledger's keys into its below-floor
+  count (intersected with the queued rows), so a permanently skipped row is
+  never counted as 'folding' after the floor drops below its span
+
+  - remove the floor-lowering reopen; below-floor settles are final for the
+    life of the session log
+  - persist below-floor verdicts to <artifact-dir>/taskfold/floor-skips.jsonl
+  - tests: reopen expectations inverted (lowering to 1 never folds a settled
+    span), restart simulation via a second drain over the same ledger,
+    memory-only degrade keeps the re-derive-from-current-floor behavior
+
 ## 0.37.4 — below-floor settles vanish from the dock, and the prune now ships without waiting for the next task mark (2026-09-30)
 
 Follow-up to 0.37.3, driven by live use: the terminal 'closed · below fold
