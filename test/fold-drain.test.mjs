@@ -536,7 +536,7 @@ test('a span below the configured floor settles unfolded — zero compactRegion 
 })
 
 test('a settings getter re-reads per pass — a Settings-page edit applies without restart', async () => {
-  // Production shape: compact-region passes () => ({ minSpanTokens:
+  // Production shape: taskfold passes () => ({ minSpanTokens:
   // foldFloorFromConfig(config) }) — the volatile ref behind the Settings
   // form. Simulate the page edit by flipping the ref between passes. Since
   // 0.37.5 the edit applies to spans NOT YET judged: an already-settled

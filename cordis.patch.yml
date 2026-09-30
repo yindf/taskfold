@@ -3,9 +3,56 @@
 # layer). Tools land in the global tools registry — every session of every
 # preset sees them.
 #
-# Row ids (cmpct-region / cmpct-stats) are legacy-stable on purpose:
-# renaming a mounted id orphans installed copies on upgrade, so they keep
-# their historical names even though the files are the taskfold sources.
+# ONE host row + ONE browser row = two components on the Plugins page. The
+# observation tools (list_folds / fold_recall) used to be a second host row
+# (`cmpct-stats`); they are now a plain module registered by taskfold.mjs, so
+# removing that row loses nothing — only the component count drops. The
+# browser half can never share the host row: client-modules discovers a
+# client package from a live Loader row, and two rows of ONE package make it
+# throw "resolves from multiple active Loader sources" — hence the nested
+# client package with this row as its single owner.
+#
+# Row ids (taskfold / taskfold-client) are the component names the Plugins
+# page shows. The FIRST id is also the CONFIG KEY of this row's Settings form
+# (dsh-settings keys a form by entry id), so renaming it a second time would
+# orphan a saved fold floor; treat it as stable from here on.
+#
+# HOST ROW SPECIFIER: the package SUBPATH 'dsh-taskfold/plugins', never
+# './plugins/taskfold.mjs'. A './…' row name is rewritten into a file:/// URL
+# before the Plugins page reads it, and dsh-app-boot's readPluginMeta() bails
+# out on every specifier that carries no package name (barePackageName() ===
+# undefined) — the row would then render that raw path with no title,
+# description or icon. The subpath resolves through the profile's own
+# node_modules (the `dsh plugin add` link) into this package's exports map,
+# and readPluginMeta() reads `<specifier>/locale/*.json` plus
+# `<specifier>/package.json`: plugins/locale/*.json carries this row's title
+# Taskfold and its one-line introduction, while plugins/package.json — the
+# description fallback — is deliberately absent and unexported, so the row's
+# copy can only come from that locale. package.json + the package-level
+# locale/*.json keep the longer blurb for the package page header and npm. exports["."] and
+# exports["./plugins"] name the same module.
+#
+# CLIENT ROW SPECIFIER: this component's OWN package name, mounted exactly the
+# way the official bundles mount their halves (@deepseek-ai/
+# dsh-experimental-agent-team-profile declares one resolvable package per
+# component and each carries its own locale/*.json). Two host rules meet here.
+# client-modules' locatePkgJson() accepts a row name only when it is path-like
+# OR an exact bare package name — every other specifier (a subpath of the root
+# package, notably) is dropped outright, taking the browser half with it. And
+# readPluginMeta() can title a row only through a package name: boot rewrites a
+# './…' row name into a file:/// URL, so a relative name renders as that raw
+# path. A bare name satisfies both. It resolves because this package.json
+# declares it and dsh-app-boot publishes a profile bundle's resolvable
+# dependencies as scope:'profile' resolution entries (profile.ts:
+# collectProfileScopePackages -> dependencyClosure, walking the bundle
+# manifest's dependencies/peers); the row then loads client/index.mjs, and
+# readPluginMeta() reads client/locale/*.json plus client/package.json —
+# whose own description stays absent, so the row's copy can only come from the
+# locale. Both row locales carry a title and ONE short introduction, and both
+# titles are deliberately distinct from their row id and module name: client.js
+# prints the id only when the title differs from it, and the module name only
+# when the title differs from that, so each row renders the same four lines
+# (title, introduction, id, module) — the shape the official bundles use.
 #
 # The compaction engine resolves LAZILY inside the plugin and is ALWAYS the
 # plugin's own ScopedEngine (span-scoped summarizer; auto:false; imported on
@@ -14,22 +61,21 @@
 # compaction. No compaction row is required here.
 #
 # COLLISION WARNING: never mount this bundle alongside a preset that already
-# carries its own taskfold-era rows (registered under the legacy cmpct ids,
-# e.g. the cmpct agent preset) — tool names live in a shared registry and
-# duplicate registration fails.
+# carries its own taskfold-era rows (the historical cmpct-region /
+# cmpct-stats ids, e.g. the cmpct agent preset) — tool names live in a shared
+# registry and duplicate registration fails.
 - insert:
-    - id: cmpct-region
-      name: './plugins/compact-region.mjs'
+    - id: taskfold
+      name: 'dsh-taskfold/plugins'
 
-    - id: cmpct-stats
-      name: './plugins/compact-stats.mjs'
-
-    # Dedicated owner row of the browser bundle. client-modules maps each
-    # client package (a package.json declaring dsh.client) to its Loader rows
-    # and refuses a package with more than one active source ("resolves from
-    # multiple active Loader sources"), which is exactly what the two legacy
-    # rows above would do to the root dsh-taskfold package. The client half
-    # therefore lives in the nested client/ package and this row is its
-    # single owner (empty host apply; the browser half does all the work).
+    # Dedicated owner row of the browser bundle: the nested client package,
+    # mounted by its own name. client-modules maps each client package (a
+    # package.json declaring dsh.client) to its Loader rows and refuses a
+    # package with more than one active source ("resolves from multiple active
+    # Loader sources"), which is exactly what a second row over the root
+    # package would do. This row is that package's single owner (empty host
+    # apply; the browser half does all the work). See CLIENT ROW SPECIFIER
+    # above for why the name — not a path — is what makes the row both load
+    # and render with a title.
     - id: taskfold-client
-      name: './client/index.mjs'
+      name: 'dsh-taskfold-client'

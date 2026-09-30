@@ -1,8 +1,13 @@
 /**
- * Compact Region tools — plugin-bundle form (installed via `dsh plugin add`
- * at the profile level; cordis.patch.yml mounts this file at the host plane,
- * so the tools land in the global registry for every session of every
+ * taskfold — the bundle's SINGLE host row (installed via `dsh plugin add` at
+ * the profile level; cordis.patch.yml mounts this file once at the host
+ * plane, so the tools land in the global registry for every session of every
  * preset). No realm/isolate-group assumptions are made.
+ *
+ * The file name IS the component name: one mounted row means the Plugins page
+ * lists one component for this package instead of one per source file. The
+ * observation tools (list_folds / fold_recall) live in the plain module
+ * compact-stats.mjs and are registered here through registerStatsTools().
  *
  * Registers the task-lifecycle tools plus prompt guidance:
  *   task_begin / task_end — named tasks; task_end pops the mark and QUEUES an
@@ -41,6 +46,7 @@
  * Module map (plain modules imported by this mounted row — they add no
  * bundle rows of their own, exactly like span-preview.mjs):
  *   events.mjs           shared native-event extractions (sessionEvents…)
+ *   compact-stats.mjs    the list_folds / fold_recall tools + fold stats
  *   task-marks.mjs       the taskMarks projection + pure close/fold decisions
  *   fold-instruction.mjs the two swapped-in summarization instructions
  *   fold-engine.mjs      self-hosted ScopedEngine + lazy resolution
@@ -50,6 +56,7 @@
  *   lifecycle-injection.mjs the event-only lifecycle hint channel
  */
 import { sessionEvents } from './events.mjs'
+import { registerStatsTools } from './compact-stats.mjs'
 import { TASK_MARKS_KEY, taskMarksStateSchema, applyTaskMarks, validTaskName, closeTarget, normalizeName, marksOf, archivesOf, pendingOf, belowFloorArchiveKeys, pendingArchiveKey, lastSurfaceAssistantSeq, siblingTaskMarkCalls, BELOW_FLOOR_MARKER, taskEndCloseVerdict } from './task-marks.mjs'
 import { DETAILED_CHECKPOINT_INSTRUCTION } from './fold-instruction.mjs'
 import { createFoldEngine } from './fold-engine.mjs'
@@ -64,7 +71,7 @@ import { createRequire } from 'node:module'
 // --- Config (Settings page form) -------------------------------------
 // The dsh-settings service renders one form per active profile entry from
 // the entry's exported Config schema: every `.volatile()` field becomes a
-// live row keyed by this row's id (cmpct-region), edits are validated
+// live row keyed by this row's id (taskfold), edits are validated
 // against this schema and persisted through the active profile's Cordis
 // patch, and the runtime hands apply(ctx, config) reactive refs that a
 // Settings edit re-resolves without a plugin reload. That replaces the
@@ -167,7 +174,7 @@ export default {
   // unwrapExports() keeps only exports.default, so a named `export { Config }`
   // never reaches runtime.Config and the Settings form never appears.
   Config,
-  name: 'compact-region',
+  name: 'taskfold',
   // NOTE: 'compaction' is deliberately NOT injected. The engine is ALWAYS
   // the plugin's own ScopedEngine instance (built lazily by fold-engine.mjs
   // on first use) — never a realm-registered ctx.compaction, which belongs to
@@ -553,6 +560,10 @@ export default {
 
     ctx.tools.register(taskBegin)
     ctx.tools.register(taskEnd)
+    // Observation half (list_folds / fold_recall) — a plain module registering
+    // on THIS row, so the bundle patch declares one host component instead of
+    // one per source file. Same ctx.tools service, same plugin fiber.
+    registerStatsTools(ctx)
 
     ctx.systemPrompt.section({
       name: 'task-marker-compaction',

@@ -3,11 +3,11 @@
   "version": "0.37.6",
   "private": true,
   "type": "module",
-  "description": "Browser half of dsh-taskfold (task-stack dock + Plugins-page settings card). Nested package so the client bundle has exactly one owning Loader row; not published.",
   "main": "index.mjs",
   "exports": {
     ".": "./index.mjs",
     "./client": "./taskfold-client.mjs",
+    "./locale/*": "./locale/*",
     "./package.json": "./package.json"
   },
   "dsh": {

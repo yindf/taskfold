@@ -11,7 +11,7 @@
  * shadowedTokenCount stays the exact figure in fold bookkeeping.
  *
  * Settings arrive through the HOST SETTINGS PAGE, not environment
- * variables: the mounted row exports a Config schema (compact-region.mjs)
+ * variables: the mounted row exports a Config schema (taskfold.mjs)
  * whose volatile `minSpanTokens` field the dsh-settings service renders as
  * a form keyed by the profile entry id, validates, and persists through
  * the active profile's Cordis patch — a live edit applies at the next

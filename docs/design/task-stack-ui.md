@@ -5,7 +5,7 @@
 
 ## 背景与问题
 
-`task_begin` / `task_end` 的任务栈此前只对模型可见（工具回执文本 + 系统提示行）：宿主侧 `taskMarks` 投影自 0.32 起就存在（注册于 `plugins/compact-region.mjs`），但**没有 wire**，浏览器读不到；插件也**没有客户端半件**。用户要求"显示当前 task 栈，跟 todo 一样"——Web GUI 里 todo 的形态是 `conversation.input.dock` 上 id=`todo` 的 TodoDock，实时读 `todos` 投影。
+`task_begin` / `task_end` 的任务栈此前只对模型可见（工具回执文本 + 系统提示行）：宿主侧 `taskMarks` 投影自 0.32 起就存在（注册于 `plugins/compact-region.mjs`），但**没有 wire**，浏览器读不到；插件也**没有客户端部分**。用户要求"显示当前 task 栈，跟 todo 一样"——Web GUI 里 todo 的形态是 `conversation.input.dock` 上 id=`todo` 的 TodoDock，实时读 `todos` 投影。
 
 上线后又暴露两个只有真机才能发现的问题：**面板视觉粗糙**（插件类名不在壳层样式表里，裸 `<ol>/<li>` 全裸奔），以及**幽灵 `folding…` 行**（实测 5~7 行，重启重放也清不掉）。两者都在本轮一并解决。
 
@@ -27,13 +27,13 @@ wire: {
 - 客户端仅把 `marks` 当栈读（栈序：旧→新，最内层在末尾）；`seq` 全局唯一，旧日志可能重名，**渲染 key 用 `seq` 不用 name**。`pending` 是"正在提交"的意图计数，`pendingArchives` 是已出栈、等待归档的任务。
 - task 名是模型自由文本（允许引号等），渲染走 React 文本节点转义；不做任何 HTML 拼接。
 
-### 2. 客户端半件：`client/taskfold-client.mjs`（构建生成，0.37.0 迁入嵌套包）
+### 2. 客户端部分：`client/taskfold-client.mjs`（构建生成，0.37.0 迁入嵌套包）
 
 - **零构建取舍**：宿主把该文件当 classic script 原样吐给浏览器（`window.__ModuleLoader__.load({ id, factory })`），文件里不允许 import/export，因此逻辑必须内联。事实源是 `plugins/task-stack-ui.mjs` 与 `plugins/fold-settings-ui.mjs`（纯函数 + react 注入工厂，离线可测）；`scripts/build-client.mjs` 从 `scripts/taskfold-client.template.mjs` 做"剥 ESM 关键字 + 拼装 envelope"的确定性生成，**产物提交入库**（宿主服务的是安装包里的原始字节）。
 - **双新鲜度门禁**：`test/client-bundle.test.mjs` 做字节级重建比对；`scripts/release.mjs` 在 draft 与 release 前调 `assertClientBundleFresh()`，陈旧即拒绝发版。注意 `npm pack` 打的是**工作区文件**而非 blob，故 EOL 也必须在门禁意义上一致——由仓库根的 `.gitattributes`（`* text=auto eol=lf`）保证。
 - **依赖面**：bundle 只 `require("react")` 与 `require("@deepseek-ai/dsh-client-ui-primitives")`（均为宿主种子词，无需声明）→ `client/package.json` 的 `dsh.client` 只声明 `{ platform: "web" }`，不填 `inject`。
 - **挂载**：`ctx.slots.inject("conversation.input.dock", () => ctx.slots.register({ name, id: "task-stack", order: 15 }, TaskStackDock))`——order 15 落在 goal(10) 与 queue(20) 之间；组件契约 `{ useProjection }` 由聊天宿主提供，`useProjection("taskMarks")` 实时取 wire 视图（与 TodoDock 读 `todos` 完全同构）。dock 注册**不声明** `locale:`（scoped slots 对声明 locale 的条目在无 locale face 时直接抛错）；本地化读取器由 locale fiber 经生命周期 ref 注入，逐调用回退英文内置。
-- **manifest**：0.37.0 起浏览器半件是独立嵌套包 `client/package.json`（`dsh-taskfold-client`，含 `exports["."] → ./index.mjs` 与 `dsh.client`），`cordis.patch.yml` 以 `- id: taskfold-client` 行挂载 `./client/index.mjs`；根包不再声明 `dsh.client`（多 Loader 源会相互顶掉）。历史布局（根包 `exports["./client"]` 直指 `plugins/taskfold-client.mjs`）已废弃。
+- **manifest**：0.37.0 起浏览器端是独立嵌套包 `client/package.json`（`dsh-taskfold-client`，含 `exports["."] → ./index.mjs`、`exports["./client"] → ./taskfold-client.mjs`、`exports["./locale/*"]` 与 `dsh.client`），`cordis.patch.yml` 以 `- id: taskfold-client` 行按**裸包名** `dsh-taskfold-client` 挂载——与官方 bundle 同款（`@deepseek-ai/dsh-experimental-agent-team-profile`：一个组件 = 一个可解析包，各自带 `locale/*.json`）。宿主两条规则在这里交汇：client-modules 的 `locatePkgJson()` 只接受 path-like 或**精确裸包名**（根包的子路径会被直接丢弃，浏览器端静默消失），而 path-like 行名会被 boot 改写成 `file:///` URL、`readPluginMeta()` 又对无包名的 specifier 返回 undefined，页面只能把路径当标题。名字之所以能解析，是因为根包 `dependencies` 声明了 `"dsh-taskfold-client": "file:./client"`：dsh-app-boot 的 `collectProfileScopePackages → dependencyClosure`（`profile.ts:485-537`）会把 bundle 可解析的依赖发布为 `scope:'profile'` 解析条目。行标题与一行简介取自 `client/locale/*.json`（宿主行同理取自 `plugins/locale/*.json`；两行标题都刻意不同于行 id 与模块名，好让 `client.js` 把 id 行与模块名行都渲染出来、两行形态一致），`client/package.json` 依旧不写 `description`（行内简介只来自 locale，避免英文文案落进中文界面）；行 id 仍是 `taskfold-client`，Settings 配置键不变。根包不再声明 `dsh.client`（多 Loader 源会相互顶掉）。历史布局（根包 `exports["./client"]` 直指 `plugins/taskfold-client.mjs`）已废弃。
 
 ### 3. 视觉与交互（`plugins/task-stack-ui.mjs`）
 
@@ -96,4 +96,4 @@ Task lifecycle: task stack — 3 open, outermost first: "a" > "b" > "c"; 2 foldi
 - **已发布**：v0.34.0（tag `fc76711`），GitHub Release 附带 `dsh-taskfold-0.34.0.tgz`。安装方式 `github:yindf/taskfold#v0.34.0`（钉 tag 可复现）或 `file:<本地 checkout>`（**注意：`pnpm install` 对未变的 `file:` 依赖会报 up-to-date 而不重新硬链，切换来源前先删 `node_modules/dsh-taskfold`；`write`/`edit` 这类换 inode 的保存会切断硬链接**）。
 - **客户端改动**：`node scripts/build-client.mjs` 后**刷新浏览器即可**——combo 路由的 `rev` 由磁盘字节重算，产物提交入库再由宿主按字节框接。
 - **宿主改动**（`task-marks.mjs` / `fold-drain.mjs` / `lifecycle-nudges.mjs` / `compact-region.mjs`）：必须重装（重新链接）+ **重启 dsh**；宿主对"非客户端包"的否定判定会缓存到重启为止，仅刷新页面不够。
-- 无需改 `cordis.patch.yml` 的行 id：客户端半件由嵌套包 `client/package.json`（`dsh-taskfold-client`）的 `dsh.client` 声明被发现，Loader 行 `taskfold-client` 将其服务为该包的 client 脚本。
+- 无需改 `cordis.patch.yml` 的行 id：客户端部分由嵌套包 `client/package.json`（`dsh-taskfold-client`）的 `dsh.client` 声明被发现，Loader 行 `taskfold-client` 将其服务为该包的 client 脚本。

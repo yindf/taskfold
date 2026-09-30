@@ -20,7 +20,7 @@
 | `design/release-flow.md` | 发布流程（`scripts/release.mjs`）：`draft` / `release` / `assets` / `status` |
 | `design/stage2-preset-solidification.md` | 阶段二固化：compact-region 进驻用户 preset |
 | `design/task-marker-compaction.md` | 任务区间自动压缩（`task_begin` / `task_end`） |
-| `design/task-stack-ui.md` | **task 栈实时显示**（Web 客户端 dock）：wire、客户端半件、卡片几何、归档见证收敛 |
+| `design/task-stack-ui.md` | **task 栈实时显示**（Web 客户端 dock）：wire、客户端部分、卡片几何、归档见证收敛 |
 | `design/taskfold-review-fixes.md` | 代码评审问题处理 |
 | `design/todo-bridge-v2.md` | Todo Bridge v2：事件式状态汇报 |
 | `design/turn-stop-drain-and-indexed-preview.md` | turn-end 自动折叠 + 指令内索引 + 归档预览瘦身 |

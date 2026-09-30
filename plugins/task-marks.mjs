@@ -47,7 +47,7 @@ export const BELOW_FLOOR_MARKER = 'Closed below the fold floor'
  * Composite identity of one pendingArchives row, shared by the two consumers
  * that need to agree on WHICH rows are below the fold floor: the drain's
  * settle registry (writes; fold-drain.mjs) and the projection view annotator
- * (reads; compact-region.mjs). Keyed by (seq, name, foldResultSeq) so a
+ * (reads; taskfold.mjs). Keyed by (seq, name, foldResultSeq) so a
  * cross-session collision needs all three to match — and the worst case is a
  * chip briefly mislabeled until that session's own drain pass re-settles it.
  */

@@ -6,8 +6,8 @@
  * shipped client builds pages that way (dsh-settings README). Every visible
  * card is a browser-half component that binds its namespace through
  * `ctx.configForms` and registers into the Plugins page's slots — this
- * module is taskfold's card for the `cmpct-region` namespace's
- * volatile `minSpanTokens` field (schema: compact-region.mjs Config export).
+ * module is taskfold's card for the `taskfold` namespace's
+ * volatile `minSpanTokens` field (schema: taskfold.mjs Config export).
  *
  * Structure copies the official ui-settings-subagent companion: a
  * SettingsFormModel staging edits over the namespace, one SettingsValueField
@@ -22,13 +22,19 @@
 
 /** Namespace of this card's dictionary entries. */
 const FOLD_SETTINGS_NS = 'settings.taskfold'
-/** Host settings namespace this card edits — the profile entry id. */
-const FOLD_SETTINGS_PLUGIN_NS = 'cmpct-region'
+/**
+ * Host settings namespace this card edits — the profile entry id, i.e. the
+ * `id:` of the mounted host row in `cordis.patch.yml`. dsh-settings serves one
+ * form per entry, so this constant must follow that row id through any rename:
+ * the card registers `whileServed` and simply never appears under a stale
+ * namespace (test/client-bundle.test.mjs pins it to the patch).
+ */
+const FOLD_SETTINGS_PLUGIN_NS = 'taskfold'
 /** The one volatile field this card stages. */
 const FOLD_SETTINGS_FIELD = 'minSpanTokens'
 /** The task-bar visibility field this card stages (boolean). */
 const TASKBAR_FIELD = 'showTaskBar'
-/** Inclusive bounds, mirroring the Config schema in compact-region.mjs. */
+/** Inclusive bounds, mirroring the Config schema in taskfold.mjs. */
 const FOLD_SETTINGS_MIN = 0
 const FOLD_SETTINGS_MAX = 1000000
 
@@ -157,8 +163,8 @@ export function makeFoldSettingsCard(react, primitives) {
   const Fragment = react.Fragment
 
   /**
-   * Stage one field over the `cmpct-region` namespace.
-   * @param {object} scope - ctx.configForms.get('cmpct-region').
+   * Stage one field over the `taskfold` namespace.
+   * @param {object} scope - ctx.configForms.get('taskfold').
    * @returns {{ inject: () => object, dispose: () => void }} slot face + release.
    */
   function makeFoldSettingsForm(scope) {

@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import pluginDefault, { collectStats, foldOf, attachFoldTitles, collectFolds, renderFoldList } from '../plugins/compact-stats.mjs'
+import { registerStatsTools, collectStats, foldOf, attachFoldTitles, collectFolds, renderFoldList } from '../plugins/compact-stats.mjs'
 
 /** Minimal but shape-accurate events mirroring dsh-compaction-basic output. */
 function fixture() {
@@ -235,8 +235,10 @@ test('renderFoldList: empty and defensive inputs', () => {
 
 test('fold_recall range overload: one call returns a cited slice of exact originals (no file written)', async () => {
   const captured = []
-  pluginDefault.apply({ tools: { register: (t) => captured.push(t) } })
+  registerStatsTools({ tools: { register: (t) => captured.push(t) } })
+  const list = captured.find((t) => t.name === 'list_folds')
   const recall = captured.find((t) => t.name === 'fold_recall')
+  assert.ok(list !== undefined, 'list_folds registered by the same call (one row owns both tools)')
   assert.ok(recall !== undefined, 'fold_recall registered')
   const messages = [
     { role: 'user', content: [{ type: 'text', text: 'fix it' }] },

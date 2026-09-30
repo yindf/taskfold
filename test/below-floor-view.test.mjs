@@ -6,7 +6,7 @@
 // a wire view when apply produced a NEW state reference).
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { pruneBelowFloorView, makeSettleAwareApply } from '../plugins/compact-region.mjs'
+import { pruneBelowFloorView, makeSettleAwareApply } from '../plugins/taskfold.mjs'
 
 /** One well-formed pendingArchives row. */
 const row = (seq, name, foldResultSeq) => ({ seq, name, foldResultSeq })

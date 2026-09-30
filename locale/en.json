@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Taskfold",
-    "description": "Keeps long coding-agent sessions lean: wrap work in named tasks and, when one is done, fold its whole span into a short titled summary. The conversation stays readable, context costs stay low, and every fold's original content can be read back on demand. For DeepSeek Harness."
+    "description": "Keeps long coding-agent sessions lean: wrap a stretch of work in a named task, and when it ends, fold that whole span into one short titled summary. The conversation stays readable, context costs stay low, and any fold's original content can be read back on demand. Built for DeepSeek Harness."
   }
 }

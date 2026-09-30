@@ -67,7 +67,7 @@ test('assembleFoldInstruction: base + closing, fenced index appended LAST with a
 })
 
 test('model-facing texts stay in footer semantics; turn-stopping drain registered', () => {
-  const src = nodeFs.readFileSync(new URL('../plugins/compact-region.mjs', import.meta.url), 'utf8')
+  const src = nodeFs.readFileSync(new URL('../plugins/taskfold.mjs', import.meta.url), 'utf8')
   assert.ok(!src.includes('no elision'), 'task_end description / system-prompt section must not promise a no-elision full preview')
   assert.ok(!src.includes('complete span preview'), 'the complete-preview wording is gone')
   assert.ok(src.includes('compact archive footer'), 'footer semantics present in model-facing texts')

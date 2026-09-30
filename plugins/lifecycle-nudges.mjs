@@ -24,7 +24,7 @@ export function todoBridgeLine(openNames) {
 
 /**
  * The FULL task stack, as one line appended to any live hint (never emitted
- * on its own — see compact-region.mjs: a standing state line would re-inject
+ * on its own — see taskfold.mjs: a standing state line would re-inject
  * after every lifecycle call, and depth already rides in every
  * task_begin/task_end result).
  *

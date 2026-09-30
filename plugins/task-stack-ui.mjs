@@ -2,7 +2,7 @@
  * taskStackUi — client-side presentation of the open-task stack.
  *
  * Reads the `taskMarks` session projection's wire view (host: task-marks.mjs /
- * compact-region.mjs; state = null | { pending, marks, pendingArchives? }).
+ * taskfold.mjs; state = null | { pending, marks, pendingArchives? }).
  * marks are in STACK order: index 0 is the outermost (earliest-begun) task,
  * the last element is the innermost (currently active) task. tasks span turns
  * and survive host restarts, so this surface is session-global, unlike the

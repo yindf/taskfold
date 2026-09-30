@@ -135,7 +135,7 @@ test('summaries: a zh reader localizes counts and intents; en keys cover every s
 })
 
 test('below-floor rows: pruned by the host view, never modeled client-side', () => {
-  // Since 0.37.4 the host-side wire view (compact-region's pruneBelowFloorView)
+  // Since 0.37.4 the host-side wire view (taskfold's pruneBelowFloorView)
   // REMOVES rows the drain settled below the fold floor from the wire value
   // entirely — the dock never sees them. A stale `belowFloor: true` field
   // (from an older host's wire value mid-upgrade) is tolerated defensively:

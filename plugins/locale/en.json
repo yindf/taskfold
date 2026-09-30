@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Taskfold",
+    "description": "Wraps a stretch of work in a named task and folds it into one titled summary when it ends."
+  }
+}

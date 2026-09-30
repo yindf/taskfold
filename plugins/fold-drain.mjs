@@ -174,7 +174,7 @@ async function foldRegion(session, agent, engine, name, startSeq, endSeq, signal
 /**
  * The drain factory. `engineFor` comes from createFoldEngine; the returned
  * processDeferredArchives(agent, signal) is wired into BOTH 'agent/pre-step'
- * and 'agent/turn-stopping' (compact-region.mjs): pre-step keeps every queued
+ * and 'agent/turn-stopping' (taskfold.mjs): pre-step keeps every queued
  * archive moving; turn-stopping folds turn-final deliverables while the
  * provider prefix cache is still hot. Single flight is AGENT-LEVEL (0.35.0):
  * the running guard is keyed by session id, so each session folds ITSELF
@@ -207,7 +207,7 @@ export function createArchiveDrain({ ctx, engineFor, closingTasks, settings, bel
   // a plain value (tests). Anything falsy folds everything — the exact
   // pre-0.37.0 behavior.
   const foldSettings = typeof settings === 'function' ? settings : () => settings
-  // Display-side mirror of the floor settles (compact-region.mjs hands the
+  // Display-side mirror of the floor settles (taskfold.mjs hands the
   // SAME Set to the projection view annotator): a below-floor settle is
   // TERMINAL — the row will never fold, yet the projection keeps listing it
   // in pendingArchives (its close result is never shadowed), so the dock
