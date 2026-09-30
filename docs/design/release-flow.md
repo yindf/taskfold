@@ -7,7 +7,7 @@
 
 0.2.3 之前的历次发版只改 `CHANGELOG.md`、漏改 `package.json` 的 `version`，宿主一直显示 0.1.0。目标：仓库内脚本 `cmpct/scripts/release.mjs` 固化"生成 CHANGELOG 草稿 → 定版 → 同步 package.json → 提交 → 打 tag → 推送"，消除手工同步点。
 
-已确认决策（用户拍板）：CHANGELOG.md 顶部条目是版本号唯一事实源（`package.json` 只由脚本同步）；CHANGELOG 由 git log 生成**草稿**、人工审阅后再发布；终点 = commit + push master + tag `vX.Y.Z` + push tag；**不发 npm**。
+已确认决策（用户拍板）：CHANGELOG.md 顶部条目是版本号唯一事实源（`package.json` 只由脚本同步）；CHANGELOG 由 git log 生成**草稿**、人工审阅后再发布；终点 = commit + push master + tag `vX.Y.Z` + push tag。（当时那句「**不发 npm**」已于 0.37.7 废止：npm 恢复自动发布，补发路径见 `### npm`。）
 
 ## 核心状态模型（B1/B3 的解）
 
@@ -28,6 +28,8 @@
 ```
 node scripts/release.mjs draft [--version X.Y.Z] [--force]
 node scripts/release.mjs release
+node scripts/release.mjs npm [--version X.Y.Z]     # 补发已发布版本到 npm；幂等
+node scripts/release.mjs assets [--version X.Y.Z]  # 补发 GitHub Release 附件；幂等
 node scripts/release.mjs status   # 只读；不一致时 exit 1
 ```
 
@@ -64,6 +66,14 @@ node scripts/release.mjs status   # 只读；不一致时 exit 1
   - 注意时序：已发布的 v0.34.0 附件早于本修复，**仍非可复现**；下一个 Release 起生效。历史 Release 不回填。
 - `gh` 未安装/未登录时自动降级为打印手工配方（`npm pack` + `gh release create ...`），不阻断已完成的发版。
 
+### npm（补发；要求：顶部条目已定版，或用 `--version` 指定一个已发布版本）
+- 目的：`release` 一旦走完 git 侧就进入 CLEAN，而**只有 PENDING 会续跑 push**——于是「git 发完了、npm 那步被跳过或失败」没有重跑入口（0.37.7 实例：`NPM_TOKEN` 不在子进程环境里，publish 被静默跳过，只能手工补发一遍）。本子命令就是那个入口：只做 npm publish，不碰 git。
+- 目标版本：`--version` 优先；否则取 CHANGELOG 顶部**已定版**条目。顶部是草稿时必须显式给 `--version`（草稿不是注册表上已有的版本，脚本不猜）。
+- 四道守卫——都因为 `npm publish` 打的是**工作区内容**、不是 tag：`package.json` 版本 == 目标版本；本地存在 `v<目标>` tag；工作区干净（含未跟踪文件，因为 `files` 白名单内的未跟踪文件会被打进包）；`git diff --quiet v<目标> -- .` 为空（工作区与 tag 内容一致）。任一不满足即 exit 1，并给出「先切到那次发布：`git switch --detach v<目标>`」。最后一条防的是：发版之后又在同一分支上提交了新工作，却拿新工作区内容去补发一个**已发布**的版本号——包装错代码比不发更糟。
+- 其余动作：`assertClientBundleFresh()` 产物守卫（产物过期即拒绝）；其余复用 `publishToNpm`（先 `npm view` 幂等判定 → 写临时 `.npmrc` → publish → `finally` 删）。返回 `'published' | 'already'` → exit 0；`'no-token' | 'refused' | 'failed'` → exit 1。与 `release` 相反——`release` 忽略该结果（npm 失败绝不回滚 git 侧），`npm` 的失败就是失败：发布正是它存在的全部理由。
+- 令牌来源：进程环境 `NPM_TOKEN`，Windows 上回落到用户级变量（`reg query HKCU\Environment /v NPM_TOKEN`）。宿主拉起的 shell 在启动时快照环境，之后设置的 token 对子进程不可见——0.37.7 实测正是如此（token 只在用户级，`process.env` 里没有）。
+- 实测（0.37.7，2026-09-30）：`node scripts/release.mjs npm` 在 tag 工作区命中幂等分支，打印 `already on the registry — nothing to publish.` 并 exit 0；`--version 0.37.6`、发版后的新提交、脏工作区三种输入分别被版本/tag 一致性与 dirty 守卫拒绝（exit 1）。
+
 ### status
 打印四元组 + 所属状态（CLEAN/DRAFT/PENDING/INVALID）+ exit code（非 CLEAN/DRAFT/PENDING → 1）（m4）。
 
@@ -94,6 +104,7 @@ node scripts/release.mjs status   # 只读；不一致时 exit 1
 - finalizeDraftHeader：正常替换；已被手工改成定版格式 → 报错。
 - renderEntry：空组省略；含反引号/换行的 subject 原样保留不转义。
 - classifyState：四元组全排列的合法/非法判定（CLEAN/DRAFT/PENDING/INVALID 各至少两例）。
+- npm 补发（0.37.7 增）：`resolveNpmVersion`（`--version` 优先；草稿顶部必须显式给版本）、`checkNpmTarget`（四道守卫的判定与优先级：版本 → tag → 脏树 → 与 tag 内容不一致）、`parseRegQueryToken`（Windows 用户级 token 解析，只认 REG_SZ / REG_EXPAND_SZ）。
 
 ## 二轮复审补充（M1–M3 处置）
 
@@ -104,8 +115,8 @@ node scripts/release.mjs status   # 只读；不一致时 exit 1
 - PENDING 续跑成功后 exit 0；任何 INVALID exit 1（Minor）。
 
 ## 明确不处理
-npm publish、annotated tag、CHANGELOG 人工纠错（草稿本就要求人工审阅）、monorepo、宿主侧显示逻辑、多远端。
-（注意区分：**GitHub Release 及其 tgz 附件**自 0.34.0 起属于流程内（见 `### assets`）；**npm registry publish** 仍然不做。）
+annotated tag、CHANGELOG 人工纠错（草稿本就要求人工审阅）、monorepo、宿主侧显示逻辑、多远端。
+（注意区分：**GitHub Release 及其 tgz 附件**自 0.34.0 起属于流程内（见 `### assets`）；**npm registry publish** 自 0.37.7 起同样属于流程内——`release` 自动发、`npm` 子命令补发（见 `### npm`）。）
 
 ## 实操备忘：DSH 沙箱内 push（2026-09-07 实测，用户拍板）
 

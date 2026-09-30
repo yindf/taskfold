@@ -16,11 +16,21 @@
 // a prebuilt `dsh-taskfold-<version>.tgz` attached; `assets` re-runs just that
 // step for an already-released version (and repairs releases shipped without it).
 //
-// When the NPM_TOKEN environment variable is set, `release` (and its PENDING
-// resume) additionally publishes the version to npm — an automation-type
-// token, because 2FA accounts reject publish-time OTPs for granular tokens.
-// The npm step is idempotent (a version already on the registry is a no-op)
-// and never fails the release: everything git-side is durable before it runs.
+// When a token is available, `release` (and its PENDING resume) additionally
+// publishes the version to npm — an automation-type token, because 2FA accounts
+// reject publish-time OTPs for granular tokens. The token is read from the
+// process environment and, on Windows, from the user-level variable as well (a
+// host-launched shell snapshots its environment at start-up, so a token set
+// after that is invisible to the child while plainly set for the user). The npm
+// step is idempotent (a version already on the registry is a no-op) and never
+// fails the release: everything git-side is durable before it runs.
+//
+// `npm` re-runs just that step for an ALREADY-RELEASED version — the repair path
+// for a release whose npm step was skipped (no token at the time) or failed.
+// `release` cannot repair that: a fully-pushed release is CLEAN, and release
+// resumes pushes only in PENDING. npm publishes the WORKING TREE, never a tag,
+// so `npm` refuses unless this checkout really is that release (package.json
+// version, local tag, clean tree, tree identical to the tag).
 //
 // Version numbers are strict `X.Y.Z` numerics; prerelease/build metadata are
 // rejected. The only source of truth for the NEXT version is the CHANGELOG
@@ -224,6 +234,16 @@ function latestTag() {
 function tagExists(version) {
   const r = git(['tag', '--list', 'v' + version], { okNonZero: true })
   return (r.stdout || '').split(/\r?\n/).some((l) => l.trim() === 'v' + version)
+}
+
+/**
+ * True when the working tree carries exactly the tag's content. `npm publish`
+ * ships the working tree and never a tag, so this is the guard that keeps
+ * unreleased work from going out under a released version number. Untracked
+ * files are invisible to `git diff`; the dirty-tree check covers those.
+ */
+function treeMatchesTag(version) {
+  return git(['diff', '--quiet', '--no-ext-diff', 'v' + version, '--', '.'], { okNonZero: true }).status === 0
 }
 
 /**
@@ -444,29 +464,96 @@ export function publishReleaseAssets(version) {
 }
 
 /**
- * Publish the freshly released version to npm. Opt-in: runs only when
- * NPM_TOKEN carries an automation-type token (2FA accounts reject
- * publish-time OTPs for granular tokens). Idempotent: a version already on
- * the registry is a no-op, so PENDING resumes and hand reruns are safe.
- * Failures never fail the release — the tag, commit, and GitHub Release are
- * durable before this runs; the npm copy can always be published by hand.
+ * Parse `reg query HKCU\Environment /v NPM_TOKEN` output: the Windows
+ * user-level variable, which a stale process environment can hide.
+ */
+export function parseRegQueryToken(stdout) {
+  for (const line of String(stdout === undefined || stdout === null ? '' : stdout).split(/\r?\n/)) {
+    const m = line.match(/^\s*NPM_TOKEN\s+REG_(?:SZ|EXPAND_SZ)\s+(.+?)\s*$/i)
+    if (m) return m[1]
+  }
+  return undefined
+}
+
+/** The publish token: the process environment first, then the Windows user scope. */
+function resolveNpmToken() {
+  const fromProcess = process.env.NPM_TOKEN
+  if (typeof fromProcess === 'string' && fromProcess.length > 0) return fromProcess
+  if (process.platform !== 'win32') return undefined
+  const r = spawnCaptured('reg', ['query', 'HKCU\\Environment', '/v', 'NPM_TOKEN'], { probe: true })
+  if (r.status !== 0) return undefined
+  return parseRegQueryToken(r.stdout)
+}
+
+/**
+ * The version `npm` targets: an explicit `--version` wins, otherwise the top
+ * CHANGELOG entry — which must be a RELEASED one. A draft is not a version the
+ * registry can already hold, and this script never guesses.
+ */
+export function resolveNpmVersion({ requested, top }) {
+  if (requested !== undefined) {
+    if (!/^\d+\.\d+\.\d+$/.test(String(requested))) {
+      return { ok: false, reason: 'malformed version (only strict X.Y.Z is supported): ' + String(requested) }
+    }
+    return { ok: true, version: String(requested) }
+  }
+  if (top === null) {
+    return { ok: false, reason: 'CHANGELOG has no parseable version entry — pass --version X.Y.Z.' }
+  }
+  if (top.kind === 'draft') {
+    return { ok: false, reason: 'top CHANGELOG entry is an unreleased draft (' + top.version + ') — release it first, or pass --version X.Y.Z for an already-released version.' }
+  }
+  return { ok: true, version: top.version }
+}
+
+/**
+ * Every guard `npm` checks before publishing. They all exist because npm ships
+ * the WORKING TREE: the version in package.json, the local release tag, a clean
+ * tree, and a tree identical to that tag. A checkout that carries work the
+ * release does not would put unreleased files on the registry under a released
+ * version number — the one thing this command must never do.
+ */
+export function checkNpmTarget({ version, packageVersion, hasTag, treeMatches, dirty }) {
+  if (packageVersion !== version) {
+    return { ok: false, reason: 'package.json is v' + packageVersion + ', not v' + version + ' — check out that release first: git switch --detach v' + version }
+  }
+  if (!hasTag) {
+    return { ok: false, reason: 'tag v' + version + ' does not exist locally — nothing released to publish.' }
+  }
+  if (dirty.length > 0) {
+    return { ok: false, reason: 'working tree dirty (' + dirty.join(', ') + ') — `npm publish` ships the working tree, not the tag; commit or stash first.' }
+  }
+  if (!treeMatches) {
+    return { ok: false, reason: 'this checkout differs from tag v' + version + ' (it carries work the release does not) — publishing would put those files on the registry under a released version; publish from the tag instead: git switch --detach v' + version }
+  }
+  return { ok: true, version }
+}
+
+/**
+ * Publish `version` to npm. Shared by `release` (opt-in, and its result is
+ * deliberately ignored there: everything git-side is durable before this runs,
+ * so a missing token or a failed upload must never fail the release) and by the
+ * standalone `npm` repair command, which exits non-zero for anything but a
+ * publish or an already-present version. Idempotent: a version already on the
+ * registry is a no-op, so resumed, re-run and hand-repaired releases are safe.
+ * Returns 'published' | 'already' | 'no-token' | 'refused' | 'failed'.
  */
 function publishToNpm(version) {
-  const token = process.env.NPM_TOKEN
-  if (typeof token !== 'string' || token.length === 0) {
-    console.log('npm publish skipped: NPM_TOKEN is not set (set it to publish to npm automatically).')
-    return
+  const token = resolveNpmToken()
+  if (token === undefined) {
+    console.log('npm publish skipped: no NPM_TOKEN (checked the process environment and, on Windows, the user-level variable).')
+    return 'no-token'
   }
   const pkgName = JSON.parse(readFileSync(pkgPath, 'utf8')).name
   const live = npmSpawn(['view', pkgName + '@' + version, 'version'])
   if (live.status === 0 && (live.stdout || '').trim() === version) {
     console.log('npm: ' + pkgName + '@' + version + ' is already on the registry — nothing to publish.')
-    return
+    return 'already'
   }
   const npmrc = path.join(repoRoot, '.npmrc')
   if (existsSync(npmrc)) {
     console.log(manualNpmHint(version, 'a project .npmrc already exists — refusing to overwrite it'))
-    return
+    return 'refused'
   }
   try {
     writeFileSync(npmrc, npmrcAuthLine(token))
@@ -474,9 +561,10 @@ function publishToNpm(version) {
     if (pub.status !== 0) {
       const first = String(pub.stderr || pub.stdout || '').trim().split(/\r?\n/)[0]
       console.log(manualNpmHint(version, '`npm publish` failed: ' + first))
-      return
+      return 'failed'
     }
     console.log('npm: ' + pkgName + '@' + version + ' published.')
+    return 'published'
   } finally {
     try { unlinkSync(npmrc) } catch (err) { /* already gone */ }
   }
@@ -699,6 +787,45 @@ function cmdStatus() {
 }
 
 /**
+ * `npm`: (re)publish an already-released version to the registry. The repair
+ * path for a release whose npm step was skipped (no token at the time) or
+ * failed — `release` cannot do that job, because a fully-pushed release is
+ * CLEAN and only PENDING resumes its pushes. Idempotent through publishToNpm's
+ * registry probe. Unlike `release`, a failure here exits 1: publishing is the
+ * whole point of running this.
+ */
+function cmdNpm(opts) {
+  const top = readTopEntry()
+  const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'))
+  const resolved = resolveNpmVersion({ requested: opts.version, top })
+  if (!resolved.ok) {
+    console.error(resolved.reason)
+    process.exit(1)
+  }
+  const version = resolved.version
+  const dirty = dirtyFiles()
+  const hasTag = tagExists(version)
+  const treeMatches = hasTag && treeMatchesTag(version)
+  console.log('npm target    : v' + version + (opts.version === undefined ? ' (CHANGELOG top)' : ' (--version)'))
+  console.log('package.json  : ' + pkg.version)
+  console.log('local tag     : ' + (hasTag ? 'v' + version + (treeMatches ? ' (working tree matches it)' : ' (working tree DIFFERS)') : '(missing)'))
+  console.log('dirty files   : ' + (dirty.join(', ') || '(none)'))
+  const check = checkNpmTarget({ version, packageVersion: pkg.version, hasTag, treeMatches, dirty })
+  if (!check.ok) {
+    console.error('\n' + check.reason)
+    process.exit(1)
+  }
+  try {
+    assertClientBundleFresh()
+  } catch (err) {
+    console.error(String(err.message))
+    process.exit(1)
+  }
+  const status = publishToNpm(version)
+  if (status !== 'published' && status !== 'already') process.exit(1)
+}
+
+/**
  * `assets`: (re)publish the GitHub Release + tarball for an already-released
  * version. This is the repair path for releases that went out before the flow
  * attached assets, and the retry path after a failed upload. Unlike the release
@@ -734,11 +861,13 @@ function main() {
   }
   if (cmd === 'draft') cmdDraft(opts)
   else if (cmd === 'release') cmdRelease()
+  else if (cmd === 'npm') cmdNpm(opts)
   else if (cmd === 'assets') cmdAssets(opts)
   else if (cmd === 'status') cmdStatus()
   else {
-    console.error('usage: node scripts/release.mjs draft [--version X.Y.Z] [--force] | release | assets [--version X.Y.Z] | status')
-    console.error('  release also publishes to npm when NPM_TOKEN is set (automation-type token).')
+    console.error('usage: node scripts/release.mjs draft [--version X.Y.Z] [--force] | release | npm [--version X.Y.Z] | assets [--version X.Y.Z] | status')
+    console.error('  release also publishes to npm when a token is available (automation-type token).')
+    console.error('  npm (re)publishes an already-released version to npm — the repair path when release skipped or failed that step.')
     process.exit(1)
   }
 }

@@ -17,6 +17,9 @@ import {
   ghCandidates,
   npmrcAuthLine,
   manualNpmHint,
+  parseRegQueryToken,
+  resolveNpmVersion,
+  checkNpmTarget,
 } from '../scripts/release.mjs'
 
 // ── cmpSemver ─────────────────────────────────────────────────────────────
@@ -216,4 +219,51 @@ test('manualNpmHint: names the version, the manual command, and the automation-t
   assert.ok(hint.includes('0.37.7'))
   assert.ok(hint.includes('npm publish --access public'))
   assert.ok(hint.includes('Automation-type token'))
+})
+
+// ── npm repair command (`release.mjs npm`) ────────────────────────────────
+
+test('resolveNpmVersion: --version wins; otherwise the CHANGELOG top must be released', () => {
+  assert.deepEqual(resolveNpmVersion({ requested: '1.2.3', top: null }), { ok: true, version: '1.2.3' })
+  assert.deepEqual(
+    resolveNpmVersion({ requested: undefined, top: { version: '0.37.7', kind: 'released' } }),
+    { ok: true, version: '0.37.7' },
+  )
+  assert.equal(resolveNpmVersion({ requested: undefined, top: null }).ok, false)
+  assert.match(
+    resolveNpmVersion({ requested: undefined, top: { version: '0.38.0', kind: 'draft' } }).reason,
+    /unreleased draft \(0\.38\.0\)/,
+  )
+  // An explicit --version still names an already-released version while a draft
+  // is pending: the repair path must not be blocked by the next release's draft.
+  assert.deepEqual(
+    resolveNpmVersion({ requested: '0.37.7', top: { version: '0.38.0', kind: 'draft' } }),
+    { ok: true, version: '0.37.7' },
+  )
+  for (const bad of ['1.2', 'v1.2.3', '1.2.3-rc.1', '', 'nonsense']) {
+    assert.equal(resolveNpmVersion({ requested: bad, top: null }).ok, false, bad)
+  }
+})
+
+test('checkNpmTarget: package version, local tag, clean tree and tag-identical tree are all required', () => {
+  const base = { version: '0.37.7', packageVersion: '0.37.7', hasTag: true, treeMatches: true, dirty: [] }
+  assert.deepEqual(checkNpmTarget(base), { ok: true, version: '0.37.7' })
+  assert.match(checkNpmTarget({ ...base, packageVersion: '0.37.6' }).reason, /package\.json is v0\.37\.6, not v0\.37\.7/)
+  assert.match(checkNpmTarget({ ...base, hasTag: false }).reason, /tag v0\.37\.7 does not exist locally/)
+  assert.match(checkNpmTarget({ ...base, dirty: ['README.md', 'plugins/x.mjs'] }).reason, /dirty \(README\.md, plugins\/x\.mjs\)/)
+  assert.match(checkNpmTarget({ ...base, treeMatches: false }).reason, /differs from tag v0\.37\.7/)
+  // Precedence: the version mismatch is named first, the dirty tree before the
+  // tag comparison (a dirty tree is the cheaper thing to resolve).
+  assert.match(checkNpmTarget({ ...base, packageVersion: '0.37.6', dirty: ['x'], treeMatches: false }).reason, /package\.json/)
+  assert.match(checkNpmTarget({ ...base, dirty: ['x'], treeMatches: false }).reason, /working tree dirty/)
+})
+
+test('parseRegQueryToken: reads REG_SZ and REG_EXPAND_SZ, ignores everything else', () => {
+  const reg = ['', 'HKEY_CURRENT_USER\\Environment', '    NPM_TOKEN    REG_SZ    npm_abc123', ''].join('\r\n')
+  assert.equal(parseRegQueryToken(reg), 'npm_abc123')
+  assert.equal(parseRegQueryToken('    NPM_TOKEN    REG_EXPAND_SZ    npm_x+y/z=\n'), 'npm_x+y/z=')
+  assert.equal(parseRegQueryToken('    NPM_TOKEN    REG_DWORD    0x1\n'), undefined)
+  assert.equal(parseRegQueryToken('    OTHER_TOKEN    REG_SZ    value\n'), undefined)
+  assert.equal(parseRegQueryToken(''), undefined)
+  assert.equal(parseRegQueryToken(undefined), undefined)
 })
