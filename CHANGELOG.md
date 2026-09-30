@@ -3,6 +3,28 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.37.2 — dsh 0.2.0-rc.2: re-verified, no plugin change (unreleased draft 2026-09-30)
+
+A same-minor lockstep bump: the whole dsh monorepo moved 0.2.0-rc.1 →
+0.2.0-rc.2 with the package set unchanged (no additions, no removals), so this
+release is a re-verification, not a migration. The compatibility gate re-checked
+with the real `evaluatePluginCompatibility` on 0.2.0-rc.2: the existing
+`^0.2.0-rc.1` peer floor already covers rc.1 through the 0.2.0 final — v0.37.1
+loads as-is, no code or manifest change. Verification chain against the real
+0.2.0-rc.2 packages: host-API shape probes (`BasicCompactionEngine` default
+export with `compactRegion` on the prototype, `BlockAssembler` export,
+schemastery CJS entry); the client-contract sweep
+(`conversation.input.dock`, `plugins.bundle.config`, configForms
+`whileServed`, `window.__ModuleLoader__`, `SettingsFormModel`,
+`settingsNumberField` — all present); an end-to-end probe host whose
+`settings/describe` serves `cmpct-region` at
+`{"minSpanTokens":2000,"showTaskBar":true}` with `applies: live`; and the
+offline suite — 14 suites, 208 tests, 0 fail. Both READMEs' "Supported dsh
+versions" records updated (superseded rc.1 entry replaced; dist-tag note:
+`0.2.0-rc.2` now under both `latest` and `next`).
+
+  - record 0.2.0-rc.2 as the verified rc-channel host in README.md + README.zh.md
+
 ## 0.37.1 — dsh 0.2.0-rc.1: peer floor bump, verified (2026-09-30)
 
 The dsh monorepo jumped 0.1.7-rc.2 → 0.2.0-rc.1 in lockstep (no package

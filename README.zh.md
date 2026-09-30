@@ -21,7 +21,7 @@
 
 面向 [DeepSeek Harness](https://www.npmjs.com/package/@deepseek-ai/dsh)（DSH）。
 
-> **当前支持的最新 dsh 版本：`0.2.0-rc.1`。** dsh 的 rc 版本在本分支（master）支持；dsh 的 alpha 版本在 [`alpha` 分支](https://github.com/yindf/taskfold/blob/alpha/README.zh.md#支持的-dsh-版本)支持。
+> **当前支持的最新 dsh 版本：`0.2.0-rc.2`。** dsh 的 rc 版本在本分支（master）支持；dsh 的 alpha 版本在 [`alpha` 分支](https://github.com/yindf/taskfold/blob/alpha/README.zh.md#支持的-dsh-版本)支持。
 
 ## 快速开始
 
@@ -132,7 +132,7 @@ taskfold 用“好笔记本”的方式解决：干活前，智能体先用 `tas
 
 ## 支持的 dsh 版本
 
-- **rc 通道 —— 支持到 `0.2.0-rc.1`**（2026-09-29 在 peer 下限提升这一改动上实测——dsh monorepo 锁步从 0.1.7-rc.2 跳到 0.2.0-rc.1：无包删除，新增五个遥测/日志包。兼容门以真实 0.2.0-rc.1 的 `evaluatePluginCompatibility` 复核：旧的 `^0.1.7-rc.1` 范围被拒——semver 上界 `<0.2.0` 不含新 minor——提升后的 `^0.2.0-rc.1` 通过，这正是本发布的 peer 提升；仍在 0.1.7-rc.* 上的宿主由 v0.37.0 覆盖。宿主 API 形状探针（对真实 0.2.0-rc.1 包）：`BasicCompactionEngine` 默认导出且原型上有 `compactRegion`（dsh-compaction-basic）、`BlockAssembler` 导出（dsh-llm）、schemastery CJS 入口带 Config schema 链式的完整 z-object 面。客户端契约扫描：`conversation.input.dock`、`plugins.bundle.config`、configForms `whileServed`、`window.__ModuleLoader__`、`SettingsFormModel`、`settingsNumberField` 全部在位。端到端探针宿主（真实 0.2.0-rc.1 构建 + 本工作区链接）：bundle 过门加载——日志里唯一的禁用行是 profile 里无关的旧 auto-review——且 `settings/describe` 正常服务 `cmpct-region`，值为 `{"minSpanTokens":2000,"showTaskBar":true}`、`applies: live`。离线套件——14 个套件、208 个测试、0 失败。被取代的 0.1.7-rc.2 记录（v0.37.0 周期活体 20/20 `verify-cache`、前缀缓存命中 92.6–99.9%）维持 v0.37.0 发布时的记录。dist-tag 备注：`0.2.0-rc.1` 走 `next` 发布而 `latest` 仍解析到 `0.1.7-rc.2`，裸 `npx @deepseek-ai/dsh web` 跑的还是 rc.2——只有 `@0.2.0-rc.1`（或 `@next`）能拿到新构建。`dsh`、`dsh-compaction-basic`、`dsh-llm` 三者版本锁步发布，一个数字覆盖全部耦合面。
+- **rc 通道 —— 支持到 `0.2.0-rc.2`**（2026-09-30 实测——同 minor 锁步升级：dsh monorepo 整体从 0.2.0-rc.1 移到 0.2.0-rc.2，包集合零变化（无增无删），因此本轮是复验而非迁移。兼容门以真实 0.2.0-rc.2 的 `evaluatePluginCompatibility` 复核：现有 `^0.2.0-rc.1` peer 下限本就覆盖 rc.1 直至 0.2.0 正式版——无需改动插件，v0.37.1 原样加载。宿主 API 形状探针（对真实 0.2.0-rc.2 包）：`BasicCompactionEngine` 默认导出且原型上有 `compactRegion`（dsh-compaction-basic）、`BlockAssembler` 导出（dsh-llm）、schemastery CJS 入口带 Config schema 链式的完整 z-object 面。客户端契约扫描：`conversation.input.dock`、`plugins.bundle.config`、configForms `whileServed`、`window.__ModuleLoader__`、`SettingsFormModel`、`settingsNumberField` 全部在位。端到端探针宿主（真实 0.2.0-rc.2 构建 + 本树链接）：bundle 过门加载——日志里唯一的禁用行是 profile 里无关的旧 auto-review——且 `settings/describe` 正常服务 `cmpct-region`，值为 `{"minSpanTokens":2000,"showTaskBar":true}`、`applies: live`。离线套件——14 个套件、208 个测试、0 失败。被取代的 0.2.0-rc.1 记录（旧范围被拒、形状探针、探针宿主 describe、peer 提升本身）维持 v0.37.1 发布时的记录。dist-tag 备注：`0.2.0-rc.2` 现在同时挂在 `latest` 与 `next` 上，裸 `npx @deepseek-ai/dsh web` 即可拿到。`dsh`、`dsh-compaction-basic`、`dsh-llm` 三者版本锁步发布，一个数字覆盖全部耦合面。
 - **alpha 通道 —— 请用 `#alpha` 安装**（`dsh plugin --profile web add "github:yindf/taskfold#alpha"`，即 alpha 分支）；alpha 构建的支持版本记录在 [alpha 分支的 README](https://github.com/yindf/taskfold/blob/alpha/README.zh.md#支持的-dsh-版本)。
 - **边界：下界已强制，上界未测试。** 插件把宿主耦合面写进 `peerDependencies`（`@deepseek-ai/dsh`、`@deepseek-ai/dsh-compaction-basic`、`@deepseek-ai/dsh-llm`，均为 `^0.2.0-rc.1`）：dsh 0.2.0 宿主在安装与启动/重组合时检查这些范围，不兼容的宿主将得到 `incompatible-version` 判定、bundle 被跳过，而不是带着不兼容加载——0.1.7-rc.* 宿主请安装 v0.37.0（其 `^0.1.7-rc.1` 下限与之匹配）。早于该检查机制的宿主没有任何协商——在那些宿主上，折叠会降级（任务照常关闭、不折叠），不会损坏数据。每次 dsh 升级后，请复核本节并按实测结果更新。
 - **可选钩子：`agent/turn-stopping`** —— 0.26.0 起归档排干还会在回合结束时运行，让回合末交付的折叠赶在 provider 前缀缓存还热时执行。没有该钩子的宿主保持原来的纯 pre-step 语义（折叠照常发生，只是晚一个回合）；注册语句整体包裹，钩子缺失不会破坏 `apply()`。
