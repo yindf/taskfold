@@ -25,21 +25,44 @@ For [DeepSeek Harness](https://www.npmjs.com/package/@deepseek-ai/dsh) (DSH).
 
 ## Quickstart
 
-Pick the install line that matches your dsh build's channel — each command fetches the newest release verified on that channel (see [Supported dsh versions](#supported-dsh-versions)):
+### Install in dsh Desktop (recommended)
+
+1. Open dsh Desktop and go to the **Plugins** page in the sidebar.
+2. Click **Add plugin** in the top-right corner.
+3. In **Package name or address**, enter `dsh-taskfold` — the dialog installs from npm for you:
+   - pin a version with `dsh-taskfold@0.38.0`;
+   - to follow a branch, enter a Git address instead: `github:yindf/taskfold#master` (rc channel) or `github:yindf/taskfold#alpha` (alpha channel) — Git addresses need direct GitHub access from this machine;
+   - an absolute path to a local plugin directory, or a `.tgz` link, works too.
+4. Leave **Registry** on **Default registry**; mainland-China networks can pick **Mainland China mirror** and retry.
+5. Click **Install**, wait for "Installed; it loads at the next start.", then click **Enable now**.
+6. **Restart dsh Desktop** — plugin composition is evaluated only at startup. Back on the Plugins page you should see a **Taskfold** card reading *Components · 2 total · 2 running* (`taskfold` and `taskfold-client`); the fold floor and the task-bar switch live on that card (see [Settings](#settings)).
+7. To upgrade, **uninstall** and install the new version — the dialog states that automatic updates are not supported yet, and uninstalling takes its features away.
+
+That dialog does the same thing as the command line below: it writes the dependency and the bundle entry into the active profile (`desktop` for dsh Desktop). Nothing else needs configuring by hand.
+
+### Install from the command line
+
+`dsh plugin --profile <name> add` is the shell equivalent of the dialog. `desktop` is dsh Desktop's profile and `web` is the DSH Web GUI's — use whichever one you actually run:
 
 ```sh
-# alpha channel — the default branch (alpha)
-dsh plugin --profile web add "github:yindf/taskfold#alpha"
+# the newest npm release
+dsh plugin --profile desktop add dsh-taskfold
 
-# rc channel — the master branch (keep the quotes: # starts a comment in sh)
+# a pinned version
+dsh plugin --profile desktop add dsh-taskfold@0.38.0
+
+# a channel branch (keep the quotes: # starts a comment in sh)
 dsh plugin --profile web add "github:yindf/taskfold#master"
+dsh plugin --profile web add "github:yindf/taskfold#alpha"
 ```
 
-Both lines are copy-paste ready: `web` is the profile the DSH Web GUI runs on — swap in your own profile name if you use a different one.
+Whichever way you install, restart dsh afterwards.
 
-Each branch's README carries its own "Supported dsh versions" record — the alpha channel's current record lives on the [alpha branch](https://github.com/yindf/taskfold/blob/alpha/README.md#supported-dsh-versions).
+### Channels, the npm package, and support
 
-Also on npm as [`dsh-taskfold`](https://www.npmjs.com/package/dsh-taskfold) — prebuilt, so it skips dsh's `allowBuilds` build approval — though the npm copy can lag behind the channel branches.
+[`dsh-taskfold`](https://www.npmjs.com/package/dsh-taskfold) on npm is a **prebuilt** package — it skips dsh's `allowBuilds` build approval, and since 0.37.6 the release pipeline publishes it in step with the channel branches. The bare name follows npm's `latest`, i.e. whichever channel released last; pin `@version` for determinism, or enter the branch's Git address.
+
+`master` carries the rc channel and `alpha` carries the alpha channel: this branch records the rc channel's support range (see [Supported dsh versions](#supported-dsh-versions)) and the alpha channel's record lives on the [alpha branch](https://github.com/yindf/taskfold/blob/alpha/README.md#supported-dsh-versions).
 
 Restart dsh — every session on that profile gets the tools. The agent then wraps its work in named tasks:
 

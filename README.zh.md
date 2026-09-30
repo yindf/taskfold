@@ -25,21 +25,44 @@
 
 ## 快速开始
 
-按你 dsh 构建所在的通道选安装命令——每条都取该通道上最新验证过的 Release（见[支持的 dsh 版本](#支持的-dsh-版本)）：
+### 在 dsh Desktop 里安装（推荐）
+
+1. 打开 dsh Desktop，在侧边栏进入 **插件** 页。
+2. 点右上角的 **添加插件**。
+3. 在 **包名或地址** 一栏填 `dsh-taskfold`——安装框自己调 npm，不用你手工装依赖：
+   - 钉住版本：`dsh-taskfold@0.38.0`；
+   - 跟某个分支走：改填 Git 地址，rc 通道 `github:yindf/taskfold#master`、alpha 通道 `github:yindf/taskfold#alpha`（Git 地址要求本机能直连 GitHub）；
+   - 本机插件的绝对路径、`.tgz` 直链同样接受。
+4. **安装源** 保持「默认安装源」；中国大陆网络若拉取失败，改选「中国大陆镜像源」再试。
+5. 点 **安装**，等它显示「已安装，下次启动后加载。」，再点 **立即启用**。
+6. **重启 dsh Desktop**——插件组合只在启动时求值。重启后回到 **插件** 页，应看到 **Taskfold** 卡片写着 `包含的组件 · 共 2 个 · 2 运行中`（`taskfold` 与 `taskfold-client` 两行）；折叠下限与任务栏开关就在这张卡片里（见[设置](#设置)）。
+7. 升级请先 **卸载** 再装新版：界面明确说明暂不支持自动更新；卸载后它提供的功能即消失。
+
+这个安装框做的和下面的命令行是同一件事：把依赖与 bundle 条目写进当前 profile（dsh Desktop 用 `desktop`），此外不需要任何手工配置。
+
+### 用命令行安装
+
+`dsh plugin --profile <profile 名> add` 就是上面对话框的命令行等价物。`desktop` 是 dsh Desktop 的 profile，`web` 是 DSH Web GUI 的——按你实际跑的那个改：
 
 ```sh
-# alpha 通道 —— 默认分支（alpha）
-dsh plugin --profile web add "github:yindf/taskfold#alpha"
+# npm 上的最新发布
+dsh plugin --profile desktop add dsh-taskfold
 
-# rc 通道 —— master 分支（引号不能省：# 在 sh 里是注释）
+# 钉住某个版本
+dsh plugin --profile desktop add dsh-taskfold@0.38.0
+
+# 跟某个通道的分支（引号不能省：# 在 sh 里是注释）
 dsh plugin --profile web add "github:yindf/taskfold#master"
+dsh plugin --profile web add "github:yindf/taskfold#alpha"
 ```
 
-两条命令均可直接复制使用：`web` 就是 DSH Web GUI 所用的 profile——如果你用别的 profile，换成你的名字即可。
+无论走界面还是命令行，装完都要**重启 dsh**。
 
-两个分支各自的 README 记录自己通道的「支持的 dsh 版本」——alpha 通道的最新记录在 [alpha 分支](https://github.com/yindf/taskfold/blob/alpha/README.zh.md#支持的-dsh-版本)的 README 上。
+### 通道、npm 包与支持范围
 
-npm 上也有 [`dsh-taskfold`](https://www.npmjs.com/package/dsh-taskfold)——预构建包，免去 dsh 的 `allowBuilds` 构建授权——但 npm 副本可能落后于通道分支。
+npm 上的 [`dsh-taskfold`](https://www.npmjs.com/package/dsh-taskfold) 是**预构建包**——免去 dsh 的 `allowBuilds` 构建授权，0.37.6 起由发布流程随通道分支同步发布。裸包名取的是 npm 的 `latest`，也就是**最后发布**的那条通道；要确定性就用 `@版本` 钉住，或直接填分支的 Git 地址。
+
+`master` 分支承载 rc 通道、`alpha` 分支承载 alpha 通道：本分支记录 rc 通道的支持范围（见[支持的 dsh 版本](#支持的-dsh-版本)），alpha 通道的记录在 [alpha 分支的 README](https://github.com/yindf/taskfold/blob/alpha/README.zh.md#支持的-dsh-版本)。
 
 重启 dsh——该 profile 下的每个会话都拥有这些工具。之后智能体用命名任务包住自己的工作：
 
