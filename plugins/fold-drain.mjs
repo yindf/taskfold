@@ -41,12 +41,9 @@
  * drain's single-flight state itself is per-session too (see below) — the
  * process-wide guard was the last cross-session coupling in the plugin.
  */
-import nodeFs from 'node:fs'
-import nodePath from 'node:path'
 import { sessionEvents } from './events.mjs'
 import { deferredArchivePlan, archivesOf, pendingArchiveKey } from './task-marks.mjs'
 import { foldFloorFromConfig, belowFoldFloor } from './fold-settings.mjs'
-import { sessionArtifactDir } from './span-preview.mjs'
 
 /** Retry budget for one queued archive (see the header contract). */
 export const MAX_FOLD_ATTEMPTS = 5
@@ -220,18 +217,6 @@ export function createArchiveDrain({ ctx, engineFor, closingTasks, settings, bel
   const settleKeys = belowFloorKeys instanceof Set ? belowFloorKeys : null
   const SETTLE_KEY_CAP = 4096
   const settledArchives = new Map() // session.id → Set<seq>
-  // PERMANENT below-floor skips (0.37.5): the verdict is append-only — a
-  // settle that decided "too small to fold" is final for the life of the
-  // session log, surviving restarts and later floor edits. First principles:
-  // the plugin exists to keep context CHEAP; retroactively folding spans a
-  // later, lower floor would admit rewrites the surface never planned, and
-  // every such rewrite invalidates the provider prefix cache behind it — a
-  // cost no small fold can repay. The in-memory verdict is mirrored to
-  // floor-skips.jsonl in the session's taskfold artifact directory, so a
-  // restart re-settles from the ledger instead of re-measuring under
-  // whatever floor is current then. Degrades to memory-only when no
-  // artifact directory resolves.
-  const skipLedgers = new Map() // session.id → Set<key> | null (no ledger)
   const autoFoldFailures = new Map() // session.id → Map<name, bucket>
   const autoFoldAttempts = new Map() // session.id → Map<seq, { attempts, nextPass, name }>
   // AGENT-LEVEL single flight: one drain pass per session at a time. The
@@ -271,75 +256,17 @@ export function createArchiveDrain({ ctx, engineFor, closingTasks, settings, bel
     return set !== undefined && set.has(seq)
   }
 
-  /** Path of the session's permanent skip ledger, or undefined (memory-only). */
-  function skipLedgerPath(session) {
-    const dir = sessionArtifactDir(ctx, session)
-    return dir === undefined ? undefined : nodePath.join(dir, 'taskfold', 'floor-skips.jsonl')
-  }
-
   /**
-   * The session's persisted skip keys, loaded once per process (null when no
-   * ledger path resolves). Total and defensive: a missing file or a corrupt
-   * line never throws — the worst case is one entry re-measured under the
-   * current floor, exactly the pre-0.37.5 restart behavior.
-   */
-  function skipLedgerOf(session) {
-    if (skipLedgers.has(session.id)) return skipLedgers.get(session.id)
-    let ledger = null
-    const file = skipLedgerPath(session)
-    if (file !== undefined) {
-      const keys = new Set()
-      try {
-        for (const line of nodeFs.readFileSync(file, 'utf8').split('\n')) {
-          const trimmed = line.trim()
-          if (trimmed.length === 0) continue
-          try {
-            const rec = JSON.parse(trimmed)
-            if (rec !== null && typeof rec === 'object' && typeof rec.key === 'string') keys.add(rec.key)
-          } catch (err) { /* corrupt line: skip it */ }
-        }
-        ledger = keys
-      } catch (err) { ledger = new Set() }
-    }
-    skipLedgers.set(session.id, ledger)
-    capSessions(skipLedgers, session.id)
-    return ledger
-  }
-
-  /** Best-effort append of one permanent skip; never throws. */
-  function persistSkip(session, key) {
-    const file = skipLedgerPath(session)
-    if (file === undefined) return
-    try {
-      nodeFs.mkdirSync(nodePath.dirname(file), { recursive: true })
-      nodeFs.appendFileSync(file, JSON.stringify({ key }) + '\n', 'utf8')
-    } catch (err) { /* memory-only degrade */ }
-  }
-
-  /**
-   * The session's permanently-skipped keys (empty set when no ledger
-   * resolves). Consumer: the lifecycle stack line — a skipped row must not
-   * be counted as 'folding' even after a floor edit lowered the bound
-   * below the row's span, because the verdict is irrevocable.
-   */
-  function permanentSkips(session) {
-    const ledger = skipLedgerOf(session)
-    return ledger === null ? new Set() : ledger
-  }
-
-  /**
-   * Settle one below-floor span PERMANENTLY: in-memory settle, display-key
-   * publish (the dock prunes the row), and — when a ledger resolves — an
-   * append that makes the verdict restart-proof. The floor value is
-   * deliberately NOT recorded: no later edit can reopen the verdict.
+   * Settle one below-floor span (0.37.6 FALLBACK path): in-memory settle
+   * plus the display-key publish (the dock prunes the row). This now runs
+   * only for rows WITHOUT the close-time marker in their 'Task ended: '
+   * result — pre-0.37.6 logs and non-solitary closes; a marked close never
+   * enters pendingArchives at all, so the drain never sees it. The settle
+   * is in-memory: a restart re-measures those legacy rows under the
+   * current floor (documented; the marker path is the permanent one).
    */
   function markFloorSettled(session, entry) {
     markArchiveSettled(session, entry.seq)
-    const ledger = skipLedgerOf(session)
-    if (ledger !== null && !ledger.has(pendingArchiveKey(entry))) {
-      ledger.add(pendingArchiveKey(entry))
-      persistSkip(session, pendingArchiveKey(entry))
-    }
     if (settleKeys !== null) {
       if (settleKeys.size >= SETTLE_KEY_CAP) settleKeys.clear()
       settleKeys.add(pendingArchiveKey(entry))
@@ -404,16 +331,6 @@ export function createArchiveDrain({ ctx, engineFor, closingTasks, settings, bel
         if (entries.length === 0) return
         entries.sort((a, b) => b.seq - a.seq)
         const entry = entries[0]
-        // Permanent skip ledger (0.37.5): a span this session's log already
-        // judged below the floor NEVER re-folds — not under a later, lower
-        // floor, not after a restart. The ledger is the restart memory for
-        // exactly that verdict; entries it covers settle immediately.
-        const ledger = skipLedgerOf(session)
-        if (ledger !== null && ledger.has(pendingArchiveKey(entry))) {
-          markFloorSettled(session, entry)
-          clearArchiveFailure(session, entry.name)
-          continue
-        }
         // Backoff gate: a failing entry sits out its scheduled boundaries, so
         // a deterministic failure cannot re-bill a full summarization call at
         // every single step boundary.
@@ -558,5 +475,5 @@ export function createArchiveDrain({ ctx, engineFor, closingTasks, settings, bel
     }
   }
 
-  return { processDeferredArchives, isSettledArchive, autoFoldFailures, autoFoldAttempts, permanentSkips }
+  return { processDeferredArchives, isSettledArchive, autoFoldFailures, autoFoldAttempts }
 }

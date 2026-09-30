@@ -50,7 +50,7 @@
  *   lifecycle-injection.mjs the event-only lifecycle hint channel
  */
 import { sessionEvents } from './events.mjs'
-import { TASK_MARKS_KEY, taskMarksStateSchema, applyTaskMarks, validTaskName, closeTarget, normalizeName, marksOf, archivesOf, pendingOf, belowFloorArchiveKeys, pendingArchiveKey, lastSurfaceAssistantSeq, siblingTaskMarkCalls } from './task-marks.mjs'
+import { TASK_MARKS_KEY, taskMarksStateSchema, applyTaskMarks, validTaskName, closeTarget, normalizeName, marksOf, archivesOf, pendingOf, belowFloorArchiveKeys, pendingArchiveKey, lastSurfaceAssistantSeq, siblingTaskMarkCalls, BELOW_FLOOR_MARKER, taskEndCloseVerdict } from './task-marks.mjs'
 import { DETAILED_CHECKPOINT_INSTRUCTION } from './fold-instruction.mjs'
 import { createFoldEngine } from './fold-engine.mjs'
 import { createArchiveDrain } from './fold-drain.mjs'
@@ -469,6 +469,12 @@ export default {
               : 'Mark no longer on the surface; task closed without folding.'
             return [{ type: 'text', text: 'Task ended: ' + value.name + ' — ' + open + '. ' + why }]
           }
+          // 0.37.6 close-time floor verdict: the marker phrase is LOAD-BEARING
+          // (BELOW_FLOOR_MARKER) — the reducer keys "never queue this
+          // archive" on it, making this very result the durable record.
+          if (value.belowFloor === true) {
+            return [{ type: 'text', text: 'Task ended: ' + value.name + ' — ' + open + '. ' + BELOW_FLOOR_MARKER + ' (~' + value.estTokens + ' estimated tokens < ' + value.floor + '): this span will never fold — its original content stays on the surface, no summarization will be billed for it. Deliver your report in your next message (plain text is fine).' }]
+          }
           // The 'Task ended: ' prefix is LOAD-BEARING — the reducer keys the
           // mark pop AND the pendingArchive registration on it ('Task folded: '
           // from legacy logs still matches).
@@ -525,6 +531,19 @@ export default {
           // the task ends unfolded and NOTHING is queued (a queued archive
           // with a shadowed anchor would be dropped by the reducer anyway).
           return { ok: true, name, remainingNames, unfolded: 'anchor' }
+        }
+        // ── 0.37.6 close-time floor verdict ("plan A": the record IS this
+        // result). A SOLITARY close measures the span right now; below the
+        // floor the result carries BELOW_FLOOR_MARKER and the reducer never
+        // queues the archive — permanent by construction, no ledger, no
+        // reopen path, nothing for the drain to settle. Every other shape
+        // (floor 0, partner calls in this message, unresolvable span)
+        // queues as before; the drain's pass-side belowFoldFloor remains
+        // the in-memory fallback for those rows.
+        const floorNow = foldFloorFromConfig(config)
+        const verdict = taskEndCloseVerdict(session, target.mark.seq, floorNow)
+        if (verdict.belowFloor) {
+          return { ok: true, name, remainingNames, belowFloor: true, estTokens: verdict.estTokens, floor: floorNow }
         }
         // Success: the rendered 'Task ended: ' text is the ONLY event the
         // reducer needs — it pops the mark and registers the pendingArchive.
@@ -660,20 +679,13 @@ export default {
       if (lines.length > 0) {
         // Below-floor rows are counted apart from 'folding': they are
         // terminal (closed, never folding), so the hint must not claim a
-        // fold is in flight for them. Freshly measured — unlike the drain's
-        // in-memory registry this is restart-accurate immediately.
+        // fold is in flight for them. Freshly measured over the QUEUED rows
+        // only — since 0.37.6 a below-floor close never queues at all (the
+        // verdict rides its Task-ended result), so this catches just the
+        // fallback rows: unmarked closes (older logs, non-solitary close
+        // messages) that the drain settles in memory.
         const queued = archivesOf(ctx, session)
         const belowFloor = belowFloorArchiveKeys(ctx, session, foldFloorFromConfig(config))
-        // Permanent skips (0.37.5) join the fresh measurement: a row the
-        // session's ledger already judged below the floor never folds —
-        // even after an edit lowered the bound below its span — so it must
-        // not be counted as folding either. Intersected with the queued
-        // rows so ledger leftovers (a row that left the projection through
-        // replay) never skew the count.
-        const queuedKeys = new Set(queued.map((p) => pendingArchiveKey(p)))
-        for (const skipKey of drain.permanentSkips(session)) {
-          if (queuedKeys.has(skipKey)) belowFloor.add(skipKey)
-        }
         lines.push(taskStackLine(marks, queued, pendingOf(ctx, session), belowFloor.size))
       }
       return lines

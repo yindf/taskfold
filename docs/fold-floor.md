@@ -76,11 +76,17 @@ sample suggests. A conservative deployment can use 3000; anything above
 ## Revisiting the number
 
 The floor is live-editable on the Plugins page and applies to every span
-not yet judged: the very next step boundary folds (or settles) under the
-new floor. A below-floor settle is **permanent** (recorded in the session's
-`floor-skips.jsonl`): lowering the floor later does NOT reopen settled
-spans, because retro-folding them would rewrite the surface and invalidate
-the provider prefix cache behind it — a cost no small fold can repay. If
-the summary template shrinks (smaller `f`) or pricing moves (`r`), re-derive
-from the formula above — the constant lives in `DEFAULT_MIN_SPAN_TOKENS`
-(`plugins/fold-settings.mjs`).
+not yet judged: the very next close (or, for the fallback path, the next
+step boundary) folds — or skips — under the new floor. Since 0.37.6 the
+verdict is made **at close time and recorded in the `Task ended` result
+itself** (the marker phrase the reducer keys on): a below-floor span never
+enters the archival queue, so the skip is permanent by construction —
+there is no reopen path to disable, because retro-folding settled spans
+would rewrite the surface and invalidate the provider prefix cache behind
+it, a cost no small fold can repay. Non-solitary closes (the end-carrying
+message also calls other tools, whose results have not landed when
+`task_end` executes) fall back to drain-time measurement: an in-memory
+settle that is re-derived after a restart under the then-current floor.
+If the summary template shrinks (smaller `f`) or pricing moves (`r`),
+re-derive from the formula above — the constant lives in
+`DEFAULT_MIN_SPAN_TOKENS` (`plugins/fold-settings.mjs`).

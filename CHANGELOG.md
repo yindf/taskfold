@@ -3,6 +3,38 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.37.6 — the below-floor verdict moves into the Task-ended result ("plan A") (unreleased draft 2026-09-30)
+
+The 0.37.5 sidecar ledger is gone. The plugin owns task_begin/task_end
+(compact-region registers both tools and renders their results), so the
+verdict is now made AT CLOSE TIME and recorded IN BAND: a solitary task_end
+(no partner tool calls in the carrying message — partner results have not
+landed yet and their unbounded size would make the estimate lie in the skip
+direction) measures the span right there (`spanEstimateAtClose` mirrors
+deferredArchivePlan's start walk; the surface tail is the end) via the same
+CJK-aware estimator, and a below-floor close renders the marker phrase
+"Closed below the fold floor" into the `Task ended` result. The reducer
+keys on that marker: the mark pops and the row is NEVER queued into
+pendingArchives — the verdict lives in the event log itself, permanent by
+construction, so there is no ledger to read, no reopen path to disable, and
+nothing for the dock to prune (below-floor closes never reach it; the
+"closed below floor" lifecycle counter likewise no longer sees them).
+Non-solitary closes and pre-0.37.6 rows fall back to the drain's in-memory
+below-floor settle (kept, with the prune view and the settle-aware apply
+push) — that fallback re-derives after a restart under the then-current
+floor, the documented 0.37.4 semantics. This also fixes a small lie the
+below-floor close used to tell the model: its result claimed "Archival
+queued — the span folds automatically" for a span that never folds; the
+below-floor result now says so and drops the report-gate instructions.
+Rationale: the session log is the single durable record; a verdict written
+into it needs no second store, and the only writer allowed to touch it —
+the plugin's own tool result — is exactly where the verdict is born.
+
+  - close-time fold-floor verdict recorded in the Task-ended result (BELOW_FLOOR_MARKER; reducer never queues marked closes)
+  - delete the floor-skips.jsonl ledger and permanentSkips (the log is the record)
+  - task_end result for below-floor closes stops promising an archival that never happens
+  - fallback path (non-solitary closes, old logs) keeps the drain's in-memory settle + dock prune
+
 ## 0.37.5 — below-floor skips are permanent: persisted per session, never reopened (2026-09-30)
 
 First-principles correction, from live use: the plugin exists to keep context
