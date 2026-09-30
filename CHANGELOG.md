@@ -3,7 +3,7 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
-## 0.37.5 — below-floor skips are permanent: persisted per session, never reopened (unreleased draft 2026-09-30)
+## 0.37.5 — below-floor skips are permanent: persisted per session, never reopened (2026-09-30)
 
 First-principles correction, from live use: the plugin exists to keep context
 CHEAP, and retroactively folding spans a later, lower floor would admit
