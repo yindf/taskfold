@@ -1,6 +1,6 @@
 {
   "name": "dsh-taskfold-client",
-  "version": "0.37.3",
+  "version": "0.37.4",
   "private": true,
   "type": "module",
   "description": "Browser half of dsh-taskfold (task-stack dock + Plugins-page settings card). Nested package so the client bundle has exactly one owning Loader row; not published.",

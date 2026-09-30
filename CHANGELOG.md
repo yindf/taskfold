@@ -3,7 +3,7 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
-## 0.37.4 — below-floor settles vanish from the dock, and the prune now ships without waiting for the next task mark (unreleased draft 2026-10-01)
+## 0.37.4 — below-floor settles vanish from the dock, and the prune now ships without waiting for the next task mark (2026-09-30)
 
 Follow-up to 0.37.3, driven by live use: the terminal 'closed · below fold
 floor' chip answered the honesty question but not the noise one — small
