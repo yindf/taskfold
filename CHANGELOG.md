@@ -1,7 +1,30 @@
 # Changelog
 
-All notable changes to this project are documented per commit series; versions
-here follow the preset/plugin generations (not npm releases yet).
+All notable changes to this project are documented per commit series. Since
+0.37.6 every release also ships to npm (`latest`) — before that, the npm copy
+lagged behind the channel branches on purpose.
+
+## 0.37.7 — release flow publishes to npm via NPM_TOKEN (unreleased draft 2026-09-30)
+
+npm rejoins the release pipeline: `node scripts/release.mjs release` (and its
+PENDING resume) now publishes the version to npm whenever the `NPM_TOKEN`
+environment variable is set. npm itself reads no token from the environment
+(`NODE_AUTH_TOKEN` is only honored through .npmrc templating), so the step
+writes a project-level `.npmrc` carrying the token, publishes with
+`--access public`, and removes the file in a finally; a pre-existing project
+.npmrc aborts the step rather than clobber it. The token must be
+**automation-type**: accounts with 2FA reject publish-time OTPs for granular
+tokens (verified live this cycle — EOTP on the granular token, first-try
+publish on the automation one). Idempotent: `npm view <pkg>@<version>` runs
+first and a version already on the registry is a no-op, so resumed and
+hand-rerun releases are safe. The npm step never fails the release — the tag,
+commit, and GitHub Release are durable before it runs; failures print a
+manual `npm publish` hint instead. npm caught up to 0.37.6 by hand this
+cycle; from the next release the pipeline owns it.
+
+  - release (and PENDING resume) gains the opt-in npm publish step (NPM_TOKEN)
+  - pure helpers `npmrcAuthLine` + `manualNpmHint` covered by offline tests
+  - README maintainers sections (en/zh) and the release-flow header comment document the step
 
 ## 0.37.6 — the below-floor verdict moves into the Task-ended result ("plan A") (2026-09-30)
 

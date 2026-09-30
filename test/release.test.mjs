@@ -15,6 +15,8 @@ import {
   ghReleaseArgs,
   manualAssetHint,
   ghCandidates,
+  npmrcAuthLine,
+  manualNpmHint,
 } from '../scripts/release.mjs'
 
 // ── cmpSemver ─────────────────────────────────────────────────────────────
@@ -200,4 +202,18 @@ test('ghCandidates: PATH first, then the platform install locations', () => {
   assert.ok(mac.includes('/opt/homebrew/bin/gh'))
   const linux = ghCandidates('linux', {})
   assert.ok(linux.includes('/usr/bin/gh'))
+})
+
+// ── npm step helpers ──────────────────────────────────────────────────────
+
+test('npmrcAuthLine: one registry auth line with trailing newline, token verbatim', () => {
+  assert.equal(npmrcAuthLine('npm_abc123'), '//registry.npmjs.org/:_authToken=npm_abc123\n')
+  assert.equal(npmrcAuthLine('npm_x+y/z='), '//registry.npmjs.org/:_authToken=npm_x+y/z=\n')
+})
+
+test('manualNpmHint: names the version, the manual command, and the automation-token caveat', () => {
+  const hint = manualNpmHint('0.37.7', 'NPM_TOKEN expired')
+  assert.ok(hint.includes('0.37.7'))
+  assert.ok(hint.includes('npm publish --access public'))
+  assert.ok(hint.includes('Automation-type token'))
 })

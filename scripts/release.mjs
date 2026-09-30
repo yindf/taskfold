@@ -16,6 +16,12 @@
 // a prebuilt `dsh-taskfold-<version>.tgz` attached; `assets` re-runs just that
 // step for an already-released version (and repairs releases shipped without it).
 //
+// When the NPM_TOKEN environment variable is set, `release` (and its PENDING
+// resume) additionally publishes the version to npm — an automation-type
+// token, because 2FA accounts reject publish-time OTPs for granular tokens.
+// The npm step is idempotent (a version already on the registry is a no-op)
+// and never fails the release: everything git-side is durable before it runs.
+//
 // Version numbers are strict `X.Y.Z` numerics; prerelease/build metadata are
 // rejected. The only source of truth for the NEXT version is the CHANGELOG
 // top entry; package.json is synced by this script, never by hand.
@@ -333,6 +339,27 @@ export function manualAssetHint(version, tarballName) {
 }
 
 /**
+ * The project-level .npmrc body that injects the auth token for exactly this
+ * one publish, without touching the user's global config. npm itself reads no
+ * token from the environment (NODE_AUTH_TOKEN is only honored through .npmrc
+ * templating), so publishToNpm writes this file, publishes, and removes it
+ * again in a finally.
+ */
+export function npmrcAuthLine(token) {
+  return '//registry.npmjs.org/:_authToken=' + token + '\n'
+}
+
+/** What to print when the npm publish could not run or failed. */
+export function manualNpmHint(version, detail) {
+  return [
+    'npm publish did NOT happen (' + detail + '). Everything git-side is already durable.',
+    'Publish by hand from this checkout (package.json is already v' + version + '):',
+    '  npm publish --access public',
+    'Note: an account with 2FA needs an Automation-type token (granular tokens are rejected at publish time).',
+  ].join('\n')
+}
+
+/**
  * Where to look for the GitHub CLI: PATH first, then the usual install
  * locations — a script launched by the host does not always inherit the
  * interactive shell's PATH.
@@ -413,6 +440,45 @@ export function publishReleaseAssets(version) {
     return true
   } finally {
     try { rmSync(dir, { recursive: true, force: true }) } catch (err) {}
+  }
+}
+
+/**
+ * Publish the freshly released version to npm. Opt-in: runs only when
+ * NPM_TOKEN carries an automation-type token (2FA accounts reject
+ * publish-time OTPs for granular tokens). Idempotent: a version already on
+ * the registry is a no-op, so PENDING resumes and hand reruns are safe.
+ * Failures never fail the release — the tag, commit, and GitHub Release are
+ * durable before this runs; the npm copy can always be published by hand.
+ */
+function publishToNpm(version) {
+  const token = process.env.NPM_TOKEN
+  if (typeof token !== 'string' || token.length === 0) {
+    console.log('npm publish skipped: NPM_TOKEN is not set (set it to publish to npm automatically).')
+    return
+  }
+  const pkgName = JSON.parse(readFileSync(pkgPath, 'utf8')).name
+  const live = npmSpawn(['view', pkgName + '@' + version, 'version'])
+  if (live.status === 0 && (live.stdout || '').trim() === version) {
+    console.log('npm: ' + pkgName + '@' + version + ' is already on the registry — nothing to publish.')
+    return
+  }
+  const npmrc = path.join(repoRoot, '.npmrc')
+  if (existsSync(npmrc)) {
+    console.log(manualNpmHint(version, 'a project .npmrc already exists — refusing to overwrite it'))
+    return
+  }
+  try {
+    writeFileSync(npmrc, npmrcAuthLine(token))
+    const pub = npmSpawn(['publish', '--access', 'public'])
+    if (pub.status !== 0) {
+      const first = String(pub.stderr || pub.stdout || '').trim().split(/\r?\n/)[0]
+      console.log(manualNpmHint(version, '`npm publish` failed: ' + first))
+      return
+    }
+    console.log('npm: ' + pkgName + '@' + version + ' published.')
+  } finally {
+    try { unlinkSync(npmrc) } catch (err) { /* already gone */ }
   }
 }
 
@@ -525,6 +591,7 @@ function cmdRelease() {
     pushRelease(st.version)
     console.log('Release v' + st.version + ' fully pushed.')
     publishReleaseAssets(st.version)
+    publishToNpm(st.version)
     return
   }
   if (st.state !== 'DRAFT') {
@@ -569,6 +636,7 @@ function cmdRelease() {
   pushRelease(version)
   console.log('Release v' + version + ' fully pushed.')
   publishReleaseAssets(version)
+  publishToNpm(version)
 }
 
 // The remote branch release pushes must reconcile against: HEAD's upstream
@@ -670,6 +738,7 @@ function main() {
   else if (cmd === 'status') cmdStatus()
   else {
     console.error('usage: node scripts/release.mjs draft [--version X.Y.Z] [--force] | release | assets [--version X.Y.Z] | status')
+    console.error('  release also publishes to npm when NPM_TOKEN is set (automation-type token).')
     process.exit(1)
   }
 }
