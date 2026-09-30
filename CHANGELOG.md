@@ -3,7 +3,7 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
-## 0.37.2 — dsh 0.2.0-rc.2: re-verified, no plugin change (unreleased draft 2026-09-30)
+## 0.37.2 — dsh 0.2.0-rc.2: re-verified, no plugin change (2026-09-30)
 
 A same-minor lockstep bump: the whole dsh monorepo moved 0.2.0-rc.1 →
 0.2.0-rc.2 with the package set unchanged (no additions, no removals), so this
