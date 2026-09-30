@@ -4,6 +4,46 @@ All notable changes to this project are documented per commit series. Since
 0.37.6 every release also ships to npm (`latest`) — before that, the npm copy
 lagged behind the channel branches on purpose.
 
+## 0.38.0 — the release flow gains an npm repair command (2026-09-30)
+
+0.37.7 reached git, GitHub and npm only because its npm copy was published by
+hand. `release` runs the npm step while it still is `release` or a PENDING
+resume, and once the tag, the commit and the GitHub Release are pushed the state
+is CLEAN — so a release whose npm step was skipped (no token visible to the
+script at the time) or whose upload failed has no retry entry point at all.
+`node scripts/release.mjs npm [--version X.Y.Z]` is that entry point: it does
+nothing but publish to npm. It is idempotent through the existing registry probe
+(a version already there prints `nothing to publish` and exits 0), and unlike
+`release` — which must never let a failed upload look like a failed release —
+it exits 1 whenever it did not publish, because publishing is the whole point of
+running it.
+
+Its guards all follow from one fact: `npm publish` ships the WORKING TREE, never
+a tag. The target is `--version`, or else the CHANGELOG's top entry, which must
+be a released one (a draft is not a version the registry can already hold, so a
+draft top demands an explicit `--version`). It then refuses unless package.json's
+version, a local `v<version>` tag, a clean tree — untracked files included,
+since anything inside the `files` allowlist would be packed — and a tree
+identical to that tag all say this checkout really is that release.
+`assertClientBundleFresh()` runs before the publish, so a stale browser bundle
+cannot go out either. The tag-identity guard is the one worth having: without
+it, repairing a version npm missed from a branch that has moved on since would
+put unreleased files on the registry under a released version number.
+
+The token lookup gained a second source. `NPM_TOKEN` is still read from the
+process environment, and on Windows now falls back to the user-level variable
+(`reg query HKCU\Environment /v NPM_TOKEN`), because a host-launched shell
+snapshots its environment at start-up: a token set after that is invisible to
+the child while plainly set for the user — precisely what happened to 0.37.7,
+whose npm step reported "no token" in a process that could see none.
+
+  - `scripts/release.mjs`: new `npm [--version X.Y.Z]` subcommand — target version, the four guards, `assertClientBundleFresh()`, exit 1 on every outcome but `published`/`already`
+  - `publishToNpm` returns `'published' | 'already' | 'no-token' | 'refused' | 'failed'`; `release` still ignores it (npm must never fail a durable release), `npm` does not
+  - token fallback to the Windows user-level variable (`parseRegQueryToken`: `REG_SZ` and `REG_EXPAND_SZ`), so a stale shell environment no longer hides a token that exists
+  - new pure exports with tests: `resolveNpmVersion` (`--version` wins; a draft top demands it), `checkNpmTarget` (guard order: version → tag → dirty tree → tree differs from the tag), `parseRegQueryToken`; `test/release.test.mjs` is now 25 tests, `npm test` 14 suites / 0 failures
+  - verified on a clone checked out at the v0.37.7 tag with this script committed and the tag moved onto it: `release.mjs npm` hit the idempotent branch (`already on the registry — nothing to publish.`, exit 0) and the token fallback found the user-level variable; a clean tree carrying one commit the release does not was refused (exit 1) with the `git switch --detach v0.37.7` hint
+  - README (en/zh) release notes and `docs/design/release-flow.md` (`### npm`, the CLI contract, and the 2025-06 "no npm publish" decision marked retired) document the repair path
+
 ## 0.37.7 — the Plugins page drops to two named rows, and the release flow publishes to npm (2026-09-30)
 
 The bundle patch declared THREE Loader rows, so the Plugins page listed three
