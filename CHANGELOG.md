@@ -3,7 +3,7 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
-## 0.37.3 — below-floor settles stop masquerading as 'folding…' (unreleased draft 2026-10-01)
+## 0.37.3 — below-floor settles stop masquerading as 'folding…' (2026-09-30)
 
 Live regression from the 0.37.0 fold floor: a task closed below
 `minSpanTokens` (observed at 616 estimated tokens against the 2000 default)
