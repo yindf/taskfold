@@ -106,18 +106,22 @@ try {
 } catch (err) { Config = undefined }
 
 /**
- * Wire-view factory for the taskMarks projection: returns the state as-is
- * (reference-stable — the change feed's Object.is gate must not fire on
- * unrelated commits) unless one or more pendingArchives rows carry the
- * below-floor verdict in the drain-shared registry, in which case it returns
- * a shallow copy with those rows flagged `belowFloor: true` (the hand
- * validator passes extra keys through untouched). Memoized on the state
+ * Wire-view factory for the taskMarks projection: below-floor settles are
+ * PRUNED, not labeled. A span the drain settled under the fold floor will
+ * never fold — its close is final and its chip carries nothing worth a
+ * dock row — so the view drops those pendingArchives rows from the wire
+ * value entirely. The RAW projection state keeps them (the drain re-settles
+ * them after every restart; archivesOf reads the state, not this view).
+ * Reference-stable — the change feed's Object.is gate must not fire on
+ * unrelated commits — unless at least one row is pruned, in which case it
+ * returns a shallow copy with those rows removed. Memoized on the state
  * reference AND the registry version, so a settle that lands between commits
- * (no new state object) still re-annotates on the next view computation.
+ * (no new state object) still re-prunes on the next view computation — which
+ * the settle-aware apply wrapper below guarantees happens.
  * Restart semantics: the registry is empty until the drain's first pass
- * re-settles the small rows — one boundary of legacy labeling at worst.
+ * re-settles the small rows — one boundary of 'folding…' display at worst.
  */
-function annotateBelowFloorView(belowFloorKeys) {
+export function pruneBelowFloorView(belowFloorKeys) {
   let lastState = undefined
   let lastVersion = -1
   let lastOut = undefined
@@ -126,18 +130,35 @@ function annotateBelowFloorView(belowFloorKeys) {
     const archives = Array.isArray(state.pendingArchives) ? state.pendingArchives : null
     if (archives === null || archives.length === 0 || belowFloorKeys.size === 0) return state
     if (state === lastState && belowFloorKeys.version === lastVersion) return lastOut
-    let touched = false
-    const pendingArchives = archives.map((a) => {
-      if (a !== null && typeof a === 'object' && belowFloorKeys.has(pendingArchiveKey(a))) {
-        touched = true
-        return { ...a, belowFloor: true }
-      }
-      return a
-    })
+    const kept = archives.filter((a) => !(a !== null && typeof a === 'object' && belowFloorKeys.has(pendingArchiveKey(a))))
     lastState = state
     lastVersion = belowFloorKeys.version
-    lastOut = touched ? { ...state, pendingArchives } : state
+    lastOut = kept.length === archives.length ? state : { ...state, pendingArchives: kept }
     return lastOut
+  }
+}
+
+/**
+ * Settle-aware apply wrapper for the taskMarks projection. The projection
+ * registry re-runs a wire view (and pushes the result to clients) only when
+ * apply produced a NEW state reference — a below-floor settle mutates
+ * nothing in the event log, so without help the pruned view would sit
+ * unpushed until the next task-mark event. The wrapper watches the drain's
+ * registry `version` (bumped on every settle and reopen) and returns a
+ * content-identical shallow copy on the FIRST event after a bump: exactly
+ * one extra state-reference move per mutation, which re-runs the view and
+ * ships the pruned (or, on reopen, restored) row. Replay-safe — the clone
+ * changes object identity only, never derived content.
+ */
+export function makeSettleAwareApply(belowFloorKeys) {
+  let seen = belowFloorKeys.version
+  return (state, event) => {
+    const next = applyTaskMarks(state, event)
+    if (belowFloorKeys.version !== seen) {
+      seen = belowFloorKeys.version
+      if (next !== null && typeof next === 'object') return { ...next }
+    }
+    return next
   }
 }
 
@@ -216,21 +237,24 @@ export default {
     // wire view below (reads): rows the drain settled below the fold floor
     // are terminal — they never fold, so the projection keeps them listed
     // in pendingArchives forever (no compaction event ever shadows their
-    // close result) and every consumer would misreport them as perpetually
-    // 'folding…'. The view annotates exactly those rows with belowFloor.
-    // `version` is bumped by the drain on every mutation, so the view's
-    // memo knows when to recompute despite the state reference not moving.
+    // close result) and the dock would misreport them as perpetually
+    // 'folding…'. The view PRUNES exactly those rows from the wire value
+    // (the raw state keeps them — the drain re-settles them after every
+    // restart). `version` is bumped by the drain on every mutation; the
+    // settle-aware apply wrapper below turns that bump into a state-reference
+    // move so the pruned view is recomputed and pushed without waiting for
+    // the next task-mark event.
     const belowFloorKeys = new Set()
     belowFloorKeys.version = 0
     ctx.sessionProjections.register({
       key: TASK_MARKS_KEY,
       stateSchema: taskMarksStateSchema,
       init: () => null,
-      apply: applyTaskMarks,
+      apply: makeSettleAwareApply(belowFloorKeys),
       stateVersion: 11,
       wire: {
         viewSchema: taskMarksStateSchema,
-        view: annotateBelowFloorView(belowFloorKeys)
+        view: pruneBelowFloorView(belowFloorKeys)
       }
     })
 

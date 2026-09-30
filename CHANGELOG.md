@@ -3,6 +3,40 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
+## 0.37.4 — below-floor settles vanish from the dock, and the prune now ships without waiting for the next task mark (unreleased draft 2026-10-01)
+
+Follow-up to 0.37.3, driven by live use: the terminal 'closed · below fold
+floor' chip answered the honesty question but not the noise one — small
+tasks kept a permanent dock row and a permanent '{n} closed below floor'
+counter the user has no use for, and the labeled state itself only reached
+the client when a task-mark event happened to push it (a settle changes
+nothing in the event log, and the projection registry re-runs a wire view
+only when apply produced a NEW state reference — so the chip could lag a
+whole conversation). Two changes:
+
+- The wire view now PRUNES settled below-floor rows from the wire value
+  instead of flagging them: a span that will never fold has nothing worth a
+  dock row. The raw projection state keeps the rows (the drain re-settles
+  them after every restart; `archivesOf` reads the state, not the view), and
+  the dock drops the belowFloor field, suffix label, and separate counter —
+  closing rows are plain 'folding…' again, counted only as folding.
+- `makeSettleAwareApply` wraps the taskMarks reducer: on the first event
+  after the drain's settle registry mutates (settle or reopen bumps its
+  version), the wrapper returns a content-identical shallow copy — exactly
+  one extra state-reference move per mutation, which re-runs the pruned view
+  and pushes it. A below-floor task now disappears from the dock at the
+  next event after its settle, with no task-mark activity required; a
+  floor-lowering reopen restores the row the same way. Replay-safe: the
+  clone changes object identity only, never derived content.
+
+Restart window unchanged (one boundary): the registry is in-memory, so
+after a restart settled rows re-appear as 'folding…' until the drain's
+first pass re-settles them and the next event ships the prune.
+
+  - dock: below-floor rows/labels/counters removed (0.37.3 display work superseded)
+  - host: pruneBelowFloorView replaces annotateBelowFloorView; makeSettleAwareApply wired as the projection's apply
+  - tests: below-floor-view suite (prune/memo/reopen, wrapper clone-per-bump, null-state safety); task-stack-ui expectations updated
+
 ## 0.37.3 — below-floor settles stop masquerading as 'folding…' (2026-09-30)
 
 Live regression from the 0.37.0 fold floor: a task closed below

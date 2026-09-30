@@ -606,10 +606,11 @@ test('a malformed settings object normalizes to the default floor, not to fold-e
 })
 
 test('a below-floor settle registers (and a reopen withdraws) its display key', async () => {
-  // The dock's honest 'closed · below fold floor' chip rides on the
-  // drain-shared registry: the settle must publish the row's composite key,
-  // and a floor-lowering reopen must withdraw it — otherwise the chip lies
-  // in both directions ('folding…' forever, or below-floor while folding).
+  // The dock never shows settled below-floor rows: the host-side wire view
+  // prunes exactly the rows whose composite key sits in the drain-shared
+  // registry. The settle must publish the row's key, and a floor-lowering
+  // reopen must withdraw it — otherwise the dock lies in both directions
+  // ('folding…' forever, or a vanished row while it is queued to fold).
   let configured = 100000
   const h = harness([
     assistantCall(10, [{ id: 'a1', name: 'task_begin' }]),

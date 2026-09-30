@@ -43,8 +43,10 @@ window.__ModuleLoader__.load({
  *   count,                                    // open.length
  *   innermost,                                // name of the active task or null
  *   pending: { begin, end },                  // lifecycle calls awaiting results
- *   closing: [{ seq, name, belowFloor }],      // closed, fold queued (belowFloor: settled below the fold floor — terminal, never folds)
- *   belowFloorCount,                           // closing rows flagged belowFloor
+ *   closing: [{ seq, name }],                 // closed, fold queued (below-floor
+ *                                              // settles are pruned by the host-side
+ *                                              // wire view before the state reaches
+ *                                              // the client, so they never show here)
  *   empty,                                    // count === 0
  *   visible                                   // anything worth rendering at all
  * }
@@ -74,13 +76,10 @@ function taskStackView(state) {
     }
   }
   const closing = []
-  let belowFloorCount = 0
   if (base !== null && Array.isArray(base.pendingArchives)) {
     for (const a of base.pendingArchives) {
       if (a !== null && typeof a === 'object' && typeof a.name === 'string') {
-        const belowFloor = a.belowFloor === true
-        if (belowFloor) belowFloorCount += 1
-        closing.push({ seq: Number.isInteger(a.seq) ? a.seq : 0, name: a.name, belowFloor })
+        closing.push({ seq: Number.isInteger(a.seq) ? a.seq : 0, name: a.name })
       }
     }
   }
@@ -91,7 +90,6 @@ function taskStackView(state) {
     innermost: open.length > 0 ? open[open.length - 1].name : null,
     pending,
     closing,
-    belowFloorCount,
     empty: open.length === 0,
     visible: open.length > 0 || closing.length > 0 || pendingCount > 0
   }
@@ -119,14 +117,12 @@ const taskStackEn = {
   title: 'tasks',
   openCount: '{n} open',
   foldingCount: '{n} folding',
-  belowFloorCount: '{n} closed below floor',
   pendingCount: '{n} pending',
   openingTask: 'opening a task…',
   closingTask: 'closing a task…',
   opening: 'opening…',
   closing: 'closing…',
-  folding: 'folding…',
-  belowFloor: 'closed · below fold floor'
+  folding: 'folding…'
 }
 
 /** Simplified Chinese copy. */
@@ -134,14 +130,12 @@ const taskStackZh = {
   title: '任务',
   openCount: '{n} 个进行中',
   foldingCount: '{n} 个折叠中',
-  belowFloorCount: '{n} 个已关闭（低于下限）',
   pendingCount: '{n} 个待处理',
   openingTask: '正在打开任务…',
   closingTask: '正在关闭任务…',
   opening: '打开中…',
   closing: '关闭中…',
-  folding: '折叠中…',
-  belowFloor: '已关闭 · 低于折叠下限'
+  folding: '折叠中…'
 }
 
 /** English fallback reader for deployments without the locale service. */
@@ -179,9 +173,7 @@ function tailSummary(model, t) {
   const read = readerOf(t)
   const m = asModel(model)
   const parts = []
-  const folding = m.closing.length - m.belowFloorCount
-  if (folding > 0) parts.push(fillCount(read('foldingCount'), folding))
-  if (m.belowFloorCount > 0) parts.push(fillCount(read('belowFloorCount'), m.belowFloorCount))
+  if (m.closing.length > 0) parts.push(fillCount(read('foldingCount'), m.closing.length))
   const pending = m.pending.begin + m.pending.end
   if (pending > 0) parts.push(fillCount(read('pendingCount'), pending))
   return parts.join(' · ')
@@ -370,14 +362,10 @@ function makeTaskStack(react) {
       h('span', { className: 'tf_name' + (task.innermost ? ' tf_nameActive' : '') }, task.name)))
     }
     for (const c of m.closing) {
-      // A below-floor row is terminal: closed, never folding. It keeps its
-      // chip (the closure is worth showing) but with the honest suffix and
-      // a neutral rail — 'folding…' with the warn colour would claim an
-      // in-flight summarization call that will never be billed.
       rows.push(h('li', { key: 'c' + c.seq + ':' + c.name, className: 'tf_item' },
-        railCell(h, 1, c.belowFloor ? undefined : 'closing', 'rail'),
+        railCell(h, 1, 'closing', 'rail'),
         h('span', { className: 'tf_name' }, c.name),
-        h('span', { className: 'tf_suffix' }, read(c.belowFloor ? 'belowFloor' : 'folding'))))
+        h('span', { className: 'tf_suffix' }, read('folding'))))
     }
     if (m.pending.begin + m.pending.end > 0) rows.push(pendingRow(h, m, read))
     return h('div', { className: 'tf_root' },
