@@ -3,7 +3,7 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
-## 0.37.1 — dsh 0.2.0-rc.1: peer floor bump, verified (unreleased draft 2026-09-29)
+## 0.37.1 — dsh 0.2.0-rc.1: peer floor bump, verified (2026-09-30)
 
 The dsh monorepo jumped 0.1.7-rc.2 → 0.2.0-rc.1 in lockstep (no package
 removals; five new telemetry/log packages). The compatibility gate rejects the
