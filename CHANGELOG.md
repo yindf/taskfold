@@ -3,7 +3,7 @@
 All notable changes to this project are documented per commit series; versions
 here follow the preset/plugin generations (not npm releases yet).
 
-## 0.37.6 — the below-floor verdict moves into the Task-ended result ("plan A") (unreleased draft 2026-09-30)
+## 0.37.6 — the below-floor verdict moves into the Task-ended result ("plan A") (2026-09-30)
 
 The 0.37.5 sidecar ledger is gone. The plugin owns task_begin/task_end
 (compact-region registers both tools and renders their results), so the
