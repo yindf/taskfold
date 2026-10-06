@@ -91,7 +91,17 @@ test('each Plugins-page row mounts a specifier its own subsystem reads', () => {
    * bare package name), and a path-like name gets no plugin metadata at all —
    * the Plugins page would print the resolved file:/// URL as the row title. */
   assert.equal(pkg.exports['./client'], undefined, 'the client row must never mount a subpath of the root package')
-  assert.equal(pkg.dependencies?.['dsh-taskfold-client'], 'file:./client', 'the component name must be declared: dsh-app-boot publishes a bundle\'s resolvable dependencies as profile-scope resolution entries')
+  /* The declaration must be a REGISTRY version range. 0.38.0 shipped
+   * `file:./client`, which pnpm resolves against the CONSUMER's workspace root
+   * (`ERR_PNPM_LINKED_PKG_DIR_NOT_FOUND`, the path looked for one level above
+   * the profile), so every install failed. `link:`/`workspace:` fail differently
+   * but just as fatally — only a published client package is installable. The
+   * release guard (assertClientDependencyResolvable) enforces the full shape;
+   * this pins it where the bundle contract is already read. */
+  const spec = pkg.dependencies?.['dsh-taskfold-client']
+  assert.equal(typeof spec, 'string', 'the component name must be declared: dsh-app-boot publishes a bundle\'s resolvable dependencies as profile-scope resolution entries')
+  assert.doesNotMatch(spec, /^[a-z]+:/, 'the shape of the dependency is THE bug class of 0.38.0: a path specifier resolves against the consumer workspace root and no install can succeed')
+  assert.match(spec, /^[\^~]?\d+\.\d+\.\d+$/, 'the client must be declared as a registry version range')
   /* The host row subpath IS covered by the ./plugins/* wildcard, so the only
    * thing keeping its description empty is the absence of that manifest. */
   assert.equal(existsSync(join(root, 'plugins', 'package.json')), false, 'a manifest under plugins/ would hand readPluginMeta a description fallback')
@@ -218,7 +228,14 @@ test('nested client package owns the browser half; root declares no client', () 
   assert.ok(clientPkg.dsh?.client?.platform === 'web', 'client package dsh.client.platform must be web')
   const rootPkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
   assert.equal(rootPkg.dsh?.client, undefined, 'root package must NOT declare dsh.client (two mounted rows would collide)')
-  assert.equal(rootPkg.dependencies?.['dsh-taskfold-client'], 'file:./client', 'the client package is a declared component, not just a nested directory')
+  /* Declared as a resolvable registry component, never as a path: the nested
+   * directory ships inside this package, but a consumer resolves the row's bare
+   * name through its own node_modules — and pnpm resolves a path specifier
+   * against that consumer's workspace root, not against this package. */
+  const clientSpec = rootPkg.dependencies?.['dsh-taskfold-client']
+  assert.equal(typeof clientSpec, 'string', 'the client package is a declared component, not just a nested directory')
+  assert.doesNotMatch(clientSpec, /^[a-z]+:/, 'a path specifier (file:/link:/workspace:) cannot be installed by a consumer')
+  assert.match(clientSpec, /^[\^~]?\d+\.\d+\.\d+$/, 'the declared component must be a published registry version')
   const patch = readFileSync(join(root, 'cordis.patch.yml'), 'utf8')
   assert.match(patch, /id: taskfold-client/)
   assert.match(patch, /name: 'dsh-taskfold\/plugins'/, 'the host row mounts a package subpath (a relative name renders as a file:/// title)')

@@ -167,7 +167,8 @@ export function classifyState({ top, packageVersion, tagVersion, dirty, remoteHa
 // external tool degrades the same way.
 function spawnCaptured(file, args, opts) {
   const useShell = !!(opts && opts.shell)
-  const r = spawnSync(file, args, { cwd: repoRoot, encoding: 'utf8', shell: useShell })
+  const cwd = (opts && opts.cwd) || repoRoot
+  const r = spawnSync(file, args, { cwd, encoding: 'utf8', shell: useShell })
   // Discovery probes opt out: re-running a missing tool through the fallback
   // below cannot fix an ENOENT, it only hides it.
   if (opts && opts.probe) return r
@@ -176,7 +177,7 @@ function spawnCaptured(file, args, opts) {
     let fd
     try {
       fd = openSync(tmp, 'w')
-      const s = spawnSync(file, args, { cwd: repoRoot, stdio: ['ignore', fd, 'ignore'], shell: useShell })
+      const s = spawnSync(file, args, { cwd, stdio: ['ignore', fd, 'ignore'], shell: useShell })
       closeSync(fd); fd = undefined
       const stdout = readFileSync(tmp, 'utf8')
       return { status: s.status, stdout, stderr: '' }
@@ -409,11 +410,12 @@ function resolveGh() {
  * we run npm's own CLI through the current node binary instead: no shell, no
  * argument escaping, no deprecation warning. POSIX spawns `npm` directly.
  */
-function npmSpawn(args) {
-  if (process.platform !== 'win32') return spawnCaptured('npm', args, { okNonZero: true })
+function npmSpawn(args, cwd) {
+  const opts = { okNonZero: true, cwd }
+  if (process.platform !== 'win32') return spawnCaptured('npm', args, opts)
   const cli = path.join(path.dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js')
-  if (existsSync(cli)) return spawnCaptured(process.execPath, [cli, ...args], { okNonZero: true })
-  return spawnCaptured('npm.cmd', args, { okNonZero: true, shell: true })
+  if (existsSync(cli)) return spawnCaptured(process.execPath, [cli, ...args], opts)
+  return spawnCaptured('npm.cmd', args, { ...opts, shell: true })
 }
 
 function warnAssets(version, tarballName, detail) {
@@ -530,44 +532,170 @@ export function checkNpmTarget({ version, packageVersion, hasTag, treeMatches, d
 }
 
 /**
+ * True when one strict `X.Y.Z` range covers `version`. Only the three shapes
+ * this repo actually declares are accepted (`^X.Y.Z`, `~X.Y.Z`, `X.Y.Z`);
+ * anything else is not a range this guard can vouch for, so it returns false
+ * and the caller reports the dependency as unsatisfiable.
+ */
+function rangeIncludes(range, version) {
+  const base = range.replace(/^[\^~]/, '')
+  let parts
+  try {
+    parts = semverParts(base)
+    semverParts(version)
+  } catch (err) {
+    return false
+  }
+  if (range.startsWith('^')) {
+    return parts[0] === 0
+      ? (parts[1] === 0 ? version === base : version.startsWith('0.' + parts[1] + '.'))
+      : version.startsWith(parts[0] + '.')
+  }
+  if (range.startsWith('~')) return version.startsWith(parts[0] + '.' + parts[1] + '.')
+  return version === base
+}
+
+/**
+ * Ship-guard: the browser row in `cordis.patch.yml` is mounted by the BARE
+ * package name `dsh-taskfold-client`, and client-modules only accepts a row
+ * name that is path-like or an exact bare package name. A profile therefore
+ * has to resolve that name through its own node_modules, which makes the
+ * declaration in `dependencies` load-bearing — and makes its FORM the whole
+ * defect class this guard exists for.
+ *
+ * 0.38.0 shipped `"file:./client"` and every install died with
+ * `ERR_PNPM_LINKED_PKG_DIR_NOT_FOUND: Could not install from "<profile>/client"`:
+ * pnpm resolves a path specifier against the CONSUMER workspace root, not
+ * against the package that declares it, so the nested directory is looked for
+ * one level above the profile. `link:` and `workspace:` fail differently
+ * (`workspace:*` is not a member of a consumer's workspace; `link:` installs
+ * without ever creating a resolvable `node_modules/dsh-taskfold-client`). The
+ * only declaration a consumer can install is a registry version range, which
+ * means the client must be a published package of its own.
+ *
+ * Nothing downstream can catch this: unit tests run inside this repo, where the
+ * nested directory is simply there. The failure is only visible from a
+ * consumer's pnpm, and only after the release is on the registry and every user
+ * has hit it. So it is checked here, before either manifest is written.
+ *
+ * @param {string} [root] - repo root to check; defaults to this repo.
+ * @param {string} [intendedClient] - version the release is about to write into
+ *   client/package.json; omitted when checking a tree as it already stands.
+ * @returns {{ spec: string, version: string, name: string }} the validated pair.
+ * @throws when the client could not reach a consumer's node_modules.
+ */
+export function assertClientDependencyResolvable(root = repoRoot, intendedClient = undefined) {
+  const rootManifest = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'))
+  const spec = (rootManifest.dependencies || {})['dsh-taskfold-client']
+  if (typeof spec !== 'string' || spec === '') {
+    throw new Error('ship-guard: package.json declares no "dsh-taskfold-client" dependency — the browser row mounts that package by bare name, so a profile cannot resolve it without this declaration')
+  }
+  if (/^(?:file|link|portal|workspace):/.test(spec)) {
+    throw new Error(
+      'ship-guard: "dsh-taskfold-client" is declared as "' + spec + '" — pnpm resolves a path specifier against the CONSUMER workspace root, not the dependant package, so every install fails with ERR_PNPM_LINKED_PKG_DIR_NOT_FOUND. Declare a registry version range instead (the client is its own published package).'
+    )
+  }
+  if (!/^[\^~]?\d+\.\d+\.\d+$/.test(spec)) {
+    throw new Error('ship-guard: "dsh-taskfold-client" must be a registry version range (^X.Y.Z, ~X.Y.Z or X.Y.Z), not "' + spec + '"')
+  }
+  const clientPath = path.join(root, 'client', 'package.json')
+  if (!existsSync(clientPath)) {
+    throw new Error('ship-guard: client/package.json is missing — the client package is published from this directory')
+  }
+  const client = JSON.parse(readFileSync(clientPath, 'utf8'))
+  if (client.name !== 'dsh-taskfold-client') {
+    throw new Error('ship-guard: client/package.json is named "' + client.name + '", not "dsh-taskfold-client"')
+  }
+  if (client.private === true) {
+    throw new Error('ship-guard: client/package.json is "private": true — npm publish refuses a private package, so the version the root now depends on could never reach the registry')
+  }
+  if (client.dsh === undefined || client.dsh.client === undefined || client.dsh.client.platform !== 'web') {
+    throw new Error('ship-guard: client/package.json does not declare dsh.client.platform === "web" — client-modules would never mount this row')
+  }
+  if (!client.exports || typeof client.exports['./client'] !== 'string') {
+    throw new Error('ship-guard: client/package.json exports no "./client" bundle — client-modules requires the mounted package to export it')
+  }
+  const version = intendedClient !== undefined ? intendedClient : client.version
+  if (typeof version !== 'string' || !/^\d+\.\d+\.\d+$/.test(version)) {
+    throw new Error('ship-guard: client version must be strict X.Y.Z, got ' + String(version))
+  }
+  if (client.version !== version) {
+    throw new Error('ship-guard: client/package.json is v' + client.version + ' but this release is v' + version + ' — the two packages release in lockstep, so both version fields must read ' + version)
+  }
+  if (!rangeIncludes(spec, version)) {
+    throw new Error('ship-guard: the dependency "' + spec + '" does not include the client version ' + version + ' — the registry entry for the required version would be missing')
+  }
+  return { spec, version, name: client.name }
+}
+
+/**
  * Publish `version` to npm. Shared by `release` (opt-in, and its result is
  * deliberately ignored there: everything git-side is durable before this runs,
  * so a missing token or a failed upload must never fail the release) and by the
  * standalone `npm` repair command, which exits non-zero for anything but a
  * publish or an already-present version. Idempotent: a version already on the
  * registry is a no-op, so resumed, re-run and hand-repaired releases are safe.
+ *
+ * TWO packages publish, CLIENT FIRST. The browser half is its own registry
+ * package (`dsh-taskfold-client`) because the root mounts that row by bare
+ * package name: a profile resolves the row through its own node_modules, so a
+ * version range is the only declaration a consumer's pnpm can install. The
+ * order is a correctness rule, not a preference — the root's manifest depends
+ * on the client's version, so a root published first would 404 for every
+ * consumer until the client landed. Each package is probed and published on its
+ * own, so a re-run finishes whichever half is missing. Any status but
+ * 'published'/'already' stops the loop: publishing the root over an unpublished
+ * client is the exact failure this order exists to prevent.
+ *
  * Returns 'published' | 'already' | 'no-token' | 'refused' | 'failed'.
  */
+export function publishOrder(root = repoRoot) {
+  const rootManifest = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'))
+  return [
+    { name: 'dsh-taskfold-client', dir: path.join(root, 'client') },
+    { name: rootManifest.name, dir: root }
+  ]
+}
+
 function publishToNpm(version) {
   const token = resolveNpmToken()
   if (token === undefined) {
     console.log('npm publish skipped: no NPM_TOKEN (checked the process environment and, on Windows, the user-level variable).')
     return 'no-token'
   }
-  const pkgName = JSON.parse(readFileSync(pkgPath, 'utf8')).name
-  const live = npmSpawn(['view', pkgName + '@' + version, 'version'])
-  if (live.status === 0 && (live.stdout || '').trim() === version) {
-    console.log('npm: ' + pkgName + '@' + version + ' is already on the registry — nothing to publish.')
-    return 'already'
-  }
-  const npmrc = path.join(repoRoot, '.npmrc')
-  if (existsSync(npmrc)) {
-    console.log(manualNpmHint(version, 'a project .npmrc already exists — refusing to overwrite it'))
-    return 'refused'
-  }
-  try {
-    writeFileSync(npmrc, npmrcAuthLine(token))
-    const pub = npmSpawn(['publish', '--access', 'public'])
-    if (pub.status !== 0) {
-      const first = String(pub.stderr || pub.stdout || '').trim().split(/\r?\n/)[0]
-      console.log(manualNpmHint(version, '`npm publish` failed: ' + first))
+  let status = 'already'
+  for (const target of publishOrder()) {
+    const pkgPathHere = path.join(target.dir, 'package.json')
+    if (!existsSync(pkgPathHere)) {
+      console.log(manualNpmHint(version, 'package manifest missing for ' + target.name + ': ' + pkgPathHere))
       return 'failed'
     }
-    console.log('npm: ' + pkgName + '@' + version + ' published.')
-    return 'published'
-  } finally {
-    try { unlinkSync(npmrc) } catch (err) { /* already gone */ }
+    const pkgName = JSON.parse(readFileSync(pkgPathHere, 'utf8')).name
+    const live = npmSpawn(['view', pkgName + '@' + version, 'version'])
+    if (live.status === 0 && (live.stdout || '').trim() === version) {
+      console.log('npm: ' + pkgName + '@' + version + ' is already on the registry — nothing to publish.')
+      continue
+    }
+    const npmrc = path.join(target.dir, '.npmrc')
+    if (existsSync(npmrc)) {
+      console.log(manualNpmHint(version, 'a project .npmrc already exists at ' + npmrc + ' — refusing to overwrite it'))
+      return 'refused'
+    }
+    try {
+      writeFileSync(npmrc, npmrcAuthLine(token))
+      const pub = npmSpawn(['publish', '--access', 'public'], target.dir)
+      if (pub.status !== 0) {
+        const first = String(pub.stderr || pub.stdout || '').trim().split(/\r?\n/)[0]
+        console.log(manualNpmHint(version, '`npm publish` failed for ' + pkgName + ': ' + first))
+        return 'failed'
+      }
+      console.log('npm: ' + pkgName + '@' + version + ' published.')
+      status = 'published'
+    } finally {
+      try { unlinkSync(npmrc) } catch (err) { /* already gone */ }
+    }
   }
+  return status
 }
 
 // ── commands ──────────────────────────────────────────────────────────────
@@ -689,6 +817,9 @@ function cmdRelease() {
   }
   const version = st.version
   assertClientBundleFresh()
+  // Pre-write guard: the client's version is about to change, so validate the
+  // pair the release will leave behind rather than the tree as it stands.
+  assertClientDependencyResolvable(repoRoot, version)
   // Non-blocking guard: both READMEs must declare the supported-dsh section.
   for (const readme of ['README.md', 'README.zh.md']) {
     const text = readFileSync(path.join(repoRoot, readme), 'utf8')
@@ -817,6 +948,12 @@ function cmdNpm(opts) {
   }
   try {
     assertClientBundleFresh()
+  } catch (err) {
+    console.error(String(err.message))
+    process.exit(1)
+  }
+  try {
+    assertClientDependencyResolvable()
   } catch (err) {
     console.error(String(err.message))
     process.exit(1)

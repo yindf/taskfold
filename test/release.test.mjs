@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
 import path from 'node:path'
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { test } from 'node:test'
 import {
   parseEntryHeader,
@@ -20,6 +22,8 @@ import {
   parseRegQueryToken,
   resolveNpmVersion,
   checkNpmTarget,
+  assertClientDependencyResolvable,
+  publishOrder,
 } from '../scripts/release.mjs'
 
 // ── cmpSemver ─────────────────────────────────────────────────────────────
@@ -266,4 +270,85 @@ test('parseRegQueryToken: reads REG_SZ and REG_EXPAND_SZ, ignores everything els
   assert.equal(parseRegQueryToken('    OTHER_TOKEN    REG_SZ    value\n'), undefined)
   assert.equal(parseRegQueryToken(''), undefined)
   assert.equal(parseRegQueryToken(undefined), undefined)
+})
+
+// ── client dependency ship-guard ──────────────────────────────────────────
+//
+// 0.38.0 shipped `"dsh-taskfold-client": "file:./client"` and EVERY install
+// died (`ERR_PNPM_LINKED_PKG_DIR_NOT_FOUND`, the path resolved against the
+// consumer's workspace root). The unit suite cannot see that shape — inside
+// this repo the nested directory is simply there — so these tests pin the
+// guard that reads the declaration instead of the directory.
+
+/** A throwaway repo: root manifest + the nested client package beside it. */
+function fixtureRepo(rootManifest, clientManifest) {
+  const dir = mkdtempSync(path.join(tmpdir(), 'taskfold-guard-'))
+  writeFileSync(path.join(dir, 'package.json'), JSON.stringify(rootManifest, null, 2))
+  mkdirSync(path.join(dir, 'client'))
+  writeFileSync(path.join(dir, 'client', 'package.json'), JSON.stringify(clientManifest, null, 2))
+  return dir
+}
+
+const ROOT_OK = { name: 'dsh-taskfold', version: '0.38.0', dependencies: { 'dsh-taskfold-client': '^0.38.0' } }
+const CLIENT_OK = {
+  name: 'dsh-taskfold-client',
+  version: '0.38.0',
+  type: 'module',
+  exports: { '.': './index.mjs', './client': './taskfold-client.mjs', './package.json': './package.json' },
+  dsh: { client: { platform: 'web' } },
+}
+
+test('assertClientDependencyResolvable: accepts a registry range with a publishable client', () => {
+  const dir = fixtureRepo(ROOT_OK, CLIENT_OK)
+  assert.deepEqual(assertClientDependencyResolvable(dir), { spec: '^0.38.0', version: '0.38.0', name: 'dsh-taskfold-client' })
+  // `~` and exact pins are ranges this repo may declare.
+  const tilde = fixtureRepo({ ...ROOT_OK, dependencies: { 'dsh-taskfold-client': '~0.38.0' } }, CLIENT_OK)
+  assert.equal(assertClientDependencyResolvable(tilde).spec, '~0.38.0')
+})
+
+test('assertClientDependencyResolvable: every path specifier is refused, naming the consumer-side failure', () => {
+  for (const spec of ['file:./client', 'file:client', 'link:./client', 'workspace:*', 'workspace:^', 'portal:./client']) {
+    const dir = fixtureRepo({ ...ROOT_OK, dependencies: { 'dsh-taskfold-client': spec } }, CLIENT_OK)
+    assert.throws(() => assertClientDependencyResolvable(dir), /ship-guard: "dsh-taskfold-client" is declared as/, spec)
+  }
+  // The guard is about the resolver, so the message must say what the user saw.
+  const dir = fixtureRepo({ ...ROOT_OK, dependencies: { 'dsh-taskfold-client': 'file:./client' } }, CLIENT_OK)
+  assert.throws(() => assertClientDependencyResolvable(dir), /ERR_PNPM_LINKED_PKG_DIR_NOT_FOUND/)
+})
+
+test('assertClientDependencyResolvable: a missing declaration is refused (the row mounts by bare name)', () => {
+  const dir = fixtureRepo({ name: 'dsh-taskfold', version: '0.38.0' }, CLIENT_OK)
+  assert.throws(() => assertClientDependencyResolvable(dir), /declares no "dsh-taskfold-client" dependency/)
+})
+
+test('assertClientDependencyResolvable: the client must be publishable and mountable', () => {
+  const priv = fixtureRepo(ROOT_OK, { ...CLIENT_OK, private: true })
+  assert.throws(() => assertClientDependencyResolvable(priv), /"private": true — npm publish refuses/)
+  const misnamed = fixtureRepo(ROOT_OK, { ...CLIENT_OK, name: 'taskfold-client' })
+  assert.throws(() => assertClientDependencyResolvable(misnamed), /is named "taskfold-client"/)
+  const noPlatform = fixtureRepo(ROOT_OK, { ...CLIENT_OK, dsh: {} })
+  assert.throws(() => assertClientDependencyResolvable(noPlatform), /dsh\.client\.platform === "web"/)
+  const noExport = fixtureRepo(ROOT_OK, { ...CLIENT_OK, exports: { '.': './index.mjs' } })
+  assert.throws(() => assertClientDependencyResolvable(noExport), /exports no "\.\/client" bundle/)
+})
+
+test('assertClientDependencyResolvable: the declared range must include the released client version', () => {
+  const dir = fixtureRepo({ ...ROOT_OK, dependencies: { 'dsh-taskfold-client': '^0.39.0' } }, CLIENT_OK)
+  assert.throws(() => assertClientDependencyResolvable(dir), /does not include the client version 0\.38\.0/)
+})
+
+test('assertClientDependencyResolvable: the intended version validates the pair BEFORE anything is written', () => {
+  const dir = fixtureRepo(ROOT_OK, CLIENT_OK)
+  // The release path passes the draft version: a skew aborts with nothing written.
+  assert.throws(() => assertClientDependencyResolvable(dir, '0.39.0'), /is v0\.38\.0 but this release is v0\.39\.0/)
+  assert.throws(() => assertClientDependencyResolvable(dir, '0.39'), /must be strict X\.Y\.Z/)
+  assert.equal(assertClientDependencyResolvable(dir, '0.38.0').version, '0.38.0')
+})
+
+test('publishOrder: the client publishes FIRST, the root second', () => {
+  const dir = fixtureRepo(ROOT_OK, CLIENT_OK)
+  const order = publishOrder(dir)
+  assert.deepEqual(order.map((t) => t.name), ['dsh-taskfold-client', 'dsh-taskfold'])
+  assert.equal(order[0].dir, path.join(dir, 'client'))
+  assert.equal(order[1].dir, dir)
 })
