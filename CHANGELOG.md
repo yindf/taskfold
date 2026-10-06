@@ -4,7 +4,7 @@ All notable changes to this project are documented per commit series. Since
 0.37.6 every release also ships to npm (`latest`) — before that, the npm copy
 lagged behind the channel branches on purpose.
 
-## 0.38.1 — publish the client half as its own npm package so consumers can install (unreleased draft 2026-10-06)
+## 0.38.1 — publish the client half as its own npm package so consumers can install (2026-10-06)
 
 0.38.0 was uninstallable. The root manifest declared the browser half as
 `"dsh-taskfold-client": "file:./client"`, and pnpm resolves a path specifier
