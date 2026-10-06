@@ -4,6 +4,65 @@ All notable changes to this project are documented per commit series. Since
 0.37.6 every release also ships to npm (`latest`) — before that, the npm copy
 lagged behind the channel branches on purpose.
 
+## 0.38.1 — publish the client half as its own npm package so consumers can install (unreleased draft 2026-10-06)
+
+0.38.0 was uninstallable. The root manifest declared the browser half as
+`"dsh-taskfold-client": "file:./client"`, and pnpm resolves a path specifier
+against the workspace root of whoever is INSTALLING the package — not against
+the directory that declares it. So the nested `client/` directory was looked for
+one level above the profile and every install stopped at
+
+    ERR_PNPM_LINKED_PKG_DIR_NOT_FOUND
+    Could not install from "<profile>/client" as it does not exist.
+    This error happened while installing the dependencies of dsh-taskfold@0.38.0
+
+Both routes into a profile hit it, which is what made the release useless rather
+than merely awkward: `pnpm install dsh-taskfold@0.38.0` from the registry and
+`dsh plugin add github:yindf/taskfold` both died the same way, so no user could
+reach 0.38.0 without hand-writing a `pnpm.overrides` entry in their profile.
+
+The declaration itself is load-bearing and stays. The client row in
+`cordis.patch.yml` mounts its OWN package name, and `client-modules` accepts a
+row name only when it is path-like or an exact bare package name — a subpath of
+the root package is dropped outright, and a relative name renders as a raw
+`file:///` path with no title or introduction. A bare name therefore has to be
+resolvable through the CONSUMER's `node_modules`, which no specifier pointing
+inside a published package can be: `file:` and `link:` resolve against the
+consumer's workspace root, and `workspace:*` is not a member of anyone else's
+workspace. Only a registry version range is installable, so the browser half is
+now a package of its own.
+
+  - `dsh-taskfold-client` is published, with `"private": true` removed (npm
+    refuses to publish a private package, which would have left the version the
+    root depends on permanently absent); the root depends on it by range
+    (`^0.38.1`), replacing `file:./client`
+  - `scripts/release.mjs` publishes BOTH packages, CLIENT FIRST: the root's
+    manifest names the client's version, so a root published first would 404 for
+    every consumer until the client landed. Each package is probed and published
+    individually, so a re-run finishes whichever half is missing, and the loop
+    stops on any status but `published`/`already` — publishing the root over an
+    unpublished client is the exact failure that order exists to prevent
+  - new ship-guard `assertClientDependencyResolvable()`, run by `release` before
+    either manifest is written (validating the version the release is ABOUT to
+    write, not the tree as it stands) and by `npm` before it publishes: it
+    refuses a missing declaration, any `file:`/`link:`/`portal:`/`workspace:`
+    specifier, a non-range specifier, a private or misnamed client, a client
+    without `dsh.client.platform === "web"` or without the `./client` export, a
+    declared range that does not include the client's version, and a client
+    version that is not in lockstep with the release
+  - `spawnCaptured`/`npmSpawn` accept a working directory, so `npm publish` runs
+    in `client/` as well as in the repo root
+  - `test/release.test.mjs` is now 32 tests (was 25); `test/client-bundle.test.mjs`
+    pins the dependency's SHAPE instead of its old `file:./client` text — that
+    assertion was why the suite stayed green while the shipped package could not
+    be installed, since inside this repo the nested directory is simply there and
+    no unit test can see a consumer's resolver
+  - `npm test`: 14 suites, 0 failures
+
+Repair for anyone already on 0.38.0: drop the `pnpm.overrides` entry and install
+0.38.1. Publishing order for future releases is a rule, not a preference —
+`dsh-taskfold-client` first, then `dsh-taskfold`.
+
 ## 0.38.0 — the release flow gains an npm repair command (2026-09-30)
 
 0.37.7 reached git, GitHub and npm only because its npm copy was published by
