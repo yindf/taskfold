@@ -615,12 +615,30 @@ export function assertClientDependencyResolvable(root = repoRoot, intendedClient
   if (!client.exports || typeof client.exports['./client'] !== 'string') {
     throw new Error('ship-guard: client/package.json exports no "./client" bundle — client-modules requires the mounted package to export it')
   }
-  const version = intendedClient !== undefined ? intendedClient : client.version
+  /* Two callers, two readings of "which version".
+   *
+   * `release` runs this BEFORE it writes anything, and at that moment the client
+   * legitimately still carries the PREVIOUS version — the bump is the script's
+   * next step. So an intended version is checked for what the release must be:
+   * a strict X.Y.Z the declared range will cover. Demanding on-disk equality
+   * there would refuse every release, because the file cannot be both un-bumped
+   * and bumped at once.
+   *
+   * `npm` publishes an already-finalized tree, so it checks the release that IS:
+   * the client's own version must equal the version being published (the lockstep
+   * rule) and the declared range must cover it. */
+  if (intendedClient !== undefined) {
+    if (!/^\d+\.\d+\.\d+$/.test(String(intendedClient))) {
+      throw new Error('ship-guard: the release version must be strict X.Y.Z, got ' + String(intendedClient))
+    }
+    if (!rangeIncludes(spec, intendedClient)) {
+      throw new Error('ship-guard: the dependency "' + spec + '" does not include this release\'s client version ' + intendedClient + ' — the registry entry for the required version would be missing')
+    }
+    return { spec, version: intendedClient, name: client.name }
+  }
+  const version = client.version
   if (typeof version !== 'string' || !/^\d+\.\d+\.\d+$/.test(version)) {
     throw new Error('ship-guard: client version must be strict X.Y.Z, got ' + String(version))
-  }
-  if (client.version !== version) {
-    throw new Error('ship-guard: client/package.json is v' + client.version + ' but this release is v' + version + ' — the two packages release in lockstep, so both version fields must read ' + version)
   }
   if (!rangeIncludes(spec, version)) {
     throw new Error('ship-guard: the dependency "' + spec + '" does not include the client version ' + version + ' — the registry entry for the required version would be missing')

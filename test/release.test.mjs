@@ -337,12 +337,24 @@ test('assertClientDependencyResolvable: the declared range must include the rele
   assert.throws(() => assertClientDependencyResolvable(dir), /does not include the client version 0\.38\.0/)
 })
 
-test('assertClientDependencyResolvable: the intended version validates the pair BEFORE anything is written', () => {
+test('assertClientDependencyResolvable: an intended version is checked for what the release will be', () => {
   const dir = fixtureRepo(ROOT_OK, CLIENT_OK)
-  // The release path passes the draft version: a skew aborts with nothing written.
-  assert.throws(() => assertClientDependencyResolvable(dir, '0.39.0'), /is v0\.38\.0 but this release is v0\.39\.0/)
-  assert.throws(() => assertClientDependencyResolvable(dir, '0.39'), /must be strict X\.Y\.Z/)
+  /* `release` validates BEFORE it bumps: the client legitimately still carries
+   * the previous version at that moment, so reading it off disk must not decide
+   * anything — but the version about to be written is still judged. */
   assert.equal(assertClientDependencyResolvable(dir, '0.38.0').version, '0.38.0')
+  assert.throws(() => assertClientDependencyResolvable(dir, '0.39.0'), /does not include this release's client version 0\.39\.0/)
+  assert.throws(() => assertClientDependencyResolvable(dir, '0.39'), /must be strict X\.Y\.Z/)
+  // A range that covers the next release is the shipped arrangement.
+  const bumped = fixtureRepo({ ...ROOT_OK, dependencies: { 'dsh-taskfold-client': '^0.38.1' } }, CLIENT_OK)
+  assert.equal(assertClientDependencyResolvable(bumped, '0.38.1').version, '0.38.1')
+})
+
+test('assertClientDependencyResolvable: publishing the tree itself demands lockstep', () => {
+  /* The `npm` path has the finalized tree in hand, so the client's own version
+   * is the release being published and must match it. */
+  const dir = fixtureRepo({ ...ROOT_OK, dependencies: { 'dsh-taskfold-client': '^0.38.0' } }, { ...CLIENT_OK, version: '0.37.0' })
+  assert.throws(() => assertClientDependencyResolvable(dir), /does not include the client version 0\.37\.0/)
 })
 
 test('publishOrder: the client publishes FIRST, the root second', () => {
