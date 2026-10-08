@@ -30,7 +30,7 @@
 1. 打开 dsh Desktop，在侧边栏进入 **插件** 页。
 2. 点右上角的 **添加插件**。
 3. 在 **包名或地址** 一栏**把版本号写全**：`dsh-taskfold@0.38.1`——若已有更新版本，以 [npm 版本列表](https://www.npmjs.com/package/dsh-taskfold?activeTab=versions) 为准。安装框自己调 pnpm，不用你手工装依赖：
-   - **要钉版本，别只写裸包名。** dsh Desktop 自带的 pnpm 11 会执行 `minimumReleaseAge` 供应链策略，`pnpm add dsh-taskfold` 只会解析到"已过策略期"的最新版本——2026-10-08 那次解析到的是**根本装不上的 0.38.0**，而对话框上的版本号却显示 0.38.1。显式写版本会被接受，pnpm 还会把它记进 profile 的 `minimumReleaseAgeExclude`。（**0.38.0 千万别钉**：报 `ERR_PNPM_LINKED_PKG_DIR_NOT_FOUND`，npm 上它已被标记为 deprecated。）
+   - **要钉版本，别只写裸包名。** dsh Desktop 自带的 pnpm 11 会执行 `minimumReleaseAge` 供应链策略，窗口是 **24 小时**：`pnpm add dsh-taskfold` 只会解析到"发布已超过一天"的最新版本，刚发布的版本对裸包名根本不可见。2026-10-08 那次回退到的是**根本装不上的 0.38.0**（而对话框上的版本号显示 0.38.1），最后报出的是 0.38.1 之前遗留的 `file:./client` 错误。显式写版本等于明确授权：pnpm 会照装，并把它记进 profile 的 `minimumReleaseAgeExclude`。（**0.38.0 千万别钉**：报 `ERR_PNPM_LINKED_PKG_DIR_NOT_FOUND`，npm 上它已被标记为 deprecated。）
    - **完全绕过 npm**：直接粘[最新 Release](https://github.com/yindf/taskfold/releases/latest) 里预构建的 `.tgz` 直链——tarball 不受发布时长策略限制；
    - **跟分支走**：`github:yindf/taskfold#master`（rc 通道）/ `github:yindf/taskfold#alpha`（alpha 通道），要求本机能直连 GitHub；
    - 本机检出的绝对路径同样可用。
