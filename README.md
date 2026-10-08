@@ -31,6 +31,7 @@ For [DeepSeek Harness](https://www.npmjs.com/package/@deepseek-ai/dsh) (DSH).
 2. Click **Add plugin** in the top-right corner.
 3. In **Package name or address**, enter `dsh-taskfold` — the dialog installs from npm for you:
    - pin a version with `dsh-taskfold@<version>`, picking one from the [versions list](https://www.npmjs.com/package/dsh-taskfold?activeTab=versions) — but not **0.38.0**: it cannot be installed (`ERR_PNPM_LINKED_PKG_DIR_NOT_FOUND`), use 0.38.1 or newer;
+   - **a release published hours ago will not install from the bare name.** dsh Desktop's bundled pnpm 11 enforces a `minimumReleaseAge` supply-chain policy, so `pnpm add dsh-taskfold` resolves to the newest release that is *older* than that window — on 2026-10-08 that picked the uninstallable 0.38.0 while the dialog's version chip showed 0.38.1, and the install died on a confusing `file:./client` error. Pin the version (`dsh-taskfold@0.38.1`): an explicit version is accepted, and pnpm records it in the profile's `minimumReleaseAgeExclude`;
    - to follow a branch, enter a Git address instead: `github:yindf/taskfold#master` (rc channel) or `github:yindf/taskfold#alpha` (alpha channel) — Git addresses need direct GitHub access from this machine;
    - an absolute path to a local plugin directory, or a `.tgz` link, works too.
 4. Leave **Registry** on **Default registry**; mainland-China networks can pick **Mainland China mirror** and retry.
