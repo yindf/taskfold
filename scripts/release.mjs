@@ -36,7 +36,7 @@
 // rejected. The only source of truth for the NEXT version is the CHANGELOG
 // top entry; package.json is synced by this script, never by hand.
 import { spawnSync } from 'node:child_process'
-import { readFileSync, writeFileSync, openSync, closeSync, unlinkSync, mkdtempSync, existsSync, rmSync } from 'node:fs'
+import { readFileSync, writeFileSync, openSync, closeSync, unlinkSync, mkdtempSync, existsSync, rmSync, readdirSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -168,7 +168,12 @@ export function classifyState({ top, packageVersion, tagVersion, dirty, remoteHa
 function spawnCaptured(file, args, opts) {
   const useShell = !!(opts && opts.shell)
   const cwd = (opts && opts.cwd) || repoRoot
-  const r = spawnSync(file, args, { cwd, encoding: 'utf8', shell: useShell })
+  // Every external call carries a deadline. A `gh` that never answers used to
+  // stall a release forever with an empty log — the 0.38.1 asset upload was
+  // never created and nothing anywhere reported a failure. A timeout is an
+  // ordinary failure with an ordinary hint instead.
+  const timeoutMs = (opts && opts.timeoutMs) || 300000
+  const r = spawnSync(file, args, { cwd, encoding: 'utf8', shell: useShell, timeout: timeoutMs })
   // Discovery probes opt out: re-running a missing tool through the fallback
   // below cannot fix an ENOENT, it only hides it.
   if (opts && opts.probe) return r
@@ -177,7 +182,7 @@ function spawnCaptured(file, args, opts) {
     let fd
     try {
       fd = openSync(tmp, 'w')
-      const s = spawnSync(file, args, { cwd, stdio: ['ignore', fd, 'ignore'], shell: useShell })
+      const s = spawnSync(file, args, { cwd, stdio: ['ignore', fd, 'ignore'], shell: useShell, timeout: timeoutMs })
       closeSync(fd); fd = undefined
       const stdout = readFileSync(tmp, 'utf8')
       return { status: s.status, stdout, stderr: '' }
@@ -360,6 +365,46 @@ export function manualAssetHint(version, tarballName) {
 }
 
 /**
+ * One-line reason an external call failed: a timeout, a signal, the tool's own
+ * first stderr line, or the exit status. "npm pack did not produce the tarball"
+ * without the why is what made the first bad `assets` run unreadable.
+ */
+export function spawnFailure(r) {
+  if (r === undefined || r === null) return 'no result'
+  if (r.error && r.error.code === 'ETIMEDOUT') return 'timed out'
+  const first = String(r.stderr || (r.error && r.error.message) || '').trim().split(/\r?\n/)[0]
+  if (first !== '') return first
+  const status = r.status === undefined || r.status === null ? 'no exit status' : 'exit ' + r.status
+  return r.signal ? status + ' (' + r.signal + ')' : status
+}
+
+/**
+ * Verdict for `gh release view v<version> --json assets`: the Release exists and
+ * carries a non-empty asset with exactly this name. Exported so the offline
+ * suite can pin the rule this guard exists for — 0.38.1 reached git, its tag and
+ * npm while its GitHub Release was never created, and nothing anywhere failed.
+ * A Release without its tarball is not a release: `releases/latest` pointed at
+ * an uninstallable version until it was found by hand.
+ */
+export function releaseAssetVerdict(payload, tarballName) {
+  let doc = payload
+  if (typeof doc === 'string') {
+    try {
+      doc = JSON.parse(doc)
+    } catch (err) {
+      return { ok: false, reason: 'gh did not return JSON' }
+    }
+  }
+  if (doc === null || typeof doc !== 'object') return { ok: false, reason: 'gh returned no release object' }
+  if (!Array.isArray(doc.assets)) return { ok: false, reason: 'gh returned no asset list' }
+  const asset = doc.assets.find((a) => a !== null && typeof a === 'object' && a.name === tarballName)
+  if (asset === undefined) return { ok: false, reason: 'the Release carries no ' + tarballName }
+  const size = typeof asset.size === 'number' ? asset.size : 0
+  if (size <= 0) return { ok: false, reason: tarballName + ' is attached but empty' }
+  return { ok: true, size }
+}
+
+/**
  * The project-level .npmrc body that injects the auth token for exactly this
  * one publish, without touching the user's global config. npm itself reads no
  * token from the environment (NODE_AUTH_TOKEN is only honored through .npmrc
@@ -399,7 +444,8 @@ export function ghCandidates(platform = process.platform, env = process.env) {
 
 function resolveGh() {
   for (const cand of ghCandidates()) {
-    if (spawnCaptured(cand, ['--version'], { okNonZero: true, probe: true }).status === 0) return cand
+    // Probe with a short leash: a wedged `gh` must not decide that `gh` is fine.
+    if (spawnCaptured(cand, ['--version'], { okNonZero: true, probe: true, timeoutMs: 30000 }).status === 0) return cand
   }
   return undefined
 }
@@ -432,6 +478,18 @@ function warnAssets(version, tarballName, detail) {
 export function publishReleaseAssets(version) {
   const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'))
   const tarballName = packTarballName(pkg.name, version)
+  if (pkg.version !== version) {
+    // `npm pack` names the file after the version IN THE TREE, so packing a
+    // checkout that has moved on can never produce the tarball this version
+    // needs. 0.38.1's repair run said only "npm pack did not produce
+    // dsh-taskfold-0.38.1.tgz" while the tree already carried 0.38.2.
+    warnAssets(
+      version,
+      tarballName,
+      'package.json is v' + pkg.version + ', so `npm pack` would build v' + pkg.version + ' — check out that release first: git switch --detach v' + version,
+    )
+    return false
+  }
   const section = changelogSection(readFileSync(changelogPath, 'utf8'), version)
   if (section === null) {
     warnAssets(version, tarballName, 'CHANGELOG has no entry for ' + version + ' — cannot build release notes.')
@@ -442,7 +500,8 @@ export function publishReleaseAssets(version) {
     const packed = npmSpawn(['pack', '--pack-destination', dir])
     const tarball = path.join(dir, tarballName)
     if (packed.status !== 0 || !existsSync(tarball)) {
-      warnAssets(version, tarballName, '`npm pack` did not produce ' + tarballName + '.')
+      const produced = readdirSync(dir).filter((f) => f.endsWith('.tgz'))
+      warnAssets(version, tarballName, '`npm pack` did not produce ' + tarballName + ' (' + spawnFailure(packed) + (produced.length > 0 ? '; it produced ' + produced.join(', ') : '') + ').')
       return false
     }
     const gh = resolveGh()
@@ -455,7 +514,7 @@ export function publishReleaseAssets(version) {
     const exists = spawnCaptured(gh, ['release', 'view', 'v' + version], { okNonZero: true }).status === 0
     const r = spawnCaptured(gh, ghReleaseArgs({ version, tarball, notesFile, exists }), { okNonZero: true })
     if (r.status !== 0) {
-      warnAssets(version, tarballName, '`gh release ' + (exists ? 'upload' : 'create') + '` failed: ' + String(r.stderr || '').trim())
+      warnAssets(version, tarballName, '`gh release ' + (exists ? 'upload' : 'create') + '` failed (' + spawnFailure(r) + ').')
       return false
     }
     console.log('GitHub Release v' + version + ' published with ' + tarballName + (exists ? ' (asset re-uploaded)' : '') + '.')
@@ -463,6 +522,23 @@ export function publishReleaseAssets(version) {
   } finally {
     try { rmSync(dir, { recursive: true, force: true }) } catch (err) {}
   }
+}
+
+/**
+ * Ask GitHub what the Release for `version` actually carries. Never throws:
+ * `{ok: true, size}` when the tarball is there, `{ok: false, reason}` when
+ * GitHub says it is not, and `{ok: false, unknown: true, reason}` when the
+ * answer cannot be obtained at all (no `gh`, no network) — an unverifiable
+ * release must not be reported as a broken one.
+ */
+function verifyReleaseAssets(version) {
+  const tarballName = packTarballName(JSON.parse(readFileSync(pkgPath, 'utf8')).name, version)
+  const gh = resolveGh()
+  if (gh === undefined) return { ok: false, unknown: true, reason: 'the GitHub CLI (`gh`) is unavailable', tarballName }
+  const r = spawnCaptured(gh, ['release', 'view', 'v' + version, '--json', 'assets'], { okNonZero: true })
+  if (r.status !== 0) return { ok: false, unknown: true, reason: 'gh release view v' + version + ' failed (' + spawnFailure(r) + ')', tarballName }
+  const verdict = releaseAssetVerdict(r.stdout, tarballName)
+  return { ...verdict, tarballName }
 }
 
 /**
@@ -814,6 +890,31 @@ export function assertClientBundleFresh(root = repoRoot) {
   }
 }
 
+/**
+ * The release ends by asking GitHub what the Release actually carries. The asset
+ * step is deliberately non-fatal ("everything git-side is durable"), which is
+ * exactly how 0.38.1 shipped with no GitHub Release at all and no failure
+ * anywhere — `releases/latest` pointed at an uninstallable version until it was
+ * found by hand. A Release GitHub cannot show is a failed release: the command
+ * exits 1 AFTER git and npm have landed, so the verdict never skips a step, and
+ * it prints the repair command. A verdict that cannot be obtained at all is only
+ * a warning: being offline must not fail an otherwise good release.
+ */
+function finishRelease(version, assetsOk) {
+  const verdict = verifyReleaseAssets(version)
+  if (verdict.ok) {
+    console.log('verified: GitHub Release v' + version + ' carries ' + verdict.tarballName + ' (' + verdict.size + ' bytes).')
+    return
+  }
+  if (verdict.unknown === true && assetsOk) {
+    console.log('warning: could not verify the GitHub Release after publishing it — ' + verdict.reason)
+    return
+  }
+  console.log('error: GitHub Release v' + version + ' does not carry its prebuilt tarball — ' + verdict.reason)
+  console.log(manualAssetHint(version, verdict.tarballName))
+  process.exit(1)
+}
+
 function cmdRelease() {
   let st = gatherState(undefined)
   if (st.state === 'CLEAN') {
@@ -824,8 +925,9 @@ function cmdRelease() {
     console.log('PENDING release v' + st.version + ' detected — resuming pushes only.')
     pushRelease(st.version)
     console.log('Release v' + st.version + ' fully pushed.')
-    publishReleaseAssets(st.version)
+    const assetsOk = publishReleaseAssets(st.version)
     publishToNpm(st.version)
+    finishRelease(st.version, assetsOk)
     return
   }
   if (st.state !== 'DRAFT') {
@@ -872,8 +974,9 @@ function cmdRelease() {
   console.log('Committed and tagged v' + version + '.')
   pushRelease(version)
   console.log('Release v' + version + ' fully pushed.')
-  publishReleaseAssets(version)
+  const assetsOk = publishReleaseAssets(version)
   publishToNpm(version)
+  finishRelease(version, assetsOk)
 }
 
 // The remote branch release pushes must reconcile against: HEAD's upstream
@@ -988,21 +1091,37 @@ function cmdNpm(opts) {
  */
 function cmdAssets(opts) {
   const top = readTopEntry()
-  if (top === null) {
-    console.error('CHANGELOG has no parseable version entry.')
+  const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'))
+  const resolved = resolveNpmVersion({ requested: opts.version, top })
+  if (!resolved.ok) {
+    console.error(resolved.reason)
     process.exit(1)
   }
-  if (top.kind === 'draft') {
-    console.error('top CHANGELOG entry is an unreleased draft (' + top.version + ') — release it first.')
-    process.exit(1)
-  }
-  const version = opts.version || top.version
-  const tagged = git(['rev-parse', '--verify', '--quiet', 'v' + version], { okNonZero: true }).status === 0
-  if (!tagged) {
-    console.error('tag v' + version + ' does not exist locally — nothing to publish.')
+  const version = resolved.version
+  const dirty = dirtyFiles()
+  const hasTag = tagExists(version)
+  const treeMatches = hasTag && treeMatchesTag(version)
+  console.log('assets target : v' + version + (opts.version === undefined ? ' (CHANGELOG top)' : ' (--version)'))
+  console.log('package.json  : ' + pkg.version)
+  console.log('local tag     : ' + (hasTag ? 'v' + version + (treeMatches ? ' (working tree matches it)' : ' (working tree DIFFERS)') : '(missing)'))
+  // The asset is `npm pack` of the WORKING TREE, so the same four guards the
+  // npm path uses apply here too: without them `assets --version X` packs
+  // whatever the checkout happens to be and then looks for a tarball name that
+  // cannot exist (the 0.38.1 repair run: tree at 0.38.2, asked for 0.38.1).
+  const check = checkNpmTarget({ version, packageVersion: pkg.version, hasTag, treeMatches, dirty })
+  if (!check.ok) {
+    console.error('\n' + check.reason)
     process.exit(1)
   }
   if (!publishReleaseAssets(version)) process.exit(1)
+  const verdict = verifyReleaseAssets(version)
+  if (verdict.ok) {
+    console.log('verified: GitHub Release v' + version + ' carries ' + verdict.tarballName + ' (' + verdict.size + ' bytes).')
+    return
+  }
+  console.error('error: GitHub Release v' + version + ' still does not carry its prebuilt tarball — ' + verdict.reason)
+  console.error(manualAssetHint(version, verdict.tarballName))
+  process.exit(1)
 }
 
 // ── CLI entry ─────────────────────────────────────────────────────────────

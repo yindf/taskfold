@@ -54,11 +54,15 @@ node scripts/release.mjs status   # 只读；不一致时 exit 1
 - **幂等续跑（B2）**：任一 push 失败后进入 PENDING；重跑 `release` 检测到 PENDING（本地 tag vY 存在、release commit 存在、远端缺其一）时跳过 1–4 直接重试 push。提示文案不猜测失败原因（沙箱/网络/认证），统一给"重跑 release 续传，或手动 `git push origin vY && git push origin HEAD`"（M5）。
 - push 前 `git fetch origin` 并断言 `origin/master` 是 HEAD 祖先（防 non-fast-forward 静默覆盖）（M5）。
 - 文件级失败（1–4 步）在中止时打印已完成步骤，人工处理；git 子命令非零即中止。
+- **收尾校验（0.38.2 起）**：`release` 的最后一步（git 与 npm 都已落地之后）向 GitHub 复核 Release 是否真带着 `dsh-taskfold-<Y>.tgz`——打印 `verified: … (N bytes)` 才算发版完成；证明缺失即 exit 1 并打印 `manualAssetHint`（补建命令）；**无法判定**（无 `gh`／离线）只打 warning——离线不该把一次好发版判成失败。放在最后是有意的：附件步本身"非致命"（见 `### assets`），0.38.1 就是这样同时拿到 git、tag、npm 而**根本没有 GitHub Release**，`releases/latest` 指向一个装不上的版本整整一周多，全程没有任何一处报错。若把校验放到 npm 之前，退出码会连带跳过 npm 那步。
+- **外部调用兜底超时（0.38.2 起）**：`spawnCaptured` 给所有 `git`/`npm`/`gh` 调用加了 300 s 上限（`gh --version` 探测 30 s），超时按普通失败上报。2026-10-08 补 0.38.1 附件时 `gh` 调用挂死五分钟以上、日志一个字都没有，只能手工杀进程——挂起与失败现在都带原因。
 
-### assets（要求：顶部条目已定版，且本地存在该 tag）
+### assets（要求：与 `npm` 相同的四道守卫 + 顶部条目已定版）
 - 目的：README 与插件市场卡片承诺"每个 Release 附带预构建 `dsh-taskfold-<Y>.tgz`"，而实测 v0.31.2–v0.34.0 的 Release 附件数全部为 0（只有 v0.31.1 带 tgz）——发布路径从未上传过附件，承诺早已名不副实。`release` 成功后自动执行本步；`assets` 子命令可单独跑，用于补发历史 Release 或重试失败的上传。
 - 动作：`npm pack --pack-destination <tmp>` → 用 `changelogSection` 从 CHANGELOG 抽出 `## Y` 条目作 release notes（末尾附 `Prebuilt plugin bundle attached: <tgz>`）→ `gh release view vY` 判定是否已存在 → 不存在则 `gh release create vY <tgz> --title vY --notes-file <tmp>`，已存在则 `gh release upload vY <tgz> --clobber`（幂等，可反复跑）。
-- 失败语义：执行本步时 commit / tag / push 均已持久，**把附件失败当成发版失败是错的**。`release` 路径只打印 warning + 手工补救命令（`manualAssetHint`）；只有显式 `assets` 子命令失败时 exit 1——补附件正是它的全部目的。
+- **为什么必须复用那四道守卫（0.38.2 起）**：`npm pack` 打的是**工作区**，文件名取自**工作区里的版本**——于是「在 0.38.2 的检出上补 v0.38.1 的附件」永远打不出要的那个文件，而旧实现只回一句 `npm pack did not produce dsh-taskfold-0.38.1.tgz`，看不出原因（2026-10-08 实测；最后靠手工 `npm pack` + `gh release create` 补上）。现在同一份 `checkNpmTarget` 先拒绝，并给出 `git switch --detach v0.38.1`；`publishReleaseAssets` 内部还再断言一次 `package.json` 版本，并把 `npm pack` 的失败原因与实际产出的文件名一并打印（`spawnFailure`）。
+- **收尾校验（0.38.2 起）**：补发后用 `gh release view vY --json assets` 复核附件确实存在且非空（判定为纯函数 `releaseAssetVerdict`，离线可测）。证明缺失 → exit 1 + `manualAssetHint`；无法判定（无 `gh`／离线）→ 仅 warning。
+- 失败语义：执行本步时 commit / tag / push 均已持久，**把附件失败当成发版失败是错的**。`release` 路径只打印 warning + 手工补救命令（`manualAssetHint`），真正的判罚推迟到发版最后那次收尾校验（见 `### release`）；只有显式 `assets` 子命令失败时 exit 1——补附件正是它的全部目的。
 - 可移植性（2026-09-10 实测）：Windows 上 npm 是 `.cmd` shim，Node 无 shell 时 spawn 不了（`npm` → ENOENT，`npm.cmd` → EINVAL），故 Windows 改走 `process.execPath` + `<node>/node_modules/npm/bin/npm-cli.js` 直接执行 npm CLI（无 shell、无需参数转义、无 DEP0190 警告），POSIX 仍直接 spawn `npm`。`gh` 先查 PATH，再查 `Program Files\GitHub CLI\gh.exe`（POSIX 为 `/usr/local/bin`、`/opt/homebrew/bin`、`/usr/bin`）——宿主拉起的脚本不一定继承交互 shell 的 PATH。
 - 实测（v0.34.0，2026-09-10）：`assets` 首次运行即成功；`gh release view` 显示附件 `dsh-taskfold-0.34.0.tgz` 106,183 B；把该附件下载下来与 committed blob 逐文件比对，18 个文件全部与 tag 内容一致（6 个逐字节相同，12 个仅 CRLF/LF 不同——本机 `core.autocrlf=true`，而 `npm pack` 打的是工作区文件）。**这是修复前的状态：内容正确，但附件不是字节级可复现**。
 - 字节级可复现（2026-09-10 修复）：仓库根新增 `.gitattributes`（`* text=auto eol=lf`，二进制类型显式标 `binary`），使 checkout 与 blob 同为 LF。修复后实测：`npm pack` 产物解包后 **18/18 文件与 `HEAD` 的 blob 逐字节相同**（`eolOnly`、`bad`、`missing` 均为空）；提交 `.gitattributes` 本身不改动任何既有 blob（只新增该文件）。

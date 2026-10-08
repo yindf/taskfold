@@ -24,6 +24,8 @@ import {
   checkNpmTarget,
   assertClientDependencyResolvable,
   publishOrder,
+  releaseAssetVerdict,
+  spawnFailure,
 } from '../scripts/release.mjs'
 
 // ── cmpSemver ─────────────────────────────────────────────────────────────
@@ -363,4 +365,35 @@ test('publishOrder: the client publishes FIRST, the root second', () => {
   assert.deepEqual(order.map((t) => t.name), ['dsh-taskfold-client', 'dsh-taskfold'])
   assert.equal(order[0].dir, path.join(dir, 'client'))
   assert.equal(order[1].dir, dir)
+})
+
+// ── releaseAssetVerdict / spawnFailure (the post-release check) ───────────
+
+test('releaseAssetVerdict: only a present, non-empty asset counts as published', () => {
+  const payload = { tagName: 'v0.38.2', assets: [{ name: 'dsh-taskfold-0.38.2.tgz', size: 239143 }] }
+  assert.deepEqual(releaseAssetVerdict(payload, 'dsh-taskfold-0.38.2.tgz'), { ok: true, size: 239143 })
+  // An asset under a different name is not this release's tarball.
+  assert.match(releaseAssetVerdict(payload, 'dsh-taskfold-0.38.1.tgz').reason, /carries no/)
+  // Attached but empty is not an artifact either.
+  assert.match(releaseAssetVerdict({ assets: [{ name: 'a.tgz', size: 0 }] }, 'a.tgz').reason, /attached but empty/)
+  // The 0.38.1 shape: a Release that exists with nothing attached to it.
+  assert.match(releaseAssetVerdict({ assets: [] }, 'a.tgz').reason, /carries no/)
+  // Unreadable answers must never read as "present".
+  assert.match(releaseAssetVerdict({}, 'a.tgz').reason, /no asset list/)
+  assert.match(releaseAssetVerdict('not json', 'a.tgz').reason, /did not return JSON/)
+  assert.match(releaseAssetVerdict(null, 'a.tgz').reason, /no release object/)
+})
+
+test('releaseAssetVerdict: raw `gh --json` stdout is accepted as text', () => {
+  const text = JSON.stringify({ assets: [{ name: 'x.tgz', size: 12 }] })
+  assert.deepEqual(releaseAssetVerdict(text, 'x.tgz'), { ok: true, size: 12 })
+  assert.equal(releaseAssetVerdict(text, 'y.tgz').ok, false)
+})
+
+test('spawnFailure: timeouts, stderr and bare exit codes all say something', () => {
+  assert.equal(spawnFailure({ error: { code: 'ETIMEDOUT' } }), 'timed out')
+  assert.equal(spawnFailure({ status: 1, stderr: 'fatal: not a git repository\nmore noise' }), 'fatal: not a git repository')
+  assert.equal(spawnFailure({ status: 3, stderr: '' }), 'exit 3')
+  assert.equal(spawnFailure({ status: null, signal: 'SIGTERM' }), 'no exit status (SIGTERM)')
+  assert.equal(spawnFailure(undefined), 'no result')
 })
