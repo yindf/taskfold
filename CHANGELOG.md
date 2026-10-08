@@ -4,6 +4,27 @@ All notable changes to this project are documented per commit series. Since
 0.37.6 every release also ships to npm (`latest`) — before that, the npm copy
 lagged behind the channel branches on purpose.
 
+## 0.38.2 — install instructions that survive npm's release-age policy (2026-10-08)
+
+The install sections now lead with a **version-pinned** install
+(`dsh-taskfold@0.38.1`) instead of the bare package name, because dsh Desktop
+bundles pnpm 11, whose `minimumReleaseAge` supply-chain policy refuses a release
+younger than a fixed window. A bare `pnpm add dsh-taskfold` therefore resolves to
+the newest release *older* than that window — on 2026-10-08 that was 0.38.0,
+which cannot be installed at all, while the dialog's own version chip showed
+0.38.1. The failure surfaced as the pre-0.38.1 `file:./client` error and read
+like a packaging bug; it was the policy falling back onto a broken release.
+
+Pinning works because pnpm treats an explicit version as consent: it installs
+what was asked for and records it in the profile's `minimumReleaseAgeExclude`.
+The prebuilt tarball on the GitHub Release and a Git address both bypass the
+policy too, so the README lists all three routes — and drops the `@0.38.0`
+example that used to send readers straight into the broken version.
+
+  - README (en/zh): pin the version in the dialog and the CLI examples, and explain the policy, the misleading version chip, and the tarball/Git routes
+  - `dsh-taskfold@0.38.0` is deprecated on npm (`0.38.0 cannot be installed … use 0.38.1 or newer`)
+  - the missing GitHub Release for 0.38.1 was published from the existing tag, so `releases/latest` no longer points at an uninstallable version
+
 ## 0.38.1 — publish the client half as its own npm package so consumers can install (2026-10-06)
 
 0.38.0 was uninstallable. The root manifest declared the browser half as
