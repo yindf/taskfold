@@ -29,11 +29,11 @@ For [DeepSeek Harness](https://www.npmjs.com/package/@deepseek-ai/dsh) (DSH).
 
 1. Open dsh Desktop and go to the **Plugins** page in the sidebar.
 2. Click **Add plugin** in the top-right corner.
-3. In **Package name or address**, enter `dsh-taskfold` — the dialog installs from npm for you:
-   - pin a version with `dsh-taskfold@<version>`, picking one from the [versions list](https://www.npmjs.com/package/dsh-taskfold?activeTab=versions) — but not **0.38.0**: it cannot be installed (`ERR_PNPM_LINKED_PKG_DIR_NOT_FOUND`), use 0.38.1 or newer;
-   - **a release published hours ago will not install from the bare name.** dsh Desktop's bundled pnpm 11 enforces a `minimumReleaseAge` supply-chain policy, so `pnpm add dsh-taskfold` resolves to the newest release that is *older* than that window — on 2026-10-08 that picked the uninstallable 0.38.0 while the dialog's version chip showed 0.38.1, and the install died on a confusing `file:./client` error. Pin the version (`dsh-taskfold@0.38.1`): an explicit version is accepted, and pnpm records it in the profile's `minimumReleaseAgeExclude`;
-   - to follow a branch, enter a Git address instead: `github:yindf/taskfold#master` (rc channel) or `github:yindf/taskfold#alpha` (alpha channel) — Git addresses need direct GitHub access from this machine;
-   - an absolute path to a local plugin directory, or a `.tgz` link, works too.
+3. In **Package name or address**, write the version out: `dsh-taskfold@0.38.1` — check the [versions list](https://www.npmjs.com/package/dsh-taskfold?activeTab=versions) if a newer one exists. The dialog runs pnpm for you:
+   - **pin the version; do not rely on the bare name.** dsh Desktop's bundled pnpm 11 enforces a `minimumReleaseAge` supply-chain policy, so `pnpm add dsh-taskfold` resolves to the newest release *older* than that window — on 2026-10-08 that was 0.38.0, which cannot be installed at all, while the dialog's version chip showed 0.38.1. An explicit version is accepted, and pnpm records it in the profile's `minimumReleaseAgeExclude`. (Never pin **0.38.0**: `ERR_PNPM_LINKED_PKG_DIR_NOT_FOUND` — npm now marks it deprecated.)
+   - **skip npm entirely:** paste the prebuilt `.tgz` from the [newest Release](https://github.com/yindf/taskfold/releases/latest) — a tarball URL is not subject to the release-age policy;
+   - **follow a branch:** `github:yindf/taskfold#master` (rc channel) or `github:yindf/taskfold#alpha` (alpha channel) — needs direct GitHub access from this machine;
+   - an absolute path to a local checkout works too.
 4. Leave **Registry** on **Default registry**; mainland-China networks can pick **Mainland China mirror** and retry.
 5. Click **Install**, wait for "Installed; it loads at the next start.", then click **Enable now**.
 6. **Restart dsh Desktop** — plugin composition is evaluated only at startup. Back on the Plugins page you should see a **Taskfold** card reading *Components · 2 total · 2 running* (`taskfold` and `taskfold-client`); the fold floor and the task-bar switch live on that card (see [Settings](#settings)).
@@ -46,7 +46,7 @@ That dialog does the same thing as the command line below: it writes the depende
 `dsh plugin --profile <name> add` is the shell equivalent of the dialog. `desktop` is dsh Desktop's profile and `web` is the DSH Web GUI's — use whichever one you actually run:
 
 ```sh
-# the newest npm release
+# the newest npm release — resolves only once it is older than pnpm's release-age window
 dsh plugin --profile desktop add dsh-taskfold
 
 # a pinned version — put the version after the @ (0.38.1 or newer; 0.38.0 cannot be installed)
