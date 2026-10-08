@@ -30,7 +30,7 @@
 1. 打开 dsh Desktop，在侧边栏进入 **插件** 页。
 2. 点右上角的 **添加插件**。
 3. 在 **包名或地址** 一栏填 `dsh-taskfold`——安装框自己调 npm，不用你手工装依赖：
-   - 钉住版本：`dsh-taskfold@0.38.0`；
+   - 钉住版本：`dsh-taskfold@<版本>`，版本号从 [npm 版本列表](https://www.npmjs.com/package/dsh-taskfold?activeTab=versions) 里挑——但别钉 **0.38.0**，它装不上（报 `ERR_PNPM_LINKED_PKG_DIR_NOT_FOUND`），请用 0.38.1 或更新版本；
    - 跟某个分支走：改填 Git 地址，rc 通道 `github:yindf/taskfold#master`、alpha 通道 `github:yindf/taskfold#alpha`（Git 地址要求本机能直连 GitHub）；
    - 本机插件的绝对路径、`.tgz` 直链同样接受。
 4. **安装源** 保持「默认安装源」；中国大陆网络若拉取失败，改选「中国大陆镜像源」再试。
@@ -48,8 +48,8 @@
 # npm 上的最新发布
 dsh plugin --profile desktop add dsh-taskfold
 
-# 钉住某个版本
-dsh plugin --profile desktop add dsh-taskfold@0.38.0
+# 钉住某个版本（@ 后面填你要的版本；0.38.1 起才装得上，0.38.0 装不上）
+dsh plugin --profile desktop add dsh-taskfold@<版本>
 
 # 跟某个通道的分支（引号不能省：# 在 sh 里是注释）
 dsh plugin --profile web add "github:yindf/taskfold#master"

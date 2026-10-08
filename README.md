@@ -30,7 +30,7 @@ For [DeepSeek Harness](https://www.npmjs.com/package/@deepseek-ai/dsh) (DSH).
 1. Open dsh Desktop and go to the **Plugins** page in the sidebar.
 2. Click **Add plugin** in the top-right corner.
 3. In **Package name or address**, enter `dsh-taskfold` — the dialog installs from npm for you:
-   - pin a version with `dsh-taskfold@0.38.0`;
+   - pin a version with `dsh-taskfold@<version>`, picking one from the [versions list](https://www.npmjs.com/package/dsh-taskfold?activeTab=versions) — but not **0.38.0**: it cannot be installed (`ERR_PNPM_LINKED_PKG_DIR_NOT_FOUND`), use 0.38.1 or newer;
    - to follow a branch, enter a Git address instead: `github:yindf/taskfold#master` (rc channel) or `github:yindf/taskfold#alpha` (alpha channel) — Git addresses need direct GitHub access from this machine;
    - an absolute path to a local plugin directory, or a `.tgz` link, works too.
 4. Leave **Registry** on **Default registry**; mainland-China networks can pick **Mainland China mirror** and retry.
@@ -48,8 +48,8 @@ That dialog does the same thing as the command line below: it writes the depende
 # the newest npm release
 dsh plugin --profile desktop add dsh-taskfold
 
-# a pinned version
-dsh plugin --profile desktop add dsh-taskfold@0.38.0
+# a pinned version — put the version after the @ (0.38.1 or newer; 0.38.0 cannot be installed)
+dsh plugin --profile desktop add dsh-taskfold@<version>
 
 # a channel branch (keep the quotes: # starts a comment in sh)
 dsh plugin --profile web add "github:yindf/taskfold#master"
