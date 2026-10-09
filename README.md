@@ -29,12 +29,11 @@ For [DeepSeek Harness](https://www.npmjs.com/package/@deepseek-ai/dsh) (DSH).
 
 1. Open dsh Desktop and go to the **Plugins** page in the sidebar.
 2. Click **Add plugin** in the top-right corner.
-3. In **Package name or address**, enter `dsh-taskfold` — the dialog runs pnpm for you. One catch: dsh Desktop's bundled pnpm 11 enforces a `minimumReleaseAge` supply-chain policy with a **24-hour** window, so a release stays invisible to the bare name until it is a day old:
-   - **while a release is younger than that, pin it** — `dsh-taskfold@<version>` from the [versions list](https://www.npmjs.com/package/dsh-taskfold?activeTab=versions) (0.38.2 is current). An explicit version counts as consent: pnpm installs it and records it in the profile's `minimumReleaseAgeExclude`. Never take **0.37.7** or **0.38.0**: both declare the browser half as `file:./client`, cannot be installed from the registry (`ERR_PNPM_LINKED_PKG_DIR_NOT_FOUND`) and are marked deprecated on npm — and on 2026-10-08 the bare name fell back exactly there (to 0.37.6, the old three-row `cmpct-*` layout this page no longer describes);
-   - **from 2026-10-09 the bare name works on its own**: `dsh-taskfold` resolves to 0.38.1 from 09:36 (Beijing) and to 0.38.2 from 16:18, each as it turns a day old — the policy only ever lags a release by up to 24 h;
-   - **skip npm entirely:** paste the prebuilt `.tgz` from the [newest Release](https://github.com/yindf/taskfold/releases/latest) — a tarball URL is not subject to the age policy;
+3. In **Package name or address**, enter `dsh-taskfold` — the dialog runs pnpm for you:
+   - **want the newest release the moment it ships?** pin it — `dsh-taskfold@<version>` from the [versions list](https://www.npmjs.com/package/dsh-taskfold?activeTab=versions). pnpm 11 (bundled with dsh Desktop) leaves a release younger than 24 h out of the bare name's reach, and an explicit version overrides that; pnpm records it in the profile's `minimumReleaseAgeExclude` too. Never install **0.37.7** or **0.38.0** — uninstallable (`ERR_PNPM_LINKED_PKG_DIR_NOT_FOUND`) and deprecated on npm;
+   - **skip npm entirely:** paste the prebuilt `.tgz` from the [newest Release](https://github.com/yindf/taskfold/releases/latest) — a tarball is not subject to the release-age policy;
    - **follow a branch:** `github:yindf/taskfold#master` (rc channel) or `github:yindf/taskfold#alpha` (alpha channel) — needs direct GitHub access from this machine;
-   - a **local path** is accepted, but point it at a *copy*, never at your working checkout: whatever the dialog installs, the plugin manager treats as its own (it leaves `dsh-taskfold.frozen-*.bak` snapshots beside it and replaces the directory on upgrade). An install operation against a linked checkout damaged that checkout's `.git` once — the mechanism was never reproduced, so treat a working checkout as off-limits.
+   - a **local path** must point at a *copy*, never at your working checkout: the plugin manager treats whatever it installs as its own (it leaves `dsh-taskfold.frozen-*.bak` snapshots beside it and replaces the directory on upgrade).
 4. Leave **Registry** on **Default registry**; mainland-China networks can pick **Mainland China mirror** and retry.
 5. Click **Install**, wait for "Installed; it loads at the next start.", then click **Enable now**.
 6. **Restart dsh Desktop** — plugin composition is evaluated only at startup. Back on the Plugins page you should see a **Taskfold** card reading *Components · 2 total · 2 running* (`taskfold` and `taskfold-client`); the fold floor and the task-bar switch live on that card (see [Settings](#settings)).
@@ -47,10 +46,10 @@ That dialog does the same thing as the command line below: it writes the depende
 `dsh plugin --profile <name> add` is the shell equivalent of the dialog. `desktop` is dsh Desktop's profile and `web` is the DSH Web GUI's — use whichever one you actually run:
 
 ```sh
-# the newest npm release — the bare name lags up to 24 h behind (pnpm's minimumReleaseAge)
+# the newest npm release
 dsh plugin --profile desktop add dsh-taskfold
 
-# while a release is younger than a day, pin it (0.38.1 or newer; 0.37.7/0.38.0 cannot be installed)
+# a pinned version — required while the release is younger than 24 h; 0.37.7/0.38.0 cannot be installed
 dsh plugin --profile desktop add dsh-taskfold@<version>
 
 # a channel branch (keep the quotes: # starts a comment in sh)

@@ -29,12 +29,11 @@
 
 1. 打开 dsh Desktop，在侧边栏进入 **插件** 页。
 2. 点右上角的 **添加插件**。
-3. 在 **包名或地址** 一栏填 `dsh-taskfold`——安装框自己调 pnpm，不用你手工装依赖。但有一个坑：dsh Desktop 自带的 pnpm 11 会执行 `minimumReleaseAge` 供应链策略，窗口是 **24 小时**，所以一个版本在发布满一天之前，对裸包名根本不可见：
-   - **新版本还不满一天时，钉住它**——`dsh-taskfold@<版本>`（版本号从 [npm 版本列表](https://www.npmjs.com/package/dsh-taskfold?activeTab=versions) 取，目前是 0.38.2）。显式写版本等于明确授权：pnpm 会照装，并把它记进 profile 的 `minimumReleaseAgeExclude`。**0.37.7 与 0.38.0 千万别装**：它们把浏览器半件声明成 `file:./client`，从注册表根本装不上（`ERR_PNPM_LINKED_PKG_DIR_NOT_FOUND`），npm 上已标记 deprecated——而 2026-10-08 那天裸包名恰好退到了那里（0.37.6，也就是本页已不再描述的三行 `cmpct-*` 旧形态）；
-   - **2026-10-09 起裸包名自己就能用**：`dsh-taskfold` 从 09:36（北京时间）起解析到 0.38.1、从 16:18 起解析到 0.38.2，各自满 24 小时即生效——这条策略最多只会让新版本晚一天被裸包名看到；
-   - **完全绕过 npm**：直接粘[最新 Release](https://github.com/yindf/taskfold/releases/latest) 里预构建的 `.tgz` 直链——tarball 不受发布时长策略限制；
+3. 在 **包名或地址** 一栏填 `dsh-taskfold`——安装框自己调 pnpm，不用你手工装依赖：
+   - **想在新版本一发布就装上？钉住它**——`dsh-taskfold@<版本>`（版本号从 [npm 版本列表](https://www.npmjs.com/package/dsh-taskfold?activeTab=versions) 取）。dsh Desktop 自带的 pnpm 11 会让发布不满 24 小时的版本对裸包名不可见，显式写版本即可绕过，pnpm 还会把它记进 profile 的 `minimumReleaseAgeExclude`。**0.37.7 与 0.38.0 千万别装**——它们从注册表装不上（`ERR_PNPM_LINKED_PKG_DIR_NOT_FOUND`），npm 上已标记 deprecated；
+   - **完全绕过 npm**：直接粘[最新 Release](https://github.com/yindf/taskfold/releases/latest) 里预构建的 `.tgz` 直链，tarball 不受发布时长策略限制；
    - **跟分支走**：`github:yindf/taskfold#master`（rc 通道）/ `github:yindf/taskfold#alpha`（alpha 通道），要求本机能直连 GitHub；
-   - **本机路径**也能用，但请指向**副本**，别指向你的工作检出：装进来的目录，插件管理器会当成自己的（会在旁边留下 `dsh-taskfold.frozen-*.bak` 快照，升级时整个替换）。本仓库开发史上就有一次安装操作把被 link 的检出仓库 `.git` 弄坏过——机制至今没能复现，所以工作检出别拿去 link。
+   - **本机路径**必须指向**副本**，绝不能指向你的工作检出：装进来的目录，插件管理器会当成自己的（会在旁边留下 `dsh-taskfold.frozen-*.bak` 快照，升级时整个替换）。
 4. **安装源** 保持「默认安装源」；中国大陆网络若拉取失败，改选「中国大陆镜像源」再试。
 5. 点 **安装**，等它显示「已安装，下次启动后加载。」，再点 **立即启用**。
 6. **重启 dsh Desktop**——插件组合只在启动时求值。重启后回到 **插件** 页，应看到 **Taskfold** 卡片写着 `包含的组件 · 共 2 个 · 2 运行中`（`taskfold` 与 `taskfold-client` 两行）；折叠下限与任务栏开关就在这张卡片里（见[设置](#设置)）。
@@ -47,10 +46,10 @@
 `dsh plugin --profile <profile 名> add` 就是上面对话框的命令行等价物。`desktop` 是 dsh Desktop 的 profile，`web` 是 DSH Web GUI 的——按你实际跑的那个改：
 
 ```sh
-# npm 上的最新发布——裸包名最多比它晚 24 小时（pnpm 的 minimumReleaseAge）
+# npm 上的最新发布
 dsh plugin --profile desktop add dsh-taskfold
 
-# 新版本不满一天时钉住它（0.38.1 起才装得上；0.37.7 / 0.38.0 装不上）
+# 钉住某个版本——发布不满 24 小时时必须钉；0.37.7 / 0.38.0 装不上
 dsh plugin --profile desktop add dsh-taskfold@<版本>
 
 # 跟某个通道的分支（引号不能省：# 在 sh 里是注释）
