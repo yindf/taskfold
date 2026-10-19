@@ -4,6 +4,58 @@ All notable changes to this project are documented per commit series. Since
 0.37.6 every release also ships to npm (`latest`) — before that, the npm copy
 lagged behind the channel branches on purpose.
 
+## 0.38.3 — dsh 0.2.1-rc.2: re-verified, no plugin change (unreleased draft 2026-10-19)
+
+A minor step this time, and the package set moved with it: the dsh monorepo went
+0.2.0-rc.2 → 0.2.1-rc.2 in lockstep, but the `@deepseek-ai/*` closure grew from
+288 to 306 packages (28 added — `dsh-plugin-market`, `dsh-tool-terminal`,
+`dsh-tool-working-directory`, `dsh-experimental-session-search`, …; 10 removed —
+`dsh-hook-protocol`, `dsh-hooks-codex`/`dsh-hooks-claude-code`,
+`dsh-webhook`/`dsh-webhook-github`, `dsh-client-ui-slots`, `dsh-client-store`,
+`dsh-subagent-in-process-driver`, `dsh-invariants`,
+`dsh-experimental-schedule-bundle`), so the host surface was re-probed rather
+than assumed. The compatibility gate re-checked with the real
+`evaluatePluginCompatibility` on 0.2.1-rc.2 (`@deepseek-ai/dsh-app-boot@0.2.1-rc.2`,
+`getDshRuntimeVersion()` → `0.2.1-rc.2`): the existing `^0.2.0-rc.1` peer floor
+still passes — the gate's own `satisfies()` runs semver with
+`includePrerelease: true`, so a 0.2.x prerelease anywhere inside the caret's
+`<0.3.0-0` bound is admitted and no same-minor floor is required — v0.38.2 loads
+as-is, no code or manifest change. Three negative controls (peers forced to
+`^0.1.7-rc.1` together and singly; the real manifest judged against a
+0.1.7-rc.1 runtime) are rejected with unmet-requirements objects, so the pass
+is not vacuous.
+
+Verification chain against the real 0.2.1-rc.2 packages: host-API shape probes —
+52/52 (`BasicCompactionEngine` default export with `compactRegion` arity 4 and
+`summarize` arity 3 on the prototype, subclassed exactly as the fold engine does
+it; `BlockAssembler` driven to a real `blocks()` result; the schemastery CJS
+chain plus this plugin's own `Config` metadata; all seven services, three hooks
+(`agent/pre-step`, `agent/turn-stopping`, `compaction/summary-error`) and six
+methods it uses present; all four `@deepseek-ai` specifiers it references
+resolvable); the client-contract sweep — 19/19 (`conversation.input.dock`,
+`plugins.bundle.config`, configForms `whileServed`, `window.__ModuleLoader__`,
+`SettingsFormModel`, `settingsNumberField`, plus `slots`/`configForms`/`locale`,
+`inject(key, callback)` and `register(...)`, with the served bundle matching
+`client/taskfold-client.mjs` for all 752 lines apart from the appended `;` and
+sourcemap); an end-to-end probe host (real 0.2.1-rc.2 build over a hash-pinned
+copy of this tree at 4c7985b, on an isolated `DSH_HOME`) with empty stderr and
+zero plugin-disable lines — checked against BOTH wordings, because 0.2.1
+rewords the diagnostic from `disabling profile plugin row` to `disabling profile
+plugin` — whose `settings/describe` serves the `taskfold` namespace (the row id,
+not the historical `cmpct-region`) at
+`{"minSpanTokens":2000,"showTaskBar":true}` with `applies: live` and the
+plugin's own schema verbatim, and whose `--dump-config` lists both rows
+(`taskfold` → `dsh-taskfold/plugins`, `taskfold-client` → `dsh-taskfold-client`)
+with no disabled marker; and the offline suite — 14 suites, 236 tests, 0 fail.
+Not verified in the 0.2.1-rc.2 probe: a real fold/summarization round trip (the
+isolated home had no model-provider credentials) — engine shape, subclassing,
+the resolver, the shim's construction and a driven `BlockAssembler` stand in for
+it. Both READMEs'
+"Supported dsh versions" records updated (superseded 0.2.0-rc.2 entry replaced
+per the one-entry-per-channel convention).
+
+  - record 0.2.1-rc.2 as the verified rc-channel host in README.md + README.zh.md
+
 ## 0.38.2 — install instructions that survive npm's release-age policy (2026-10-08)
 
 The install sections now lead with a **version-pinned** install
