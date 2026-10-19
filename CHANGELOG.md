@@ -4,7 +4,7 @@ All notable changes to this project are documented per commit series. Since
 0.37.6 every release also ships to npm (`latest`) — before that, the npm copy
 lagged behind the channel branches on purpose.
 
-## 0.38.3 — dsh 0.2.1-rc.2: re-verified, no plugin change (unreleased draft 2026-10-19)
+## 0.38.3 — dsh 0.2.1-rc.2: re-verified, no plugin change (2026-10-19)
 
 A minor step this time, and the package set moved with it: the dsh monorepo went
 0.2.0-rc.2 → 0.2.1-rc.2 in lockstep, but the `@deepseek-ai/*` closure grew from
