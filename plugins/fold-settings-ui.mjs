@@ -119,7 +119,8 @@ export function minSpanTokensFieldSpec(primitives) {
 
 /**
  * A boolean field staged as its literal text ('true'/'false'), rendered as a
- * Switch. An empty draft clears back to the composition default (true).
+ * Switch. An empty draft clears back to the composition default (false: the
+ * dock is opt-in — see the host Config schema in taskfold.mjs).
  * Pure — exported for offline tests.
  * @returns {object} field conversion spec for SettingsFormModel.
  */

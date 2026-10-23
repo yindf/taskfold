@@ -518,7 +518,8 @@ function minSpanTokensFieldSpec(primitives) {
 
 /**
  * A boolean field staged as its literal text ('true'/'false'), rendered as a
- * Switch. An empty draft clears back to the composition default (true).
+ * Switch. An empty draft clears back to the composition default (false: the
+ * dock is opt-in — see the host Config schema in taskfold.mjs).
  * Pure — exported for offline tests.
  * @returns {object} field conversion spec for SettingsFormModel.
  */
@@ -681,7 +682,7 @@ function makeFoldSettingsCard(react, primitives) {
 			const showDock = () => {
 				if (dock === undefined) dock = ctx.slots.inject("conversation.input.dock", () => ctx.slots.register({
 					name: "conversation.input.dock",
-					id: "__DOCK_ID__",
+					id: "task-stack",
 					order: 15
 				}, TaskStackDock));
 			};

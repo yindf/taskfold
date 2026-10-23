@@ -42,7 +42,27 @@ export function transformModel(source) {
 }
 
 /**
+ * Substitute EVERY occurrence of one placeholder, with the value inserted
+ * literally. `String.replace` was wrong twice over here: a string pattern
+ * replaces only the FIRST match (the template declares the dock id at both
+ * registrations — mount and re-show — so shipped bundles kept a literal
+ * `__DOCK_ID__` in the re-show path), and it reads `$&`/`$'` in the
+ * replacement as patterns, so a spliced source carrying `$&` would expand to
+ * the placeholder instead of landing verbatim. `split`/`join` does neither.
+ * @param {string} text - text to rewrite.
+ * @param {string} token - placeholder to replace.
+ * @param {string} value - literal replacement.
+ * @returns {string} the rewritten text.
+ */
+function substitute(text, token, value) {
+  return text.split(token).join(value)
+}
+
+/**
  * Render the bundle text from its inputs (pure; the freshness gate uses it).
+ * Every placeholder must be gone from the result: a template that grows a
+ * fourth token the build does not know, or an id the substitution misses,
+ * would otherwise ship as a literal `__…__` inside a served bundle.
  * @param {object} parts
  * @param {string} parts.template - envelope source with placeholders.
  * @param {string} parts.model - transformed task-stack-ui body.
@@ -52,11 +72,15 @@ export function transformModel(source) {
  * @returns {string} deterministic bundle source.
  */
 export function renderBundle({ template, model, settingsModel, pkgId, dockId }) {
-  return template
-    .replace('__TASKFOLD_MODEL_SOURCE__', model)
-    .replace('__FOLD_SETTINGS_MODEL_SOURCE__', settingsModel)
-    .replace('__PACKAGE_ID__', pkgId)
-    .replace('__DOCK_ID__', dockId)
+  let out = substitute(template, '__TASKFOLD_MODEL_SOURCE__', model)
+  out = substitute(out, '__FOLD_SETTINGS_MODEL_SOURCE__', settingsModel)
+  out = substitute(out, '__PACKAGE_ID__', pkgId)
+  out = substitute(out, '__DOCK_ID__', dockId)
+  const leftover = [...new Set([...out.matchAll(/__[A-Z_]+__/g)].map((m) => m[0]))]
+  if (leftover.length > 0) {
+    throw new Error('build-client: unsubstituted template placeholders: ' + leftover.join(', '))
+  }
+  return out
 }
 
 /** Repo root, derived from this file. Exported so the release guard and the

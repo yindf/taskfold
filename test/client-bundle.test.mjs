@@ -54,6 +54,37 @@ test('bundle registers the task-stack dock beside shipped docks', () => {
   assert.ok(committed.includes('dockReader = lctx.locale.bind(TASK_STACK_UI_NS)'), 'the dock reader follows the locale fiber lifetime')
 })
 
+test('both dock registrations carry the id: no template placeholder survives', () => {
+  /* The envelope declares the dock id TWICE — the mount registration and the
+   * re-show path showDock() registers after a hide — and the build used
+   * String.replace, which substitutes only the FIRST occurrence. Shipped
+   * bundles therefore carried a literal `__DOCK_ID__` on the re-show path,
+   * which is exactly the path a hidden-by-default dock takes as soon as the
+   * settings switch turns it back on. */
+  assert.equal(committed.includes('__DOCK_ID__'), false, 'the re-show registration must carry the real id')
+  assert.deepEqual(committed.match(/id: "task-stack"/g)?.length, 2, 'mount and re-show must register the same id')
+  assert.deepEqual(committed.match(/__[A-Z_]+__/g), null, 'no template placeholder may survive into the bundle')
+})
+
+test('renderBundle refuses a surviving placeholder and inserts values literally', () => {
+  const pkg = JSON.parse(readFileSync(join(root, 'client', 'package.json'), 'utf8'))
+  const template = readFileSync(join(root, 'scripts', 'taskfold-client.template.mjs'), 'utf8')
+  const model = transformModel(readFileSync(join(root, 'plugins', 'task-stack-ui.mjs'), 'utf8'))
+  const settingsModel = transformModel(readFileSync(join(root, 'plugins', 'fold-settings-ui.mjs'), 'utf8'))
+  const render = (overrides) => renderBundle({ template, model, settingsModel, pkgId: pkg.name, dockId: TASK_STACK_DOCK_ID, ...overrides })
+  /* A placeholder the build does not know — or one it forgets to substitute —
+   * must fail the build loudly instead of shipping as `__…__` in a served
+   * bundle (the dock id shipped that way once: see the test above). */
+  assert.throws(
+    () => render({ template: template + '\n// __LEFTOVER__\n' }),
+    /__LEFTOVER__/,
+    'an unsubstituted placeholder must throw, naming the token'
+  )
+  /* `$&` in a substitution value is a replacement PATTERN to String.replace:
+   * it would expand to the matched placeholder instead of landing verbatim. */
+  assert.ok(render({ dockId: '$&' }).includes('id: "$&"'), 'values are inserted literally, never as replacement patterns')
+})
+
 test('fold-settings dictionaries ship exact en/zh key parity', async () => {
   const { makeFoldSettingsCard } = await import('../plugins/fold-settings-ui.mjs')
   const stubReact = { createElement: () => null, Fragment: null }
@@ -218,6 +249,25 @@ test('fold-floor field spec clamps drafts to the schema bounds', async () => {
   assert.equal(spec.parse('1000001'), undefined)
   assert.equal(spec.parse('3.5'), undefined)
   assert.equal(spec.parse('abc'), undefined)
+})
+
+test('the task bar is hidden by default: the schema default and the hide condition agree', async () => {
+  /* The dock is opt-in: a profile that never touched the switch is served the
+   * schema default, and the client hides the dock only on an explicit false.
+   * Both halves have to agree — a schema default of true would render the
+   * banner for every untouched profile, while a client that hid on anything
+   * but an explicit false would hide it where settings are unavailable. */
+  const host = readFileSync(join(root, 'plugins', 'taskfold.mjs'), 'utf8')
+  assert.match(host, /showTaskBar: z\.boolean\(\)\.default\(false\)\.volatile\(\)/, 'the host schema default must be false (hidden)')
+  assert.match(host, /Default false/, 'the field description must state the hidden default')
+  const { showTaskBarFieldSpec } = await import('../plugins/fold-settings-ui.mjs')
+  const spec = showTaskBarFieldSpec()
+  assert.equal(spec.format(undefined), '', 'an unset value formats empty, so the switch reads off')
+  assert.equal(spec.format(false), 'false')
+  assert.equal(spec.format(true), 'true')
+  assert.equal(spec.parse('').kind, 'clear', 'Reset clears back to the schema default (false)')
+  assert.ok(committed.includes('snap.value.showTaskBar === false) hideDock()'), 'the bundle hides the dock on exactly false')
+  assert.equal(/showTaskBar === true/.test(committed), false, 'the bundle must not invert the condition')
 })
 
 test('nested client package owns the browser half; root declares no client', () => {

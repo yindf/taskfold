@@ -106,8 +106,8 @@ try {
     Config = z.object({
       minSpanTokens: z.number().step(1).min(0).max(MIN_SPAN_TOKENS_MAX).default(DEFAULT_MIN_SPAN_TOKENS).volatile()
         .description('Fold floor (issue #2): the minimum number of estimated tokens a closed task\'s span must carry before a summarization call is billed for it. The count is a CJK-aware heuristic over the span\'s message text, taken before any model call. Spans below the floor close unfolded — their original content stays on the surface. Default 2000: below it a summary\'s fixed overhead outweighs the context saved (docs/fold-floor.md). 0 folds everything (legacy behavior).'),
-      showTaskBar: z.boolean().default(true).volatile()
-        .description('Show the task-stack dock beside the conversation input. The dock lists the session\'s named tasks and their fold state; hiding it does not affect folding itself. Default true.')
+      showTaskBar: z.boolean().default(false).volatile()
+        .description('Show the task-stack dock beside the conversation input. The dock lists the session\'s named tasks and their fold state; hiding it does not affect folding itself. Default false: the banner stays out of the way unless it is switched on.')
     })
   }
 } catch (err) { Config = undefined }
