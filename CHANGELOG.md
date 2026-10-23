@@ -4,6 +4,53 @@ All notable changes to this project are documented per commit series. Since
 0.37.6 every release also ships to npm (`latest`) — before that, the npm copy
 lagged behind the channel branches on purpose.
 
+## 0.39.0 — the task-banner dock is hidden by default (2026-10-23)
+
+The task-stack dock — the banner beside the conversation input that lists the
+session's named tasks and their fold state — is now OPT-IN: `showTaskBar`'s
+schema default flipped `true` → `false`, so a profile that never touched the
+switch no longer gets the banner. Nothing else about the feature changed: the
+Taskfold card on the Plugins page still stages the same volatile Switch, and the
+client's rule is untouched — the dock is hidden on exactly a served `false`, so
+an unserved namespace or a missing ui-settings/configForms service still renders
+it instead of silently dropping the dock. Switching it back on restores the old
+behaviour verbatim; a profile that already persisted `showTaskBar: true` keeps
+its banner (the default only decides the profiles that never chose).
+
+The default lives in the host schema (`plugins/taskfold.mjs` — the Config field
+dsh-settings exposes, validates and persists through the active profile's
+Cordis patch), and both halves moved together: the field description, the
+comment in `plugins/fold-settings-ui.mjs`, the dock sections of both READMEs,
+and the regenerated `client/taskfold-client.mjs`. `test/client-bundle.test.mjs`
+now pins the pair rather than either half alone — a schema default of `true`
+would render the banner for every untouched profile, while a client that hid on
+anything but an explicit `false` would hide it where settings are unavailable —
+and it also asserts the committed bundle carries no unsubstituted placeholder.
+
+Regenerating that bundle surfaced a real defect in the published 0.38.3: the
+template's two `__DOCK_ID__` slots went through `String.replace`, which
+substitutes only the FIRST match, so the dock's registration id shipped as the
+literal `"__DOCK_ID__"` (the list slot validates `id`, and the only valid value
+is `task-stack`). The old default hid the bug — the mount-time registration is
+the first slot — while the now-default path (hidden at boot, then switched on)
+is exactly the one that reaches the second. `substitute()` now replaces every
+occurrence (split/join, literal insertion, so replacement-pattern characters in
+a value cannot reinterpret it), and `renderBundle` fails the build on any
+leftover `__[A-Z_]+__` placeholder, so the class cannot ship silently again.
+`test/client-bundle.test.mjs` locks both halves (two `id: "task-stack"`
+occurrences, zero leftovers) and keeps the guard itself under test.
+
+Verification: the default probed through the real `@deepseek-ai/schemastery`
+from the 0.2.1-rc.2 host — `Config({}).showTaskBar.get()` → `false`,
+`meta.default` → `false`, `meta.volatile` → `true`, with `minSpanTokens` still
+`2000` — and a fresh render of the bundle is byte-identical to the committed one
+(the release's own freshness gate, re-run here). Offline suite: 14 suites, 239
+tests, 239 pass, 0 fail. Not applicable this time: `verify-cache.mjs
+--since-restart` — the fold envelope is untouched (no summarization input,
+prefix or drain change), so there is no new live-cache number to record.
+
+  - the task-banner dock is hidden by default
+
 ## 0.38.3 — dsh 0.2.1-rc.2: re-verified, no plugin change (2026-10-19)
 
 A minor step this time, and the package set moved with it: the dsh monorepo went
