@@ -4,6 +4,71 @@ All notable changes to this project are documented per commit series. Since
 0.37.6 every release also ships to npm (`latest`) — before that, the npm copy
 lagged behind the channel branches on purpose.
 
+## 0.39.1 — dsh 0.2.1-rc.3: re-verified, no plugin change (2026-10-26)
+
+A patch step this time, and the package set barely moved: the dsh monorepo went
+0.2.1-rc.2 → 0.2.1-rc.3 and the `@deepseek-ai/*` closure grew from 306 to 307
+packages — one added (`dsh-client-ui-entry-customization`), none removed — so
+the host surface was re-probed rather than assumed. Per-file diffs of the 21
+packages this plugin touches show that the server-side ones — `dsh-app-boot`,
+`dsh-compaction-basic`, `dsh-llm`, `dsh-tools`, `dsh-system-prompt`,
+`dsh-session-projection`, `dsh-token-meter`, `dsh-agent-loop`, `dsh-session`,
+`dsh-session-persistence` — changed only their `package.json` version field,
+while the real code deltas are client-side (`dsh-client-ui-primitives`,
+`dsh-client-ui-conversation`, `dsh-client-modules`,
+`dsh-client-ui-plugin-manager`) plus the rebuilt `dsh-web-frontend` shell
+(`index-CN7NIWNw.js` → `index-BXV-oxvX.js`) and `dsh-web-app/cordis.patch.yml`.
+
+The compatibility gate re-checked with the real
+`evaluatePluginCompatibility` on 0.2.1-rc.3
+(`@deepseek-ai/dsh-app-boot@0.2.1-rc.3`, `getDshRuntimeVersion()` →
+`0.2.1-rc.3`): the existing `^0.2.0-rc.1` peer floor still passes — the gate's
+own `satisfies()` runs semver with `includePrerelease: true`, so a 0.2.x
+prerelease anywhere inside the caret's `<0.3.0-0` bound is admitted and no
+same-minor floor is required — v0.39.0 loads as-is, no code or manifest change.
+Three negative controls (peers forced to `^0.1.7-rc.1` together and singly; the
+real manifest judged against a 0.1.7-rc.1 runtime) are rejected with
+unmet-requirements objects, so the pass is not vacuous.
+
+Verification chain against the real 0.2.1-rc.3 packages: host-API shape probes —
+52/52 (`BasicCompactionEngine` default export with `compactRegion` arity 4 and
+`summarize` arity 3 on the prototype, subclassed exactly as the fold engine does
+it; `BlockAssembler` driven to a real `blocks()` result; the schemastery CJS
+chain plus this plugin's own `Config` metadata — `minSpanTokens` 0..1000000,
+default 2000, volatile, and `showTaskBar` default `false`, volatile, i.e.
+v0.39.0's opt-in default exactly as the host serves it; all seven services,
+three hooks (`agent/pre-step`, `agent/turn-stopping`,
+`compaction/summary-error`) and six methods it uses present; all four
+`@deepseek-ai` specifiers it references resolvable); the client-contract sweep —
+19/19 present, 0 absent (`conversation.input.dock`, `plugins.bundle.config`,
+configForms `whileServed`, `window.__ModuleLoader__`, `SettingsFormModel`,
+`settingsNumberField`, plus `slots`/`configForms`/`locale`,
+`inject(key, callback)` and `register(...)`, with the rebuilt shell's factory map
+supplying both specifiers the bundle requires and the served bundle matching
+`client/taskfold-client.mjs` for all 753 lines apart from the appended `;` and
+sourcemap); an end-to-end probe host (real 0.2.1-rc.3 build over a hash-pinned
+copy of this tree at 9e98e04, on an isolated `DSH_HOME`) with empty stderr and
+zero plugin-disable lines — checked against BOTH wordings, because 0.2.1+
+prints `disabling profile plugin ${label}` while 0.2.0 printed
+`disabling profile plugin row "<id>"` — whose `settings/describe` serves the
+`taskfold` namespace at `{"minSpanTokens":2000,"showTaskBar":false}` with
+`applies: live` and the plugin's own schema verbatim, and whose `--dump-config`
+lists both rows (`taskfold` → `dsh-taskfold/plugins`, `taskfold-client` →
+`dsh-taskfold-client`) with no disabled marker; and the offline suite — 14
+suites, 239 tests, 0 fail. The desktop payload this record was written in is
+already `0.2.1-rc.3` (`desktopVersion` in its runtime manifest), running this
+plugin with task marks, folds and `fold_recall` active. Not verified in the
+0.2.1-rc.3 probe: a real fold/summarization round trip (the isolated home had no
+model-provider credentials) — engine shape, subclassing, the resolver, the
+shim's construction and a driven `BlockAssembler` stand in for it. Both READMEs'
+"Supported dsh versions" records updated (the 0.2.1-rc.2 entry replaced per the
+one-entry-per-channel convention). Not applicable this time:
+`verify-cache.mjs --since-restart` — the fold envelope is untouched (no
+summarization input, prefix or drain change), so there is no new live-cache
+number to record.
+
+  - record 0.2.1-rc.3 as the verified rc-channel host in README.md + README.zh.md
+
 ## 0.39.0 — the task-banner dock is hidden by default (2026-10-23)
 
 The task-stack dock — the banner beside the conversation input that lists the
