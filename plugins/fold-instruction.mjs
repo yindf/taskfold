@@ -104,7 +104,7 @@ export const FOLD_SUMMARY_INSTRUCTION = buildFoldInstruction({})
 // bullets. The sanctioned customization hook (summarize()) is bound to the
 // host's own AUTO engine instance, which a plugin cannot replace, so this
 // instruction is swapped in at the one neutral seam every compaction call
-// crosses: ctx.llm.stream (see compact-region.mjs's apply()).
+// crosses: ctx.llm.stream (see taskfold.mjs's apply()).
 export const DETAILED_CHECKPOINT_INSTRUCTION = [
   'You are now acting as a compaction engine for this AI coding assistant. Condense the conversation ABOVE into a structured checkpoint that lets another model resume the work with no loss of context.',
   '',

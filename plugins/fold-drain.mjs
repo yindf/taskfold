@@ -42,7 +42,8 @@
  * process-wide guard was the last cross-session coupling in the plugin.
  */
 import { sessionEvents } from './events.mjs'
-import { deferredArchivePlan, archivesOf } from './task-marks.mjs'
+import { deferredArchivePlan, archivesOf, pendingArchiveKey } from './task-marks.mjs'
+import { foldFloorFromConfig, belowFoldFloor } from './fold-settings.mjs'
 
 /** Retry budget for one queued archive (see the header contract). */
 export const MAX_FOLD_ATTEMPTS = 5
@@ -173,7 +174,7 @@ async function foldRegion(session, agent, engine, name, startSeq, endSeq, signal
 /**
  * The drain factory. `engineFor` comes from createFoldEngine; the returned
  * processDeferredArchives(agent, signal) is wired into BOTH 'agent/pre-step'
- * and 'agent/turn-stopping' (compact-region.mjs): pre-step keeps every queued
+ * and 'agent/turn-stopping' (taskfold.mjs): pre-step keeps every queued
  * archive moving; turn-stopping folds turn-final deliverables while the
  * provider prefix cache is still hot. Single flight is AGENT-LEVEL (0.35.0):
  * the running guard is keyed by session id, so each session folds ITSELF
@@ -199,7 +200,22 @@ async function foldRegion(session, agent, engine, name, startSeq, endSeq, signal
  * foldable. The skip set dies with the pass — the next boundary retries
  * everything from scratch.
  */
-export function createArchiveDrain({ ctx, engineFor, closingTasks }) {
+export function createArchiveDrain({ ctx, engineFor, closingTasks, settings, belowFloorKeys }) {
+  // Fold floor (issue #2), re-resolved at EVERY evaluation point: settings
+  // may be a getter (production — wraps the plugin's volatile config ref,
+  // so a Settings-page edit applies at the next drain pass, no restart) or
+  // a plain value (tests). Anything falsy folds everything — the exact
+  // pre-0.37.0 behavior.
+  const foldSettings = typeof settings === 'function' ? settings : () => settings
+  // Display-side mirror of the floor settles (taskfold.mjs hands the
+  // SAME Set to the projection view annotator): a below-floor settle is
+  // TERMINAL — the row will never fold, yet the projection keeps listing it
+  // in pendingArchives (its close result is never shadowed), so the dock
+  // needs the verdict to stop rendering it as perpetually 'folding…'.
+  // Bounded display cache: past the cap it just starts over (one boundary
+  // of mislabeling at worst, and only after four thousand settles).
+  const settleKeys = belowFloorKeys instanceof Set ? belowFloorKeys : null
+  const SETTLE_KEY_CAP = 4096
   const settledArchives = new Map() // session.id → Set<seq>
   const autoFoldFailures = new Map() // session.id → Map<name, bucket>
   const autoFoldAttempts = new Map() // session.id → Map<seq, { attempts, nextPass, name }>
@@ -238,6 +254,24 @@ export function createArchiveDrain({ ctx, engineFor, closingTasks }) {
   function isSettledArchive(session, seq) {
     const set = settledArchives.get(session.id)
     return set !== undefined && set.has(seq)
+  }
+
+  /**
+   * Settle one below-floor span (0.37.6 FALLBACK path): in-memory settle
+   * plus the display-key publish (the dock prunes the row). This now runs
+   * only for rows WITHOUT the close-time marker in their 'Task ended: '
+   * result — pre-0.37.6 logs and non-solitary closes; a marked close never
+   * enters pendingArchives at all, so the drain never sees it. The settle
+   * is in-memory: a restart re-measures those legacy rows under the
+   * current floor (documented; the marker path is the permanent one).
+   */
+  function markFloorSettled(session, entry) {
+    markArchiveSettled(session, entry.seq)
+    if (settleKeys !== null) {
+      if (settleKeys.size >= SETTLE_KEY_CAP) settleKeys.clear()
+      settleKeys.add(pendingArchiveKey(entry))
+      settleKeys.version += 1
+    }
   }
 
   function markArchiveSettled(session, seq) {
@@ -287,7 +321,9 @@ export function createArchiveDrain({ ctx, engineFor, closingTasks }) {
     try {
       // Entries passed over this pass ('wait', or a backoff boundary):
       // skipped, not fatal. Reset when the pass ends so the next boundary
-      // re-tries them.
+      // re-tries them. A below-floor settle is PERMANENT — settled entries
+      // never re-enter this loop, whatever later floor edits say.
+      const floorNow = foldFloorFromConfig(foldSettings())
       const skipped = new Set()
       for (;;) {
         const entries = archivesOf(ctx, session)
@@ -309,13 +345,31 @@ export function createArchiveDrain({ ctx, engineFor, closingTasks }) {
         // and with anchors being begin-message seqs the first post-close
         // assistant message can never sit after the earliest successor
         // anchor anyway — the old defer branch was unreachable.
-        const plan = deferredArchivePlan(entry, session.surface.nodes, sessionEvents(session))
+        // ONE event-log snapshot per entry: deferredArchivePlan and
+        // belowFoldFloor both walk it, and events.mjs asks for a single
+        // call per consumer (each snapshot is a full-log copy).
+        const events = sessionEvents(session)
+        const plan = deferredArchivePlan(entry, session.surface.nodes, events)
         if (plan.action === 'wait') {
           skipped.add(entry.seq)
           continue
         }
         if (plan.action === 'drop') {
           markArchiveSettled(session, entry.seq)
+          clearArchiveFailure(session, entry.name)
+          continue
+        }
+        // Fold floor (issue #2): a region below the configured minSpanTokens
+        // (Settings page → profile config) closes UNFOLDED — settle before
+        // the engine is even built, so no summarization call is billed for
+        // a span too small to pay for itself. The count is the CJK-aware
+        // pre-call estimate from fold-settings (the engine's measured
+        // shadowedTokenCount arrives only after the call). The settle is
+        // PERMANENT (0.37.5): recorded in the session's skip ledger, never
+        // reopened by a lower floor or a restart — retro-folding settled
+        // spans would invalidate the prefix cache behind them.
+        if (belowFoldFloor(plan, session.surface.nodes, { minSpanTokens: floorNow }, events)) {
+          markFloorSettled(session, entry)
           clearArchiveFailure(session, entry.name)
           continue
         }

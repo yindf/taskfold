@@ -16,11 +16,27 @@
 // a prebuilt `dsh-taskfold-<version>.tgz` attached; `assets` re-runs just that
 // step for an already-released version (and repairs releases shipped without it).
 //
+// When a token is available, `release` (and its PENDING resume) additionally
+// publishes the version to npm — an automation-type token, because 2FA accounts
+// reject publish-time OTPs for granular tokens. The token is read from the
+// process environment and, on Windows, from the user-level variable as well (a
+// host-launched shell snapshots its environment at start-up, so a token set
+// after that is invisible to the child while plainly set for the user). The npm
+// step is idempotent (a version already on the registry is a no-op) and never
+// fails the release: everything git-side is durable before it runs.
+//
+// `npm` re-runs just that step for an ALREADY-RELEASED version — the repair path
+// for a release whose npm step was skipped (no token at the time) or failed.
+// `release` cannot repair that: a fully-pushed release is CLEAN, and release
+// resumes pushes only in PENDING. npm publishes the WORKING TREE, never a tag,
+// so `npm` refuses unless this checkout really is that release (package.json
+// version, local tag, clean tree, tree identical to the tag).
+//
 // Version numbers are strict `X.Y.Z` numerics; prerelease/build metadata are
 // rejected. The only source of truth for the NEXT version is the CHANGELOG
 // top entry; package.json is synced by this script, never by hand.
 import { spawnSync } from 'node:child_process'
-import { readFileSync, writeFileSync, openSync, closeSync, unlinkSync, mkdtempSync, existsSync, rmSync } from 'node:fs'
+import { readFileSync, writeFileSync, openSync, closeSync, unlinkSync, mkdtempSync, existsSync, rmSync, readdirSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -151,7 +167,13 @@ export function classifyState({ top, packageVersion, tagVersion, dirty, remoteHa
 // external tool degrades the same way.
 function spawnCaptured(file, args, opts) {
   const useShell = !!(opts && opts.shell)
-  const r = spawnSync(file, args, { cwd: repoRoot, encoding: 'utf8', shell: useShell })
+  const cwd = (opts && opts.cwd) || repoRoot
+  // Every external call carries a deadline. A `gh` that never answers used to
+  // stall a release forever with an empty log — the 0.38.1 asset upload was
+  // never created and nothing anywhere reported a failure. A timeout is an
+  // ordinary failure with an ordinary hint instead.
+  const timeoutMs = (opts && opts.timeoutMs) || 300000
+  const r = spawnSync(file, args, { cwd, encoding: 'utf8', shell: useShell, timeout: timeoutMs })
   // Discovery probes opt out: re-running a missing tool through the fallback
   // below cannot fix an ENOENT, it only hides it.
   if (opts && opts.probe) return r
@@ -160,7 +182,7 @@ function spawnCaptured(file, args, opts) {
     let fd
     try {
       fd = openSync(tmp, 'w')
-      const s = spawnSync(file, args, { cwd: repoRoot, stdio: ['ignore', fd, 'ignore'], shell: useShell })
+      const s = spawnSync(file, args, { cwd, stdio: ['ignore', fd, 'ignore'], shell: useShell, timeout: timeoutMs })
       closeSync(fd); fd = undefined
       const stdout = readFileSync(tmp, 'utf8')
       return { status: s.status, stdout, stderr: '' }
@@ -218,6 +240,16 @@ function latestTag() {
 function tagExists(version) {
   const r = git(['tag', '--list', 'v' + version], { okNonZero: true })
   return (r.stdout || '').split(/\r?\n/).some((l) => l.trim() === 'v' + version)
+}
+
+/**
+ * True when the working tree carries exactly the tag's content. `npm publish`
+ * ships the working tree and never a tag, so this is the guard that keeps
+ * unreleased work from going out under a released version number. Untracked
+ * files are invisible to `git diff`; the dirty-tree check covers those.
+ */
+function treeMatchesTag(version) {
+  return git(['diff', '--quiet', '--no-ext-diff', 'v' + version, '--', '.'], { okNonZero: true }).status === 0
 }
 
 /**
@@ -333,6 +365,67 @@ export function manualAssetHint(version, tarballName) {
 }
 
 /**
+ * One-line reason an external call failed: a timeout, a signal, the tool's own
+ * first stderr line, or the exit status. "npm pack did not produce the tarball"
+ * without the why is what made the first bad `assets` run unreadable.
+ */
+export function spawnFailure(r) {
+  if (r === undefined || r === null) return 'no result'
+  if (r.error && r.error.code === 'ETIMEDOUT') return 'timed out'
+  const first = String(r.stderr || (r.error && r.error.message) || '').trim().split(/\r?\n/)[0]
+  if (first !== '') return first
+  const status = r.status === undefined || r.status === null ? 'no exit status' : 'exit ' + r.status
+  return r.signal ? status + ' (' + r.signal + ')' : status
+}
+
+/**
+ * Verdict for `gh release view v<version> --json assets`: the Release exists and
+ * carries a non-empty asset with exactly this name. Exported so the offline
+ * suite can pin the rule this guard exists for — 0.38.1 reached git, its tag and
+ * npm while its GitHub Release was never created, and nothing anywhere failed.
+ * A Release without its tarball is not a release: `releases/latest` pointed at
+ * an uninstallable version until it was found by hand.
+ */
+export function releaseAssetVerdict(payload, tarballName) {
+  let doc = payload
+  if (typeof doc === 'string') {
+    try {
+      doc = JSON.parse(doc)
+    } catch (err) {
+      return { ok: false, reason: 'gh did not return JSON' }
+    }
+  }
+  if (doc === null || typeof doc !== 'object') return { ok: false, reason: 'gh returned no release object' }
+  if (!Array.isArray(doc.assets)) return { ok: false, reason: 'gh returned no asset list' }
+  const asset = doc.assets.find((a) => a !== null && typeof a === 'object' && a.name === tarballName)
+  if (asset === undefined) return { ok: false, reason: 'the Release carries no ' + tarballName }
+  const size = typeof asset.size === 'number' ? asset.size : 0
+  if (size <= 0) return { ok: false, reason: tarballName + ' is attached but empty' }
+  return { ok: true, size }
+}
+
+/**
+ * The project-level .npmrc body that injects the auth token for exactly this
+ * one publish, without touching the user's global config. npm itself reads no
+ * token from the environment (NODE_AUTH_TOKEN is only honored through .npmrc
+ * templating), so publishToNpm writes this file, publishes, and removes it
+ * again in a finally.
+ */
+export function npmrcAuthLine(token) {
+  return '//registry.npmjs.org/:_authToken=' + token + '\n'
+}
+
+/** What to print when the npm publish could not run or failed. */
+export function manualNpmHint(version, detail) {
+  return [
+    'npm publish did NOT happen (' + detail + '). Everything git-side is already durable.',
+    'Publish by hand from this checkout (package.json is already v' + version + '):',
+    '  npm publish --access public',
+    'Note: an account with 2FA needs an Automation-type token (granular tokens are rejected at publish time).',
+  ].join('\n')
+}
+
+/**
  * Where to look for the GitHub CLI: PATH first, then the usual install
  * locations — a script launched by the host does not always inherit the
  * interactive shell's PATH.
@@ -351,7 +444,8 @@ export function ghCandidates(platform = process.platform, env = process.env) {
 
 function resolveGh() {
   for (const cand of ghCandidates()) {
-    if (spawnCaptured(cand, ['--version'], { okNonZero: true, probe: true }).status === 0) return cand
+    // Probe with a short leash: a wedged `gh` must not decide that `gh` is fine.
+    if (spawnCaptured(cand, ['--version'], { okNonZero: true, probe: true, timeoutMs: 30000 }).status === 0) return cand
   }
   return undefined
 }
@@ -362,11 +456,12 @@ function resolveGh() {
  * we run npm's own CLI through the current node binary instead: no shell, no
  * argument escaping, no deprecation warning. POSIX spawns `npm` directly.
  */
-function npmSpawn(args) {
-  if (process.platform !== 'win32') return spawnCaptured('npm', args, { okNonZero: true })
+function npmSpawn(args, cwd) {
+  const opts = { okNonZero: true, cwd }
+  if (process.platform !== 'win32') return spawnCaptured('npm', args, opts)
   const cli = path.join(path.dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js')
-  if (existsSync(cli)) return spawnCaptured(process.execPath, [cli, ...args], { okNonZero: true })
-  return spawnCaptured('npm.cmd', args, { okNonZero: true, shell: true })
+  if (existsSync(cli)) return spawnCaptured(process.execPath, [cli, ...args], opts)
+  return spawnCaptured('npm.cmd', args, { ...opts, shell: true })
 }
 
 function warnAssets(version, tarballName, detail) {
@@ -383,6 +478,18 @@ function warnAssets(version, tarballName, detail) {
 export function publishReleaseAssets(version) {
   const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'))
   const tarballName = packTarballName(pkg.name, version)
+  if (pkg.version !== version) {
+    // `npm pack` names the file after the version IN THE TREE, so packing a
+    // checkout that has moved on can never produce the tarball this version
+    // needs. 0.38.1's repair run said only "npm pack did not produce
+    // dsh-taskfold-0.38.1.tgz" while the tree already carried 0.38.2.
+    warnAssets(
+      version,
+      tarballName,
+      'package.json is v' + pkg.version + ', so `npm pack` would build v' + pkg.version + ' — check out that release first: git switch --detach v' + version,
+    )
+    return false
+  }
   const section = changelogSection(readFileSync(changelogPath, 'utf8'), version)
   if (section === null) {
     warnAssets(version, tarballName, 'CHANGELOG has no entry for ' + version + ' — cannot build release notes.')
@@ -393,7 +500,8 @@ export function publishReleaseAssets(version) {
     const packed = npmSpawn(['pack', '--pack-destination', dir])
     const tarball = path.join(dir, tarballName)
     if (packed.status !== 0 || !existsSync(tarball)) {
-      warnAssets(version, tarballName, '`npm pack` did not produce ' + tarballName + '.')
+      const produced = readdirSync(dir).filter((f) => f.endsWith('.tgz'))
+      warnAssets(version, tarballName, '`npm pack` did not produce ' + tarballName + ' (' + spawnFailure(packed) + (produced.length > 0 ? '; it produced ' + produced.join(', ') : '') + ').')
       return false
     }
     const gh = resolveGh()
@@ -406,7 +514,7 @@ export function publishReleaseAssets(version) {
     const exists = spawnCaptured(gh, ['release', 'view', 'v' + version], { okNonZero: true }).status === 0
     const r = spawnCaptured(gh, ghReleaseArgs({ version, tarball, notesFile, exists }), { okNonZero: true })
     if (r.status !== 0) {
-      warnAssets(version, tarballName, '`gh release ' + (exists ? 'upload' : 'create') + '` failed: ' + String(r.stderr || '').trim())
+      warnAssets(version, tarballName, '`gh release ' + (exists ? 'upload' : 'create') + '` failed (' + spawnFailure(r) + ').')
       return false
     }
     console.log('GitHub Release v' + version + ' published with ' + tarballName + (exists ? ' (asset re-uploaded)' : '') + '.')
@@ -414,6 +522,274 @@ export function publishReleaseAssets(version) {
   } finally {
     try { rmSync(dir, { recursive: true, force: true }) } catch (err) {}
   }
+}
+
+/**
+ * Ask GitHub what the Release for `version` actually carries. Never throws:
+ * `{ok: true, size}` when the tarball is there, `{ok: false, reason}` when
+ * GitHub says it is not, and `{ok: false, unknown: true, reason}` when the
+ * answer cannot be obtained at all (no `gh`, no network) — an unverifiable
+ * release must not be reported as a broken one.
+ */
+function verifyReleaseAssets(version) {
+  const tarballName = packTarballName(JSON.parse(readFileSync(pkgPath, 'utf8')).name, version)
+  const gh = resolveGh()
+  if (gh === undefined) return { ok: false, unknown: true, reason: 'the GitHub CLI (`gh`) is unavailable', tarballName }
+  const r = spawnCaptured(gh, ['release', 'view', 'v' + version, '--json', 'assets'], { okNonZero: true })
+  if (r.status !== 0) return { ok: false, unknown: true, reason: 'gh release view v' + version + ' failed (' + spawnFailure(r) + ')', tarballName }
+  const verdict = releaseAssetVerdict(r.stdout, tarballName)
+  return { ...verdict, tarballName }
+}
+
+/**
+ * Parse `reg query HKCU\Environment /v NPM_TOKEN` output: the Windows
+ * user-level variable, which a stale process environment can hide.
+ */
+export function parseRegQueryToken(stdout) {
+  for (const line of String(stdout === undefined || stdout === null ? '' : stdout).split(/\r?\n/)) {
+    const m = line.match(/^\s*NPM_TOKEN\s+REG_(?:SZ|EXPAND_SZ)\s+(.+?)\s*$/i)
+    if (m) return m[1]
+  }
+  return undefined
+}
+
+/** The publish token: the process environment first, then the Windows user scope. */
+function resolveNpmToken() {
+  const fromProcess = process.env.NPM_TOKEN
+  if (typeof fromProcess === 'string' && fromProcess.length > 0) return fromProcess
+  if (process.platform !== 'win32') return undefined
+  const r = spawnCaptured('reg', ['query', 'HKCU\\Environment', '/v', 'NPM_TOKEN'], { probe: true })
+  if (r.status !== 0) return undefined
+  return parseRegQueryToken(r.stdout)
+}
+
+/**
+ * The version `npm` targets: an explicit `--version` wins, otherwise the top
+ * CHANGELOG entry — which must be a RELEASED one. A draft is not a version the
+ * registry can already hold, and this script never guesses.
+ */
+export function resolveNpmVersion({ requested, top }) {
+  if (requested !== undefined) {
+    if (!/^\d+\.\d+\.\d+$/.test(String(requested))) {
+      return { ok: false, reason: 'malformed version (only strict X.Y.Z is supported): ' + String(requested) }
+    }
+    return { ok: true, version: String(requested) }
+  }
+  if (top === null) {
+    return { ok: false, reason: 'CHANGELOG has no parseable version entry — pass --version X.Y.Z.' }
+  }
+  if (top.kind === 'draft') {
+    return { ok: false, reason: 'top CHANGELOG entry is an unreleased draft (' + top.version + ') — release it first, or pass --version X.Y.Z for an already-released version.' }
+  }
+  return { ok: true, version: top.version }
+}
+
+/**
+ * Every guard `npm` checks before publishing. They all exist because npm ships
+ * the WORKING TREE: the version in package.json, the local release tag, a clean
+ * tree, and a tree identical to that tag. A checkout that carries work the
+ * release does not would put unreleased files on the registry under a released
+ * version number — the one thing this command must never do.
+ */
+export function checkNpmTarget({ version, packageVersion, hasTag, treeMatches, dirty }) {
+  if (packageVersion !== version) {
+    return { ok: false, reason: 'package.json is v' + packageVersion + ', not v' + version + ' — check out that release first: git switch --detach v' + version }
+  }
+  if (!hasTag) {
+    return { ok: false, reason: 'tag v' + version + ' does not exist locally — nothing released to publish.' }
+  }
+  if (dirty.length > 0) {
+    return { ok: false, reason: 'working tree dirty (' + dirty.join(', ') + ') — `npm publish` ships the working tree, not the tag; commit or stash first.' }
+  }
+  if (!treeMatches) {
+    return { ok: false, reason: 'this checkout differs from tag v' + version + ' (it carries work the release does not) — publishing would put those files on the registry under a released version; publish from the tag instead: git switch --detach v' + version }
+  }
+  return { ok: true, version }
+}
+
+/**
+ * True when one strict `X.Y.Z` range covers `version`. Only the three shapes
+ * this repo actually declares are accepted (`^X.Y.Z`, `~X.Y.Z`, `X.Y.Z`);
+ * anything else is not a range this guard can vouch for, so it returns false
+ * and the caller reports the dependency as unsatisfiable.
+ */
+function rangeIncludes(range, version) {
+  const base = range.replace(/^[\^~]/, '')
+  let parts
+  try {
+    parts = semverParts(base)
+    semverParts(version)
+  } catch (err) {
+    return false
+  }
+  if (range.startsWith('^')) {
+    return parts[0] === 0
+      ? (parts[1] === 0 ? version === base : version.startsWith('0.' + parts[1] + '.'))
+      : version.startsWith(parts[0] + '.')
+  }
+  if (range.startsWith('~')) return version.startsWith(parts[0] + '.' + parts[1] + '.')
+  return version === base
+}
+
+/**
+ * Ship-guard: the browser row in `cordis.patch.yml` is mounted by the BARE
+ * package name `dsh-taskfold-client`, and client-modules only accepts a row
+ * name that is path-like or an exact bare package name. A profile therefore
+ * has to resolve that name through its own node_modules, which makes the
+ * declaration in `dependencies` load-bearing — and makes its FORM the whole
+ * defect class this guard exists for.
+ *
+ * 0.38.0 shipped `"file:./client"` and every install died with
+ * `ERR_PNPM_LINKED_PKG_DIR_NOT_FOUND: Could not install from "<profile>/client"`:
+ * pnpm resolves a path specifier against the CONSUMER workspace root, not
+ * against the package that declares it, so the nested directory is looked for
+ * one level above the profile. `link:` and `workspace:` fail differently
+ * (`workspace:*` is not a member of a consumer's workspace; `link:` installs
+ * without ever creating a resolvable `node_modules/dsh-taskfold-client`). The
+ * only declaration a consumer can install is a registry version range, which
+ * means the client must be a published package of its own.
+ *
+ * Nothing downstream can catch this: unit tests run inside this repo, where the
+ * nested directory is simply there. The failure is only visible from a
+ * consumer's pnpm, and only after the release is on the registry and every user
+ * has hit it. So it is checked here, before either manifest is written.
+ *
+ * @param {string} [root] - repo root to check; defaults to this repo.
+ * @param {string} [intendedClient] - version the release is about to write into
+ *   client/package.json; omitted when checking a tree as it already stands.
+ * @returns {{ spec: string, version: string, name: string }} the validated pair.
+ * @throws when the client could not reach a consumer's node_modules.
+ */
+export function assertClientDependencyResolvable(root = repoRoot, intendedClient = undefined) {
+  const rootManifest = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'))
+  const spec = (rootManifest.dependencies || {})['dsh-taskfold-client']
+  if (typeof spec !== 'string' || spec === '') {
+    throw new Error('ship-guard: package.json declares no "dsh-taskfold-client" dependency — the browser row mounts that package by bare name, so a profile cannot resolve it without this declaration')
+  }
+  if (/^(?:file|link|portal|workspace):/.test(spec)) {
+    throw new Error(
+      'ship-guard: "dsh-taskfold-client" is declared as "' + spec + '" — pnpm resolves a path specifier against the CONSUMER workspace root, not the dependant package, so every install fails with ERR_PNPM_LINKED_PKG_DIR_NOT_FOUND. Declare a registry version range instead (the client is its own published package).'
+    )
+  }
+  if (!/^[\^~]?\d+\.\d+\.\d+$/.test(spec)) {
+    throw new Error('ship-guard: "dsh-taskfold-client" must be a registry version range (^X.Y.Z, ~X.Y.Z or X.Y.Z), not "' + spec + '"')
+  }
+  const clientPath = path.join(root, 'client', 'package.json')
+  if (!existsSync(clientPath)) {
+    throw new Error('ship-guard: client/package.json is missing — the client package is published from this directory')
+  }
+  const client = JSON.parse(readFileSync(clientPath, 'utf8'))
+  if (client.name !== 'dsh-taskfold-client') {
+    throw new Error('ship-guard: client/package.json is named "' + client.name + '", not "dsh-taskfold-client"')
+  }
+  if (client.private === true) {
+    throw new Error('ship-guard: client/package.json is "private": true — npm publish refuses a private package, so the version the root now depends on could never reach the registry')
+  }
+  if (client.dsh === undefined || client.dsh.client === undefined || client.dsh.client.platform !== 'web') {
+    throw new Error('ship-guard: client/package.json does not declare dsh.client.platform === "web" — client-modules would never mount this row')
+  }
+  if (!client.exports || typeof client.exports['./client'] !== 'string') {
+    throw new Error('ship-guard: client/package.json exports no "./client" bundle — client-modules requires the mounted package to export it')
+  }
+  /* Two callers, two readings of "which version".
+   *
+   * `release` runs this BEFORE it writes anything, and at that moment the client
+   * legitimately still carries the PREVIOUS version — the bump is the script's
+   * next step. So an intended version is checked for what the release must be:
+   * a strict X.Y.Z the declared range will cover. Demanding on-disk equality
+   * there would refuse every release, because the file cannot be both un-bumped
+   * and bumped at once.
+   *
+   * `npm` publishes an already-finalized tree, so it checks the release that IS:
+   * the client's own version must equal the version being published (the lockstep
+   * rule) and the declared range must cover it. */
+  if (intendedClient !== undefined) {
+    if (!/^\d+\.\d+\.\d+$/.test(String(intendedClient))) {
+      throw new Error('ship-guard: the release version must be strict X.Y.Z, got ' + String(intendedClient))
+    }
+    if (!rangeIncludes(spec, intendedClient)) {
+      throw new Error('ship-guard: the dependency "' + spec + '" does not include this release\'s client version ' + intendedClient + ' — the registry entry for the required version would be missing')
+    }
+    return { spec, version: intendedClient, name: client.name }
+  }
+  const version = client.version
+  if (typeof version !== 'string' || !/^\d+\.\d+\.\d+$/.test(version)) {
+    throw new Error('ship-guard: client version must be strict X.Y.Z, got ' + String(version))
+  }
+  if (!rangeIncludes(spec, version)) {
+    throw new Error('ship-guard: the dependency "' + spec + '" does not include the client version ' + version + ' — the registry entry for the required version would be missing')
+  }
+  return { spec, version, name: client.name }
+}
+
+/**
+ * Publish `version` to npm. Shared by `release` (opt-in, and its result is
+ * deliberately ignored there: everything git-side is durable before this runs,
+ * so a missing token or a failed upload must never fail the release) and by the
+ * standalone `npm` repair command, which exits non-zero for anything but a
+ * publish or an already-present version. Idempotent: a version already on the
+ * registry is a no-op, so resumed, re-run and hand-repaired releases are safe.
+ *
+ * TWO packages publish, CLIENT FIRST. The browser half is its own registry
+ * package (`dsh-taskfold-client`) because the root mounts that row by bare
+ * package name: a profile resolves the row through its own node_modules, so a
+ * version range is the only declaration a consumer's pnpm can install. The
+ * order is a correctness rule, not a preference — the root's manifest depends
+ * on the client's version, so a root published first would 404 for every
+ * consumer until the client landed. Each package is probed and published on its
+ * own, so a re-run finishes whichever half is missing. Any status but
+ * 'published'/'already' stops the loop: publishing the root over an unpublished
+ * client is the exact failure this order exists to prevent.
+ *
+ * Returns 'published' | 'already' | 'no-token' | 'refused' | 'failed'.
+ */
+export function publishOrder(root = repoRoot) {
+  const rootManifest = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'))
+  return [
+    { name: 'dsh-taskfold-client', dir: path.join(root, 'client') },
+    { name: rootManifest.name, dir: root }
+  ]
+}
+
+function publishToNpm(version) {
+  const token = resolveNpmToken()
+  if (token === undefined) {
+    console.log('npm publish skipped: no NPM_TOKEN (checked the process environment and, on Windows, the user-level variable).')
+    return 'no-token'
+  }
+  let status = 'already'
+  for (const target of publishOrder()) {
+    const pkgPathHere = path.join(target.dir, 'package.json')
+    if (!existsSync(pkgPathHere)) {
+      console.log(manualNpmHint(version, 'package manifest missing for ' + target.name + ': ' + pkgPathHere))
+      return 'failed'
+    }
+    const pkgName = JSON.parse(readFileSync(pkgPathHere, 'utf8')).name
+    const live = npmSpawn(['view', pkgName + '@' + version, 'version'])
+    if (live.status === 0 && (live.stdout || '').trim() === version) {
+      console.log('npm: ' + pkgName + '@' + version + ' is already on the registry — nothing to publish.')
+      continue
+    }
+    const npmrc = path.join(target.dir, '.npmrc')
+    if (existsSync(npmrc)) {
+      console.log(manualNpmHint(version, 'a project .npmrc already exists at ' + npmrc + ' — refusing to overwrite it'))
+      return 'refused'
+    }
+    try {
+      writeFileSync(npmrc, npmrcAuthLine(token))
+      const pub = npmSpawn(['publish', '--access', 'public'], target.dir)
+      if (pub.status !== 0) {
+        const first = String(pub.stderr || pub.stdout || '').trim().split(/\r?\n/)[0]
+        console.log(manualNpmHint(version, '`npm publish` failed for ' + pkgName + ': ' + first))
+        return 'failed'
+      }
+      console.log('npm: ' + pkgName + '@' + version + ' published.')
+      status = 'published'
+    } finally {
+      try { unlinkSync(npmrc) } catch (err) { /* already gone */ }
+    }
+  }
+  return status
 }
 
 // ── commands ──────────────────────────────────────────────────────────────
@@ -510,8 +886,33 @@ function remoteHasTag(version) {
 export function assertClientBundleFresh(root = repoRoot) {
   const current = readFileSync(clientBundlePath(root), 'utf8')
   if (current !== repoBundleText(root)) {
-    throw new Error('plugins/taskfold-client.mjs is stale — run `node scripts/build-client.mjs` and commit the regenerated bundle first')
+    throw new Error('client/taskfold-client.mjs is stale — run `node scripts/build-client.mjs` and commit the regenerated bundle first')
   }
+}
+
+/**
+ * The release ends by asking GitHub what the Release actually carries. The asset
+ * step is deliberately non-fatal ("everything git-side is durable"), which is
+ * exactly how 0.38.1 shipped with no GitHub Release at all and no failure
+ * anywhere — `releases/latest` pointed at an uninstallable version until it was
+ * found by hand. A Release GitHub cannot show is a failed release: the command
+ * exits 1 AFTER git and npm have landed, so the verdict never skips a step, and
+ * it prints the repair command. A verdict that cannot be obtained at all is only
+ * a warning: being offline must not fail an otherwise good release.
+ */
+function finishRelease(version, assetsOk) {
+  const verdict = verifyReleaseAssets(version)
+  if (verdict.ok) {
+    console.log('verified: GitHub Release v' + version + ' carries ' + verdict.tarballName + ' (' + verdict.size + ' bytes).')
+    return
+  }
+  if (verdict.unknown === true && assetsOk) {
+    console.log('warning: could not verify the GitHub Release after publishing it — ' + verdict.reason)
+    return
+  }
+  console.log('error: GitHub Release v' + version + ' does not carry its prebuilt tarball — ' + verdict.reason)
+  console.log(manualAssetHint(version, verdict.tarballName))
+  process.exit(1)
 }
 
 function cmdRelease() {
@@ -524,7 +925,9 @@ function cmdRelease() {
     console.log('PENDING release v' + st.version + ' detected — resuming pushes only.')
     pushRelease(st.version)
     console.log('Release v' + st.version + ' fully pushed.')
-    publishReleaseAssets(st.version)
+    const assetsOk = publishReleaseAssets(st.version)
+    publishToNpm(st.version)
+    finishRelease(st.version, assetsOk)
     return
   }
   if (st.state !== 'DRAFT') {
@@ -534,6 +937,9 @@ function cmdRelease() {
   }
   const version = st.version
   assertClientBundleFresh()
+  // Pre-write guard: the client's version is about to change, so validate the
+  // pair the release will leave behind rather than the tree as it stands.
+  assertClientDependencyResolvable(repoRoot, version)
   // Non-blocking guard: both READMEs must declare the supported-dsh section.
   for (const readme of ['README.md', 'README.zh.md']) {
     const text = readFileSync(path.join(repoRoot, readme), 'utf8')
@@ -550,13 +956,27 @@ function cmdRelease() {
   const newPkg = pkgText.replace(new RegExp('"version"\\s*:\\s*"[^"]*"'), '"version": "' + version + '"')
   if (newPkg === pkgText) throw new Error('failed to update package.json version field')
   writeFileSync(pkgPath, newPkg)
-  git(['add', 'CHANGELOG.md', 'package.json'])
+  // The nested browser-bundle package (client/package.json) releases in lockstep
+  // with the root: bump and stage it too, or its version drifts from the tag.
+  const clientPkgPath = path.join(repoRoot, 'client', 'package.json')
+  const staged = ['CHANGELOG.md', 'package.json']
+  if (existsSync(clientPkgPath)) {
+    const clientPkgText = readFileSync(clientPkgPath, 'utf8')
+    const newClientPkg = clientPkgText.replace(new RegExp('"version"\\s*:\\s*"[^"]*"'), '"version": "' + version + '"')
+    if (newClientPkg !== clientPkgText) {
+      writeFileSync(clientPkgPath, newClientPkg)
+      staged.push('client/package.json')
+    }
+  }
+  git(['add', ...staged])
   git(['commit', '-m', 'chore(release): v' + version])
   git(['tag', 'v' + version])
   console.log('Committed and tagged v' + version + '.')
   pushRelease(version)
   console.log('Release v' + version + ' fully pushed.')
-  publishReleaseAssets(version)
+  const assetsOk = publishReleaseAssets(version)
+  publishToNpm(version)
+  finishRelease(version, assetsOk)
 }
 
 // The remote branch release pushes must reconcile against: HEAD's upstream
@@ -619,6 +1039,51 @@ function cmdStatus() {
 }
 
 /**
+ * `npm`: (re)publish an already-released version to the registry. The repair
+ * path for a release whose npm step was skipped (no token at the time) or
+ * failed — `release` cannot do that job, because a fully-pushed release is
+ * CLEAN and only PENDING resumes its pushes. Idempotent through publishToNpm's
+ * registry probe. Unlike `release`, a failure here exits 1: publishing is the
+ * whole point of running this.
+ */
+function cmdNpm(opts) {
+  const top = readTopEntry()
+  const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'))
+  const resolved = resolveNpmVersion({ requested: opts.version, top })
+  if (!resolved.ok) {
+    console.error(resolved.reason)
+    process.exit(1)
+  }
+  const version = resolved.version
+  const dirty = dirtyFiles()
+  const hasTag = tagExists(version)
+  const treeMatches = hasTag && treeMatchesTag(version)
+  console.log('npm target    : v' + version + (opts.version === undefined ? ' (CHANGELOG top)' : ' (--version)'))
+  console.log('package.json  : ' + pkg.version)
+  console.log('local tag     : ' + (hasTag ? 'v' + version + (treeMatches ? ' (working tree matches it)' : ' (working tree DIFFERS)') : '(missing)'))
+  console.log('dirty files   : ' + (dirty.join(', ') || '(none)'))
+  const check = checkNpmTarget({ version, packageVersion: pkg.version, hasTag, treeMatches, dirty })
+  if (!check.ok) {
+    console.error('\n' + check.reason)
+    process.exit(1)
+  }
+  try {
+    assertClientBundleFresh()
+  } catch (err) {
+    console.error(String(err.message))
+    process.exit(1)
+  }
+  try {
+    assertClientDependencyResolvable()
+  } catch (err) {
+    console.error(String(err.message))
+    process.exit(1)
+  }
+  const status = publishToNpm(version)
+  if (status !== 'published' && status !== 'already') process.exit(1)
+}
+
+/**
  * `assets`: (re)publish the GitHub Release + tarball for an already-released
  * version. This is the repair path for releases that went out before the flow
  * attached assets, and the retry path after a failed upload. Unlike the release
@@ -626,21 +1091,37 @@ function cmdStatus() {
  */
 function cmdAssets(opts) {
   const top = readTopEntry()
-  if (top === null) {
-    console.error('CHANGELOG has no parseable version entry.')
+  const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'))
+  const resolved = resolveNpmVersion({ requested: opts.version, top })
+  if (!resolved.ok) {
+    console.error(resolved.reason)
     process.exit(1)
   }
-  if (top.kind === 'draft') {
-    console.error('top CHANGELOG entry is an unreleased draft (' + top.version + ') — release it first.')
-    process.exit(1)
-  }
-  const version = opts.version || top.version
-  const tagged = git(['rev-parse', '--verify', '--quiet', 'v' + version], { okNonZero: true }).status === 0
-  if (!tagged) {
-    console.error('tag v' + version + ' does not exist locally — nothing to publish.')
+  const version = resolved.version
+  const dirty = dirtyFiles()
+  const hasTag = tagExists(version)
+  const treeMatches = hasTag && treeMatchesTag(version)
+  console.log('assets target : v' + version + (opts.version === undefined ? ' (CHANGELOG top)' : ' (--version)'))
+  console.log('package.json  : ' + pkg.version)
+  console.log('local tag     : ' + (hasTag ? 'v' + version + (treeMatches ? ' (working tree matches it)' : ' (working tree DIFFERS)') : '(missing)'))
+  // The asset is `npm pack` of the WORKING TREE, so the same four guards the
+  // npm path uses apply here too: without them `assets --version X` packs
+  // whatever the checkout happens to be and then looks for a tarball name that
+  // cannot exist (the 0.38.1 repair run: tree at 0.38.2, asked for 0.38.1).
+  const check = checkNpmTarget({ version, packageVersion: pkg.version, hasTag, treeMatches, dirty })
+  if (!check.ok) {
+    console.error('\n' + check.reason)
     process.exit(1)
   }
   if (!publishReleaseAssets(version)) process.exit(1)
+  const verdict = verifyReleaseAssets(version)
+  if (verdict.ok) {
+    console.log('verified: GitHub Release v' + version + ' carries ' + verdict.tarballName + ' (' + verdict.size + ' bytes).')
+    return
+  }
+  console.error('error: GitHub Release v' + version + ' still does not carry its prebuilt tarball — ' + verdict.reason)
+  console.error(manualAssetHint(version, verdict.tarballName))
+  process.exit(1)
 }
 
 // ── CLI entry ─────────────────────────────────────────────────────────────
@@ -654,10 +1135,13 @@ function main() {
   }
   if (cmd === 'draft') cmdDraft(opts)
   else if (cmd === 'release') cmdRelease()
+  else if (cmd === 'npm') cmdNpm(opts)
   else if (cmd === 'assets') cmdAssets(opts)
   else if (cmd === 'status') cmdStatus()
   else {
-    console.error('usage: node scripts/release.mjs draft [--version X.Y.Z] [--force] | release | assets [--version X.Y.Z] | status')
+    console.error('usage: node scripts/release.mjs draft [--version X.Y.Z] [--force] | release | npm [--version X.Y.Z] | assets [--version X.Y.Z] | status')
+    console.error('  release also publishes to npm when a token is available (automation-type token).')
+    console.error('  npm (re)publishes an already-released version to npm — the repair path when release skipped or failed that step.')
     process.exit(1)
   }
 }

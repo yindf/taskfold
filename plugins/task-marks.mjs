@@ -27,9 +27,33 @@
  * so tests exercise it offline without a host.
  */
 import { sessionEvents, messageOf, blocksOf, toolResultEntries, taskResultEventText } from './events.mjs'
+import { belowFoldFloor, spanTokenEstimate } from './fold-settings.mjs'
 
 /** Session-projection key under which the open-mark stack is published. */
 export const TASK_MARKS_KEY = 'taskMarks'
+
+/**
+ * Marker phrase carried by a 'Task ended: ' result whose span was measured
+ * and verdicted BELOW the fold floor at close time (0.37.6, "plan A": the
+ * result IS the record). The reducer pops the mark WITHOUT queueing the
+ * pendingArchive — the verdict lives in the event log itself, permanent by
+ * construction: no sidecar ledger, no reopen path, nothing to re-derive.
+ * Unmarked closes (pre-0.37.6 logs, non-solitary close messages) queue as
+ * always; the drain's in-memory below-floor settle stays their fallback.
+ */
+export const BELOW_FLOOR_MARKER = 'Closed below the fold floor'
+
+/**
+ * Composite identity of one pendingArchives row, shared by the two consumers
+ * that need to agree on WHICH rows are below the fold floor: the drain's
+ * settle registry (writes; fold-drain.mjs) and the projection view annotator
+ * (reads; taskfold.mjs). Keyed by (seq, name, foldResultSeq) so a
+ * cross-session collision needs all three to match — and the worst case is a
+ * chip briefly mislabeled until that session's own drain pass re-settles it.
+ */
+export function pendingArchiveKey(entry) {
+  return entry.seq + ':' + entry.name + ':' + (Number.isInteger(entry.foldResultSeq) ? entry.foldResultSeq : 0)
+}
 
 /**
  * Structural stand-in for a zod schema: the projection registry only ever
@@ -480,12 +504,18 @@ export function applyTaskMarks(state, event) {
         // drain folds it once the next assistant message lands. Old-log
         // replays (inline folds) queue too, but their spans' compaction/
         // summary events immediately drop the entries again (shadowedSeqs).
+        // EXCEPT (0.37.6) closes carrying BELOW_FLOOR_MARKER: the span was
+        // measured at close time and verdicted below the floor — the verdict
+        // is this very event, so the row is never queued at all.
+        const belowFloor = text.indexOf(BELOW_FLOOR_MARKER) !== -1
         for (let i = next.marks.length - 1; i >= 0; i -= 1) {
           if (next.marks[i].name === name) {
             const popped = next.marks[i]
             next.marks.splice(i, 1)
-            if (next.pendingArchives === undefined) next.pendingArchives = []
-            next.pendingArchives.push({ seq: popped.seq, name: popped.name, foldResultSeq: seq })
+            if (!belowFloor) {
+              if (next.pendingArchives === undefined) next.pendingArchives = []
+              next.pendingArchives.push({ seq: popped.seq, name: popped.name, foldResultSeq: seq })
+            }
             break
           }
         }
@@ -565,6 +595,36 @@ export function archivesOf(ctx, session) {
   } catch (err) {
     return []
   }
+}
+
+/**
+ * Composite keys (pendingArchiveKey) of the session's queued archives whose
+ * planned region sits BELOW the given fold floor — the rows the drain will
+ * settle closed-unfolded, never billing a summarization call (issue #2).
+ * Freshly computed from the surface + event log on every call, so it is
+ * accurate immediately after a restart (the drain's own settle registry is
+ * in-memory and re-populates only at the first step boundary). Floor <= 0
+ * folds everything, so no row can be below it. Total and defensive like the
+ * other accessors: an unmeasurable span (-1 from spanTokenEstimate) folds,
+ * so it is NOT below-floor.
+ */
+export function belowFloorArchiveKeys(ctx, session, minSpanTokens) {
+  const keys = new Set()
+  if (!Number.isInteger(minSpanTokens) || minSpanTokens <= 0) return keys
+  let nodes
+  let events
+  try {
+    nodes = session.surface.nodes
+    events = sessionEvents(session)
+  } catch (err) {
+    return keys
+  }
+  for (const entry of archivesOf(ctx, session)) {
+    if (entry === null || typeof entry !== 'object') continue
+    const plan = deferredArchivePlan(entry, nodes, events)
+    if (belowFoldFloor(plan, nodes, { minSpanTokens }, events)) keys.add(pendingArchiveKey(entry))
+  }
+  return keys
 }
 
 /**
@@ -652,6 +712,67 @@ export function lastAssistantToolNames(session) {
     if (b !== null && typeof b === 'object' && b.type === 'tool-call' && typeof b.name === 'string') names.push(b.name)
   }
   return names.length > 0 ? names : null
+}
+
+/**
+ * Estimated tokens of a closing task's span, measured AT task_end execute
+ * time (0.37.6): start mirrors deferredArchivePlan's happy path (the first
+ * surface node after the 'Task begun: ' result following the anchor), end is
+ * the current surface TAIL — the close result itself has not landed, and on
+ * a solitary close message the tail IS the close-carrying assistant message,
+ * so the estimate covers the whole eventual span. The plan's parallel
+ * guards only ever EXTEND the true span past these bounds, so this is a
+ * bounded underestimate the floor's margin absorbs. Total and defensive:
+ * -1 when the span cannot be resolved (the caller then queues normally and
+ * the drain measures the full span at the next pass).
+ */
+export function spanEstimateAtClose(session, beginMarkSeq) {
+  try {
+    const nodes = session.surface.nodes
+    if (!Array.isArray(nodes) || nodes.length === 0 || !Number.isInteger(beginMarkSeq)) return -1
+    const events = sessionEvents(session)
+    const posOf = new Map()
+    for (let i = 0; i < nodes.length; i += 1) {
+      if (typeof nodes[i] === 'number' && !posOf.has(nodes[i])) posOf.set(nodes[i], i)
+    }
+    const anchorPos = posOf.get(beginMarkSeq)
+    if (anchorPos === undefined) return -1
+    let start = anchorPos + 1
+    for (const e of events) {
+      if (e === null || typeof e !== 'object' || !Number.isInteger(e.seq)) continue
+      if (e.seq <= beginMarkSeq) continue
+      if (taskResultEventText(e).indexOf('Task begun: ') !== 0) continue
+      const pos = posOf.get(e.seq)
+      if (pos !== undefined) start = pos + 1
+      break
+    }
+    if (start >= nodes.length) return -1
+    const endSeq = nodes[nodes.length - 1]
+    if (typeof endSeq !== 'number') return -1
+    return spanTokenEstimate(nodes, events, nodes[start], endSeq)
+  } catch (err) {
+    return -1
+  }
+}
+
+/**
+ * The close-time fold-floor verdict (0.37.6 "plan A"). belowFloor is true
+ * ONLY when the verdict is EXACT: a SOLITARY task_end (no partner tool
+ * calls in the carrying message — partner results have not landed yet and
+ * their unbounded size would make the estimate lie in the skip direction)
+ * with a resolvable span measured below the floor. Every other shape —
+ * floor 0, non-solitary close, unresolvable span — returns belowFloor:
+ * false and the archive queues normally; the drain's own belowFoldFloor
+ * pass-side measurement remains the fallback for those rows.
+ */
+export function taskEndCloseVerdict(session, markSeq, floor) {
+  const verdict = { belowFloor: false, estTokens: -1 }
+  if (!Number.isInteger(floor) || floor <= 0) return verdict
+  const names = lastAssistantToolNames(session)
+  if (names === null || names.length !== 1 || names[0] !== 'task_end') return verdict
+  verdict.estTokens = spanEstimateAtClose(session, markSeq)
+  if (verdict.estTokens >= 0 && verdict.estTokens < floor) verdict.belowFloor = true
+  return verdict
 }
 
 /**

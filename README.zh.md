@@ -21,25 +21,49 @@
 
 面向 [DeepSeek Harness](https://www.npmjs.com/package/@deepseek-ai/dsh)（DSH）。
 
-> **当前支持的最新 dsh 版本：`0.1.7-alpha.2`。** dsh 的 alpha 版本在本分支（alpha）支持；dsh 的 rc 版本在 [`master` 分支](https://github.com/yindf/taskfold/blob/master/README.zh.md#支持的-dsh-版本)支持。
+> **当前支持的最新 dsh 版本：`0.2.2-alpha.2`。** dsh 的 alpha 版本在本分支（alpha）支持；dsh 的 rc 版本在 [`master` 分支](https://github.com/yindf/taskfold/blob/master/README.zh.md#支持的-dsh-版本)支持。
 
 ## 快速开始
 
-按你 dsh 构建所在的通道选安装命令——每条都取该通道上最新验证过的 Release（见[支持的 dsh 版本](#支持的-dsh-版本)）：
+### 在 dsh Desktop 里安装（推荐）
+
+1. 打开 dsh Desktop，在侧边栏进入 **插件** 页。
+2. 点右上角的 **添加插件**。
+3. 在 **包名或地址** 一栏填 `dsh-taskfold`——安装框自己调 pnpm，不用你手工装依赖：
+   - **想在新版本一发布就装上？钉住它**——`dsh-taskfold@<版本>`（版本号从 [npm 版本列表](https://www.npmjs.com/package/dsh-taskfold?activeTab=versions) 取）。dsh Desktop 自带的 pnpm 11 会让发布不满 24 小时的版本对裸包名不可见，显式写版本即可绕过，pnpm 还会把它记进 profile 的 `minimumReleaseAgeExclude`。**0.37.7 与 0.38.0 千万别装**——它们从注册表装不上（`ERR_PNPM_LINKED_PKG_DIR_NOT_FOUND`），npm 上已标记 deprecated；
+   - **完全绕过 npm**：直接粘[最新 Release](https://github.com/yindf/taskfold/releases/latest) 里预构建的 `.tgz` 直链，tarball 不受发布时长策略限制；
+   - **跟分支走**：`github:yindf/taskfold#alpha`（alpha 通道，即本分支）/ `github:yindf/taskfold#master`（rc 通道），要求本机能直连 GitHub；
+   - **本机路径**必须指向**副本**，绝不能指向你的工作检出：装进来的目录，插件管理器会当成自己的（会在旁边留下 `dsh-taskfold.frozen-*.bak` 快照，升级时整个替换）。
+4. **安装源** 保持「默认安装源」；中国大陆网络若拉取失败，改选「中国大陆镜像源」再试。
+5. 点 **安装**，等它显示「已安装，下次启动后加载。」，再点 **立即启用**。
+6. **重启 dsh Desktop**——插件组合只在启动时求值。重启后回到 **插件** 页，应看到 **Taskfold** 卡片写着 `包含的组件 · 共 2 个 · 2 运行中`（`taskfold` 与 `taskfold-client` 两行）；折叠下限与任务栏开关就在这张卡片里（见[设置](#设置)）。
+7. 升级请先 **卸载** 再装新版：界面明确说明暂不支持自动更新；卸载后它提供的功能即消失。
+
+这个安装框做的和下面的命令行是同一件事：把依赖与 bundle 条目写进当前 profile（dsh Desktop 用 `desktop`），此外不需要任何手工配置。
+
+### 用命令行安装
+
+`dsh plugin --profile <profile 名> add` 就是上面对话框的命令行等价物。`desktop` 是 dsh Desktop 的 profile，`web` 是 DSH Web GUI 的——按你实际跑的那个改：
 
 ```sh
-# alpha 通道 —— 默认分支（alpha）
-dsh plugin --profile web add "github:yindf/taskfold#alpha"
+# npm 上的最新发布
+dsh plugin --profile desktop add dsh-taskfold
 
-# rc 通道 —— master 分支（引号不能省：# 在 sh 里是注释）
+# 钉住某个版本——发布不满 24 小时时必须钉；0.37.7 / 0.38.0 装不上
+dsh plugin --profile desktop add dsh-taskfold@<版本>
+
+# 跟某个通道的分支（引号不能省：# 在 sh 里是注释）
+dsh plugin --profile web add "github:yindf/taskfold#alpha"
 dsh plugin --profile web add "github:yindf/taskfold#master"
 ```
 
-两条命令均可直接复制使用：`web` 就是 DSH Web GUI 所用的 profile——如果你用别的 profile，换成你的名字即可。
+无论走界面还是命令行，装完都要**重启 dsh**。
 
-两个分支各自的 README 记录自己通道的「支持的 dsh 版本」——alpha 通道的最新记录在 [alpha 分支](https://github.com/yindf/taskfold/blob/alpha/README.zh.md#支持的-dsh-版本)的 README 上。
+### 通道、npm 包与支持范围
 
-npm 上也有 [`dsh-taskfold`](https://www.npmjs.com/package/dsh-taskfold)——预构建包，免去 dsh 的 `allowBuilds` 构建授权——但 npm 副本可能落后于通道分支。
+npm 上的 [`dsh-taskfold`](https://www.npmjs.com/package/dsh-taskfold) 是**预构建包**——免去 dsh 的 `allowBuilds` 构建授权，0.37.6 起由发布流程随通道分支同步发布。裸包名取的是 npm 的 `latest`，也就是**最后发布**的那条通道；要确定性就用 `@版本` 钉住，或直接填分支的 Git 地址。
+
+`alpha` 分支承载 alpha 通道、`master` 分支承载 rc 通道：本分支记录 alpha 通道的支持范围（见[支持的 dsh 版本](#支持的-dsh-版本)），rc 通道的记录在 [master 分支的 README](https://github.com/yindf/taskfold/blob/master/README.zh.md#支持的-dsh-版本)。
 
 重启 dsh——该 profile 下的每个会话都拥有这些工具。之后智能体用命名任务包住自己的工作：
 
@@ -109,11 +133,22 @@ taskfold 用“好笔记本”的方式解决：干活前，智能体先用 `tas
 | `list_folds` | 列出全部折叠（编号、大小、标题）。 |
 | `fold_recall({ fold })` | 按需取回任意折叠的原始内容。 |
 
-在 Web GUI 中，当前打开的 task 栈还会以常驻 dock 显示在输入框上方（和 todo 面板一样）：外层任务在前、最内层高亮，附带 folding/pending 计数——直接读会话的 `taskMarks` 投影，不追加任何事件。
+在 Web GUI 中，当前打开的 task 栈还可以以常驻 dock 显示在输入框上方（和 todo 面板一样）——默认隐藏，在插件页用 `showTaskBar` 打开：外层任务在前、最内层高亮，附带 folding/pending 计数——直接读会话的 `taskMarks` 投影，不追加任何事件。
 
 <img src="https://raw.githubusercontent.com/yindf/taskfold/alpha/assets/screenshot-tasks.png" width="100%" alt="常驻输入框上方的任务栈：嵌套的打开任务、最内层高亮，每个已结束任务各占一行 folding">
 
 <img src="https://raw.githubusercontent.com/yindf/taskfold/alpha/assets/screenshot-tasks-collapsed.png" width="100%" alt="同一任务栈折叠成一行，以及 lifecycle 提示交给模型的任务栈行">
+
+## 设置
+
+折叠有一个用户可配置的下限，在宿主**插件页**的 “Taskfold” 卡片中配置（宿主服务该命名空间期间由浏览器端注册）——不用环境变量，也无需重启：
+
+- **`minSpanTokens`**（默认 `2000`）——任务关闭后，其折叠区间携带的估算 token 数需要达到的最小值，才值得发起一次摘要调用。token 按区间消息文本估算（区分中日韩字符的启发式，速率常数已按实测 `shadowedTokenCount` 校准，估算值整体偏低约 7%，方向保守），在任何模型调用之前即可算出。低于下限的区间**不折叠直接关闭，且判定在关闭当时做出、记录在 `Task ended` 结果文本里**（0.37.6）：该区间根本不进入归档队列，跳过由构造保证永久——不存在可被触发的重开路径，因为回溯折叠已落定的区间要改写表面、使其后方的 provider 前缀缓存整体失效，这笔代价任何小折叠都省不回来。关闭消息若还携带其他工具调用（其结果在 `task_end` 执行时尚未落地），则回退为 drain 侧的内存落定，重启后按当时下限重测。`0` 折叠一切；无法计量的区间始终折叠。非法值（非整数、负数）回退到默认值，绝不抛错。修改由表单 schema 校验、持久化到当前 profile 配置，并**即时生效**——下一次关闭（或兜底落定）即按新下限判定。默认值及其推导见 [docs/fold-floor.md](docs/fold-floor.md)——对最近两周会话日志的实测表明，摘要调用的固定开销使 ~1000 token 以下的区间稳亏，默认 2000 保留了 2 倍安全边际。
+- **`showTaskBar`**（默认 `false`）——同一张卡片上的开关，控制是否在对话输入框旁显示任务栏。默认隐藏：新 profile 不打开开关就没有这条 banner；显示或隐藏都不影响折叠行为。唯一的兜底可见是有意保留的——命名空间未被服务或设置服务缺失时仍然显示，因为 dock 的注册本身不依赖设置服务。
+
+## 本地化
+
+所有用户可见界面均提供英文与简体中文。设置卡片文案经宿主 locale 服务解析（字典 `settings.taskfold`）。任务栏 dock 的注册刻意不声明 locale 依赖——locale 服务可用时由 bundle 接线绑定读取器（字典 `ui.taskfold`），缺失时打印内置英文，因此在任何部署上都能渲染。包同时导出 `locale/en.json` 与 `locale/zh.json`（插件页页头与 npm 简介），并为每个挂载组件提供一份行级 locale——宿主行用 `plugins/locale/*.json`（经它挂载的子路径 `dsh-taskfold/plugins` 解析）、客户端行用 `client/locale/*.json`（经它自己的裸包名 `dsh-taskfold-client` 解析）——插件页因此按当前语言显示每一行的标题与一行简介，而不再回退到 `package.json` 的英文文案。两行的标题都刻意不同于行 id 与模块名：`client.js` 只在标题与行 id 不同时才打印 id、与模块名不同时才打印模块名，于是每一行都渲染出同样的四行——标题、简介、行 id、模块名——与官方 bundle 的行形态一致。客户端包的 `package.json` 依旧不写简介，因此行内简介只会来自它那份 locale。包自身的简介继续服务于插件页页头与 npm 页面。
 
 ## 其他安装方式
 
@@ -121,15 +156,15 @@ taskfold 用“好笔记本”的方式解决：干活前，智能体先用 `tas
 
 ## 支持的 dsh 版本
 
-- **alpha 通道 —— 支持到 `0.1.7-alpha.2`**（2026-09-23 在 0.34.7 上实测，无需改码：离线套件 194 个测试全绿；针对真实 `dsh-compaction-basic`/`dsh-llm` 包的宿主 API 探针 12/12，钉住的接缝不变；九个 seam 包 alpha.1→alpha.2 的字节级 diff——八个为纯版本号提升，唯一实现改动在 `dsh-tools`（工具定义新增可选 `projectContent` 钩子），而插件从不导入它：插件对宿主的全部动态导入面只有 `dsh-compaction-basic` + `dsh-llm`，本轮逐字节未变；`SESSION_FORMAT_VERSION` 仍为 4、无新迁移边，v4 依旧是唯一活体语法；以及在一个真实 0.1.7-alpha.2 会话上的活体折叠——tfverify headless 孪生对升级后宿主重跑——完整任务周期（begin → 并行 read → end → 纯文本报告）在回合末 22.1 秒折叠，通过 `verify-cache`：前缀缓存命中 87.8%，tail +488。升级后的 GUI 宿主自身也一次正确开合了本轮验证的任务标记。0.1.7-alpha.1 的破坏故事（会话格式 v4 拍平）见 CHANGELOG 0.34.7。）
+- **alpha 通道 —— 支持到 `0.2.2-alpha.2`**（候选记录——0.39.1 的 rc 代码线刚并入本分支，0.2.2-alpha.2 宿主探针正针对合并后的树运行；发版提交时按探针结果补全实测细节并定稿）。
 - **rc 通道 —— 请用 `#master` 安装**（`dsh plugin --profile web add "github:yindf/taskfold#master"`，即 master 分支）；rc 构建的支持版本记录在 [master 分支的 README](https://github.com/yindf/taskfold/blob/master/README.zh.md#支持的-dsh-版本)。
-- **边界：下界已强制，上界未测试。** 本发布起，插件把宿主耦合面写进 `peerDependencies`（`@deepseek-ai/dsh`、`@deepseek-ai/dsh-compaction-basic`、`@deepseek-ai/dsh-llm`，均为 `^0.1.7-alpha.2`）：dsh 0.1.7 宿主在安装与启动/重组合时检查这些范围，不兼容的宿主将得到 `incompatible-version` 判定、bundle 被跳过，而不是带着不兼容加载。早于该检查机制的宿主没有任何协商——在那些宿主上，折叠会降级（任务照常关闭、不折叠），不会损坏数据。每次 dsh 升级后，请复核本节并按实测结果更新。
+- **边界：下界已强制，上界未测试。** 插件把宿主耦合面写进 `peerDependencies`（`@deepseek-ai/dsh`、`@deepseek-ai/dsh-compaction-basic`、`@deepseek-ai/dsh-llm`，均为 `^0.2.2-alpha.2`）：dsh 0.2.2-alpha.2 宿主在安装与启动/重组合时检查这些范围，不兼容的宿主将得到 `incompatible-version` 判定、bundle 被跳过，而不是带着不兼容加载。早于该检查机制的宿主没有任何协商——在那些宿主上，折叠会降级（任务照常关闭、不折叠），不会损坏数据。每次 dsh 升级后，请复核本节并按实测结果更新。
 - **可选钩子：`agent/turn-stopping`** —— 0.26.0 起归档排干还会在回合结束时运行，让回合末交付的折叠赶在 provider 前缀缓存还热时执行。没有该钩子的宿主保持原来的纯 pre-step 语义（折叠照常发生，只是晚一个回合）；注册语句整体包裹，钩子缺失不会破坏 `apply()`。
 
 ## 维护者须知
 
-- 目录：`plugins/`（两个挂载行 `compact-region.mjs` 与 `compact-stats.mjs`，及其共享纯模块 `events.mjs`、`task-marks.mjs`、`fold-instruction.mjs`、`fold-engine.mjs`、`fold-drain.mjs`、`lifecycle-nudges.mjs`、`lifecycle-injection.mjs`、`span-preview.mjs`，以及浏览器半部：`task-stack-ui.mjs`——dock 的唯一事实源，由 `scripts/build-client.mjs` 生成到 `taskfold-client.mjs`）、`scripts/release.mjs`、`scripts/verify-cache.mjs` 与 `scripts/build-client.mjs`、`test/`（`npm test`）、`assets/`（README banner、仓库设置里上传的社交预览图，以及 `screenshots.json` 列出的商店截图）、`docs/`（`docs/README.md` 索引，以及 `docs/design/` 设计笔记与 `docs/adr/` 决策记录——有意不随 npm 包发布）、`CHANGELOG.md`。
-- 发版：`node scripts/release.mjs draft` → 审阅 CHANGELOG 条目 → `node scripts/release.mjs release`（CHANGELOG 是版本唯一事实源）。**通道分支**（0.34.6 起）：`master` 只承载 rc 通道发版——它停留在最新的已验证 rc 版本；alpha 通道发版在 `alpha` 分支上进行，其提交与 tag 承载 alpha 验证过的工作（在 `alpha` 分支上跑 draft/release；脚本推送当前分支与 tag）。若本次发版改变了支持的 dsh 版本范围，发版前先更新**两份** README（README.md + README.zh.md）的“支持的 dsh 版本”一节——release 脚本会提醒。每个分支只记录**本分支构建**的实测：本通道一条最新验证版本（被取代的条目删掉），另一通道只放一条指向对方分支 README 的**链接**——绝不抄版本号。
+- 目录：`plugins/`（**一个**挂载宿主行 `taskfold.mjs`，以包子路径 `dsh-taskfold/plugins` 挂载——bundle patch 只声明一个宿主组件，所以插件页显示两个：该行与以自身组件包名 `dsh-taskfold-client` 挂载的客户端行；`compact-stats.mjs` 是它 import 的普通模块，不是行；以及它们共享的纯模块 `events.mjs`、`task-marks.mjs`、`fold-instruction.mjs`、`fold-engine.mjs`、`fold-drain.mjs`、`fold-settings.mjs`、`lifecycle-nudges.mjs`、`lifecycle-injection.mjs`、`span-preview.mjs`，以及浏览器端：`task-stack-ui.mjs`——dock 的唯一事实源——与 `fold-settings-ui.mjs`——插件页设置卡，均由 `scripts/build-client.mjs` 生成到 `client/taskfold-client.mjs`）、`client/`（嵌套的 `dsh-taskfold-client` 子包——浏览器 bundle 的唯一属主行；一个客户端包只能有一个属主 Loader 行，而宿主端已占用根包的行；它**作为独立 npm 包发布**，根 `package.json` 以注册表版本范围把它声明进 `dependencies`，于是 dsh-app-boot 的依赖闭包会发布该名字，客户端行以裸包名挂载而非 `file:///` 路径，且消费方的 pnpm 能真正装上它——`file:`/`link:` 这类路径说明符是相对**安装者**的 workspace 根解析、而非相对本包解析，这正是 0.38.0 完全装不上的原因；行标题由 `client/locale/*.json` 提供）、`scripts/release.mjs`、`scripts/verify-cache.mjs` 与 `scripts/build-client.mjs`、`test/`（`npm test`）、`assets/`（README banner、仓库设置里上传的社交预览图，以及 `screenshots.json` 列出的商店截图）、`docs/`（`docs/README.md` 索引，以及 `docs/design/` 设计笔记与 `docs/adr/` 决策记录——有意不随 npm 包发布）、`CHANGELOG.md`。
+- 发版：`node scripts/release.mjs draft` → 审阅 CHANGELOG 条目 → `node scripts/release.mjs release`（CHANGELOG 是版本唯一事实源）。`release`（及其 PENDING 续跑）在 `NPM_TOKEN` 环境变量存在时还会把版本发布到 npm——须为 **Automation 类型**令牌（开了 2FA 的账号会在发布时拒绝 granular 令牌的 OTP）；该步骤幂等（注册表上已有的版本直接跳过），失败也绝不回滚 git 侧的发布；令牌取自进程环境，Windows 上还会回落到用户级变量。若该步骤被跳过或失败，用 `node scripts/release.mjs npm [--version X.Y.Z]` 单独补发——四道守卫（`package.json` 版本、本地 `v<版本>` tag、干净工作区、工作区与 tag 内容一致）全部满足才肯发。**发布的是两个包，且客户端包必须先发**：根包 manifest 里写着 `dsh-taskfold-client` 的版本号，若根包先于客户端包发布，在客户端包落地前所有消费者都会 404（两个包各自探测、各自发布，重跑只会补上缺的那一半）。发布前 `assertClientDependencyResolvable` 会拒绝任何非注册表版本范围形式的客户端依赖——`file:`/`link:`/`workspace:` 这类说明符相对**消费者**的 workspace 根解析，会让每一次安装都失败，这正是 0.38.0 发布出去的样子。**通道分支**（0.34.6 起）：`master` 只承载 rc 通道发版——它停留在最新的已验证 rc 版本；alpha 通道发版在 `alpha` 分支上进行，其提交与 tag 承载 alpha 验证过的工作（在 `alpha` 分支上跑 draft/release；脚本推送当前分支与 tag）。若本次发版改变了支持的 dsh 版本范围，发版前先更新**两份** README（README.md + README.zh.md）的“支持的 dsh 版本”一节——release 脚本会提醒。每个分支只记录**本分支构建**的实测：本通道一条最新验证版本（被取代的条目删掉），另一通道只放一条指向对方分支 README 的**链接**——绝不抄版本号。
 - **折叠缓存校验是流程的一部分。** 每次 dsh 升级后——以及任何触及折叠信封的发版前——对一份 live 会话日志跑 `node scripts/verify-cache.mjs --since-restart`，并把数字记进 CHANGELOG 条目。若某次折叠的摘要调用重新付费了它的 span——判据是 `uncached − span > --tail-budget`（tail 为正）——脚本以非零码退出，这正是前缀信封不再匹配宿主摘要输入的 signature。离线测试只能钉住结构前提（只有一个 system 消息、严格前缀）；真实缓存命中只能由 live 日志给出。当运行中的宿主无法热重载挂载的插件时（0.1.7 那轮的 GUI 宿主就不能），用 web profile 的一次性 headless 孪生会话来产出活体折叠——做法（profile 布局、提示词形态）见 CHANGELOG 的 0.34.7 条目。
 - 设计决策与历史见 `CHANGELOG.md`，以及仓库内的 `docs/`（索引见 `docs/README.md`；`docs/design/` 设计笔记与 `docs/adr/` 决策记录随仓库走，不随 npm 包发布）。
 

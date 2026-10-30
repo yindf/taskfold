@@ -33,10 +33,10 @@ error; `fold_recall({ fold: N })` round-trips the exact original messages.
 
 | Module | File | Role |
 | --- | --- | --- |
-| Tool plugin | `plugins/compact-stats.mjs` | Ships both tools. Plain Cordis plugin, `inject: ['tools']` only. |
+| Tool module | `plugins/compact-stats.mjs` | Exports `registerStatsTools(ctx)`, which registers both tools. PLAIN module — no Cordis plugin object, no Loader row; `plugins/taskfold.mjs` (the one mounted host row) calls it from `apply`. |
 | Shared helpers | `plugins/span-preview.mjs`, `plugins/events.mjs` | Preview rendering + artifact writing; cross-version event-log access. Plain modules, not bundle rows. |
-| Mount | `cordis.patch.yml` | Host-plane rows (`cmpct-stats`; sibling `cmpct-region`). |
-| Tests | `test/compact-stats.test.mjs` | Offline fixtures; no harness needed (`npm test`). |
+| Mount | `cordis.patch.yml` | ONE host-plane row (`taskfold`, specifier `dsh-taskfold`) plus the client row. |
+| Tests | `test/taskfold-stats.test.mjs` | Offline fixtures; no harness needed (`npm test`). |
 
 ## Interface contract
 
@@ -100,12 +100,17 @@ events, stats drop with them (no reconciliation against disk).
 
 ## Dependency direction
 
-`compact-stats.mjs` → `ctx.tools` (registration only) + `exec.agent.session`
-(runtime argument of execute). It does NOT inject `compaction`, and shares no
-state with compact-region — the two mounted plugins stay independently
-removable; the pure helpers they both use (span-preview.mjs, events.mjs) are
-plain modules that add no bundle rows. Test modules import the pure helpers
-via named exports (the default export remains the Cordis plugin).
+`compact-stats.mjs` → `ctx.tools` (registration only, through the `ctx` its
+caller passes) + `exec.agent.session` (runtime argument of execute). It does
+NOT inject `compaction`, and shares no state with the lifecycle half — the
+module is removable from `taskfold.mjs` by deleting one import and one call,
+which takes its two tools off the registry and nothing else. Since 0.37.7 the
+caller is always `plugins/taskfold.mjs` (the one mounted host row), so the two
+halves ship as ONE component on the Plugins page; the pure helpers both sides
+use (span-preview.mjs, events.mjs) are plain modules that add no bundle rows.
+Test modules import the exported pure helpers directly (the module exports no
+Cordis plugin object; its only side-effectful entry point is
+`registerStatsTools(ctx)`).
 
 ## Edge cases
 

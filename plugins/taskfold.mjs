@@ -1,8 +1,13 @@
 /**
- * Compact Region tools — plugin-bundle form (installed via `dsh plugin add`
- * at the profile level; cordis.patch.yml mounts this file at the host plane,
- * so the tools land in the global registry for every session of every
+ * taskfold — the bundle's SINGLE host row (installed via `dsh plugin add` at
+ * the profile level; cordis.patch.yml mounts this file once at the host
+ * plane, so the tools land in the global registry for every session of every
  * preset). No realm/isolate-group assumptions are made.
+ *
+ * The file name IS the component name: one mounted row means the Plugins page
+ * lists one component for this package instead of one per source file. The
+ * observation tools (list_folds / fold_recall) live in the plain module
+ * compact-stats.mjs and are registered here through registerStatsTools().
  *
  * Registers the task-lifecycle tools plus prompt guidance:
  *   task_begin / task_end — named tasks; task_end pops the mark and QUEUES an
@@ -41,23 +46,135 @@
  * Module map (plain modules imported by this mounted row — they add no
  * bundle rows of their own, exactly like span-preview.mjs):
  *   events.mjs           shared native-event extractions (sessionEvents…)
+ *   compact-stats.mjs    the list_folds / fold_recall tools + fold stats
  *   task-marks.mjs       the taskMarks projection + pure close/fold decisions
  *   fold-instruction.mjs the two swapped-in summarization instructions
  *   fold-engine.mjs      self-hosted ScopedEngine + lazy resolution
  *   fold-drain.mjs       the message-gated pre-step auto-folder
+ *   fold-settings.mjs    user-configurable fold floor (Settings page field)
  *   lifecycle-nudges.mjs pure nudge predicates over an events snapshot
  *   lifecycle-injection.mjs the event-only lifecycle hint channel
  */
 import { sessionEvents } from './events.mjs'
-import { TASK_MARKS_KEY, taskMarksStateSchema, applyTaskMarks, validTaskName, closeTarget, normalizeName, marksOf, archivesOf, pendingOf, lastSurfaceAssistantSeq, siblingTaskMarkCalls } from './task-marks.mjs'
+import { registerStatsTools } from './compact-stats.mjs'
+import { TASK_MARKS_KEY, taskMarksStateSchema, applyTaskMarks, validTaskName, closeTarget, normalizeName, marksOf, archivesOf, pendingOf, belowFloorArchiveKeys, pendingArchiveKey, lastSurfaceAssistantSeq, siblingTaskMarkCalls, BELOW_FLOOR_MARKER, taskEndCloseVerdict } from './task-marks.mjs'
 import { DETAILED_CHECKPOINT_INSTRUCTION } from './fold-instruction.mjs'
 import { createFoldEngine } from './fold-engine.mjs'
 import { createArchiveDrain } from './fold-drain.mjs'
 import { todoBridgeLine, taskStackLine, recentWorkCallCount, lastAssistantHasTodoWrite, roundsSinceFoldOutcome, shouldSuggestDecomposition, decomposeHintLine, innermostMark, taskAgeRounds, closePressureLine, CLOSE_PRESSURE_MIN_ROUNDS } from './lifecycle-nudges.mjs'
 import { lifecycleMessage, planLifecycleInjection, renderLifecycleBody } from './lifecycle-injection.mjs'
+import { DEFAULT_MIN_SPAN_TOKENS, MIN_SPAN_TOKENS_MAX, foldFloorFromConfig } from './fold-settings.mjs'
+import nodePath from 'node:path'
+import nodeUrl from 'node:url'
+import { createRequire } from 'node:module'
+
+// --- Config (Settings page form) -------------------------------------
+// The dsh-settings service renders one form per active profile entry from
+// the entry's exported Config schema: every `.volatile()` field becomes a
+// live row keyed by this row's id (taskfold), edits are validated
+// against this schema and persisted through the active profile's Cordis
+// patch, and the runtime hands apply(ctx, config) reactive refs that a
+// Settings edit re-resolves without a plugin reload. That replaces the
+// briefly-drafted TASKFOLD_MIN_SPAN_NODES environment variable — same
+// floor, but discoverable, validated, and hot-reloaded.
+//
+// schemastery cannot be imported statically: the installed copy sits in a
+// harness-owned node_modules tree that plain ESM resolution never crosses
+// (the same constraint fold-engine.mjs resolves for dsh-compaction-basic).
+// A synchronous require from a harness anchor file works instead, because
+// @deepseek-ai/schemastery ships a CJS build. When no anchor resolves
+// (exotic embedding, stripped harness), Config stays undefined: the plugin
+// mounts exactly as before, the form is simply absent, and the floor
+// keeps its default of 2000 (docs/fold-floor.md).
+function requireHostPackage(pkgName) {
+  const anchors = []
+  try { anchors.push(nodePath.dirname(nodePath.resolve(process.argv[1]))) } catch (err) { /* ignore */ }
+  try { anchors.push(nodePath.resolve(process.cwd())) } catch (err) { /* ignore */ }
+  for (const dir of anchors) {
+    try {
+      const requireFromAnchor = createRequire(nodeUrl.pathToFileURL(nodePath.join(dir, 'taskfold-anchor.js')).href)
+      return requireFromAnchor(pkgName)
+    } catch (err) { /* next anchor */ }
+  }
+  return undefined
+}
+
+let Config
+try {
+  const z = requireHostPackage('@deepseek-ai/schemastery')
+  if (z !== undefined && typeof z.object === 'function' && typeof z.number === 'function') {
+    Config = z.object({
+      minSpanTokens: z.number().step(1).min(0).max(MIN_SPAN_TOKENS_MAX).default(DEFAULT_MIN_SPAN_TOKENS).volatile()
+        .description('Fold floor (issue #2): the minimum number of estimated tokens a closed task\'s span must carry before a summarization call is billed for it. The count is a CJK-aware heuristic over the span\'s message text, taken before any model call. Spans below the floor close unfolded — their original content stays on the surface. Default 2000: below it a summary\'s fixed overhead outweighs the context saved (docs/fold-floor.md). 0 folds everything (legacy behavior).'),
+      showTaskBar: z.boolean().default(false).volatile()
+        .description('Show the task-stack dock beside the conversation input. The dock lists the session\'s named tasks and their fold state; hiding it does not affect folding itself. Default false: the banner stays out of the way unless it is switched on.')
+    })
+  }
+} catch (err) { Config = undefined }
+
+/**
+ * Wire-view factory for the taskMarks projection: below-floor settles are
+ * PRUNED, not labeled. A span the drain settled under the fold floor will
+ * never fold — its close is final and its chip carries nothing worth a
+ * dock row — so the view drops those pendingArchives rows from the wire
+ * value entirely. The RAW projection state keeps them (the drain re-settles
+ * them after every restart; archivesOf reads the state, not this view).
+ * Reference-stable — the change feed's Object.is gate must not fire on
+ * unrelated commits — unless at least one row is pruned, in which case it
+ * returns a shallow copy with those rows removed. Memoized on the state
+ * reference AND the registry version, so a settle that lands between commits
+ * (no new state object) still re-prunes on the next view computation — which
+ * the settle-aware apply wrapper below guarantees happens.
+ * Restart semantics: the registry is empty until the drain's first pass
+ * re-settles the small rows — one boundary of 'folding…' display at worst.
+ */
+export function pruneBelowFloorView(belowFloorKeys) {
+  let lastState = undefined
+  let lastVersion = -1
+  let lastOut = undefined
+  return (state) => {
+    if (state === null || typeof state !== 'object') return state
+    const archives = Array.isArray(state.pendingArchives) ? state.pendingArchives : null
+    if (archives === null || archives.length === 0 || belowFloorKeys.size === 0) return state
+    if (state === lastState && belowFloorKeys.version === lastVersion) return lastOut
+    const kept = archives.filter((a) => !(a !== null && typeof a === 'object' && belowFloorKeys.has(pendingArchiveKey(a))))
+    lastState = state
+    lastVersion = belowFloorKeys.version
+    lastOut = kept.length === archives.length ? state : { ...state, pendingArchives: kept }
+    return lastOut
+  }
+}
+
+/**
+ * Settle-aware apply wrapper for the taskMarks projection. The projection
+ * registry re-runs a wire view (and pushes the result to clients) only when
+ * apply produced a NEW state reference — a below-floor settle mutates
+ * nothing in the event log, so without help the pruned view would sit
+ * unpushed until the next task-mark event. The wrapper watches the drain's
+ * registry `version` (bumped on every settle) and returns a
+ * content-identical shallow copy on the FIRST event after a bump: exactly
+ * one extra state-reference move per mutation, which re-runs the view and
+ * ships the pruned row. Replay-safe — the clone
+ * changes object identity only, never derived content.
+ */
+export function makeSettleAwareApply(belowFloorKeys) {
+  let seen = belowFloorKeys.version
+  return (state, event) => {
+    const next = applyTaskMarks(state, event)
+    if (belowFloorKeys.version !== seen) {
+      seen = belowFloorKeys.version
+      if (next !== null && typeof next === 'object') return { ...next }
+    }
+    return next
+  }
+}
 
 export default {
-  name: 'compact-region',
+  // The Config schema must ride ON the plugin object itself: the loader's
+  // unwrapExports() keeps only exports.default, so a named `export { Config }`
+  // never reaches runtime.Config and the Settings form never appears.
+  Config,
+  name: 'taskfold',
   // NOTE: 'compaction' is deliberately NOT injected. The engine is ALWAYS
   // the plugin's own ScopedEngine instance (built lazily by fold-engine.mjs
   // on first use) — never a realm-registered ctx.compaction, which belongs to
@@ -67,7 +184,7 @@ export default {
   // All dependencies (tools, systemPrompt, sessionProjections, and — via the
   // engine's own ctx use — tokenMeter/llm) are host-plane services.
   inject: ['tools', 'systemPrompt', 'sessionProjections', 'tokenMeter', 'llm'],
-  apply(ctx) {
+  apply(ctx, config) {
     // Detailed stock checkpoints: swap the host's terse instruction for
     // DETAILED_CHECKPOINT_INSTRUCTION at the one seam every compaction call
     // crosses. Discriminator (from the host's summarizeWithLlm): purpose
@@ -123,15 +240,28 @@ export default {
     // rows forever. The host treats a version mismatch as a full replay, not
     // a load failure, so the replay converges those rows through the
     // close-result witness.
+    // Below-floor settle registry, shared with the drain (writes) and the
+    // wire view below (reads): rows the drain settled below the fold floor
+    // are terminal — they never fold, so the projection keeps them listed
+    // in pendingArchives forever (no compaction event ever shadows their
+    // close result) and the dock would misreport them as perpetually
+    // 'folding…'. The view PRUNES exactly those rows from the wire value
+    // (the raw state keeps them — the drain re-settles them after every
+    // restart). `version` is bumped by the drain on every mutation; the
+    // settle-aware apply wrapper below turns that bump into a state-reference
+    // move so the pruned view is recomputed and pushed without waiting for
+    // the next task-mark event.
+    const belowFloorKeys = new Set()
+    belowFloorKeys.version = 0
     ctx.sessionProjections.register({
       key: TASK_MARKS_KEY,
       stateSchema: taskMarksStateSchema,
       init: () => null,
-      apply: applyTaskMarks,
+      apply: makeSettleAwareApply(belowFloorKeys),
       stateVersion: 11,
       wire: {
         viewSchema: taskMarksStateSchema,
-        view: (state) => state
+        view: pruneBelowFloorView(belowFloorKeys)
       }
     })
 
@@ -142,7 +272,15 @@ export default {
     // drain (writes); see fold-engine.mjs.
     const closingTasks = new Map()
     const engineFor = createFoldEngine(ctx, closingTasks)
-    const drain = createArchiveDrain({ ctx, engineFor, closingTasks })
+    // Fold floor: resolved per drain pass from the volatile config ref, so
+    // a Settings-page edit applies at the next step boundary, no restart.
+    const drain = createArchiveDrain({
+      ctx,
+      engineFor,
+      closingTasks,
+      settings: () => ({ minSpanTokens: foldFloorFromConfig(config) }),
+      belowFloorKeys
+    })
     // Per-session latch for the standalone lifecycle hint: the exact text of
     // the last hint published to that session. In-memory on purpose — a
     // restart loses it and may republish one hint that is still live, which is
@@ -338,6 +476,12 @@ export default {
               : 'Mark no longer on the surface; task closed without folding.'
             return [{ type: 'text', text: 'Task ended: ' + value.name + ' — ' + open + '. ' + why }]
           }
+          // 0.37.6 close-time floor verdict: the marker phrase is LOAD-BEARING
+          // (BELOW_FLOOR_MARKER) — the reducer keys "never queue this
+          // archive" on it, making this very result the durable record.
+          if (value.belowFloor === true) {
+            return [{ type: 'text', text: 'Task ended: ' + value.name + ' — ' + open + '. ' + BELOW_FLOOR_MARKER + ' (~' + value.estTokens + ' estimated tokens < ' + value.floor + '): this span will never fold — its original content stays on the surface, no summarization will be billed for it. Deliver your report in your next message (plain text is fine).' }]
+          }
           // The 'Task ended: ' prefix is LOAD-BEARING — the reducer keys the
           // mark pop AND the pendingArchive registration on it ('Task folded: '
           // from legacy logs still matches).
@@ -395,6 +539,19 @@ export default {
           // with a shadowed anchor would be dropped by the reducer anyway).
           return { ok: true, name, remainingNames, unfolded: 'anchor' }
         }
+        // ── 0.37.6 close-time floor verdict ("plan A": the record IS this
+        // result). A SOLITARY close measures the span right now; below the
+        // floor the result carries BELOW_FLOOR_MARKER and the reducer never
+        // queues the archive — permanent by construction, no ledger, no
+        // reopen path, nothing for the drain to settle. Every other shape
+        // (floor 0, partner calls in this message, unresolvable span)
+        // queues as before; the drain's pass-side belowFoldFloor remains
+        // the in-memory fallback for those rows.
+        const floorNow = foldFloorFromConfig(config)
+        const verdict = taskEndCloseVerdict(session, target.mark.seq, floorNow)
+        if (verdict.belowFloor) {
+          return { ok: true, name, remainingNames, belowFloor: true, estTokens: verdict.estTokens, floor: floorNow }
+        }
         // Success: the rendered 'Task ended: ' text is the ONLY event the
         // reducer needs — it pops the mark and registers the pendingArchive.
         return { ok: true, name, remainingNames, queued: true }
@@ -403,6 +560,10 @@ export default {
 
     ctx.tools.register(taskBegin)
     ctx.tools.register(taskEnd)
+    // Observation half (list_folds / fold_recall) — a plain module registering
+    // on THIS row, so the bundle patch declares one host component instead of
+    // one per source file. Same ctx.tools service, same plugin fiber.
+    registerStatsTools(ctx)
 
     ctx.systemPrompt.section({
       name: 'task-marker-compaction',
@@ -527,7 +688,16 @@ export default {
       // latch (planLifecycleInjection) re-publishes only when the stack
       // really moved — which is exactly when the hint's target may have too.
       if (lines.length > 0) {
-        lines.push(taskStackLine(marks, archivesOf(ctx, session), pendingOf(ctx, session)))
+        // Below-floor rows are counted apart from 'folding': they are
+        // terminal (closed, never folding), so the hint must not claim a
+        // fold is in flight for them. Freshly measured over the QUEUED rows
+        // only — since 0.37.6 a below-floor close never queues at all (the
+        // verdict rides its Task-ended result), so this catches just the
+        // fallback rows: unmarked closes (older logs, non-solitary close
+        // messages) that the drain settles in memory.
+        const queued = archivesOf(ctx, session)
+        const belowFloor = belowFloorArchiveKeys(ctx, session, foldFloorFromConfig(config))
+        lines.push(taskStackLine(marks, queued, pendingOf(ctx, session), belowFloor.size))
       }
       return lines
     }

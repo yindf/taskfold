@@ -1,6 +1,12 @@
 # 文档索引
 
-开发与设计文档。**不随 npm 包发布**——`package.json` 的 `files` 白名单只含 `plugins/`、两份 README、`CHANGELOG.md`、`LICENSE`、`cordis.patch.yml`。
+开发与设计文档。随 npm 包一同发布（`package.json` 的 `files` 白名单含 `docs/`），README 与设置卡帮助文案里的 `docs/fold-floor.md` 链接在安装包内同样可达。
+
+## 根目录 — 度量与决策依据
+
+| 文档 | 主题 |
+| --- | --- |
+| `fold-floor.md` | 折叠下限 `minSpanTokens` 的取值依据：两周会话实测数据、盈亏平衡推导、默认 2000 的由来 |
 
 ## design/ — 设计与实现记录
 
@@ -14,7 +20,7 @@
 | `design/release-flow.md` | 发布流程（`scripts/release.mjs`）：`draft` / `release` / `assets` / `status` |
 | `design/stage2-preset-solidification.md` | 阶段二固化：compact-region 进驻用户 preset |
 | `design/task-marker-compaction.md` | 任务区间自动压缩（`task_begin` / `task_end`） |
-| `design/task-stack-ui.md` | **task 栈实时显示**（Web 客户端 dock）：wire、客户端半件、卡片几何、归档见证收敛 |
+| `design/task-stack-ui.md` | **task 栈实时显示**（Web 客户端 dock）：wire、客户端部分、卡片几何、归档见证收敛 |
 | `design/taskfold-review-fixes.md` | 代码评审问题处理 |
 | `design/todo-bridge-v2.md` | Todo Bridge v2：事件式状态汇报 |
 | `design/turn-stop-drain-and-indexed-preview.md` | turn-end 自动折叠 + 指令内索引 + 归档预览瘦身 |

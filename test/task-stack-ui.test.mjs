@@ -18,6 +18,8 @@ import {
   taskStackCss,
   injectTaskStackCss,
   TASK_STACK_CSS_ID,
+  taskStackEn,
+  taskStackZh,
   makeTaskStack,
   makeTaskStackDock,
   TASK_STACK_KEY
@@ -116,6 +118,41 @@ test('summaries: counts tail, expanded meta and collapsed line', () => {
   assert.equal(planSummary(taskStackView({ pending: { c: { kind: 'end', anchorSeq: 9 } }, marks: [] })), 'closing a task…')
   assert.equal(planSummary(), '')
   assert.equal(planSummary({ nonsense: true }), '')
+})
+
+test('summaries: a zh reader localizes counts and intents; en keys cover every string', () => {
+  const zh = (key) => taskStackZh[key]
+  const nested = taskStackView(NESTED)
+  assert.equal(tailSummary(nested, zh), '2 个折叠中 · 2 个待处理')
+  assert.equal(countsSummary(nested, zh), '3 个进行中 · 2 个折叠中 · 2 个待处理')
+  assert.equal(planSummary(nested, zh), '3 个进行中 · inner · 2 个折叠中 · 2 个待处理')
+  assert.equal(planSummary(taskStackView({ pending: { c: { kind: 'begin', anchorSeq: 9 } }, marks: [] }), zh), '正在打开任务…')
+  assert.equal(planSummary(taskStackView({ pending: { c: { kind: 'end', anchorSeq: 9 } }, marks: [] }), zh), '正在关闭任务…')
+  // both dictionaries carry the same key set — a missing key would print the
+  // key itself through the English fallback
+  assert.deepEqual(Object.keys(taskStackZh).sort(), Object.keys(taskStackEn).sort())
+  for (const value of Object.values(taskStackEn)) assert.match(value, /\S/)
+})
+
+test('below-floor rows: pruned by the host view, never modeled client-side', () => {
+  // Since 0.37.4 the host-side wire view (taskfold's pruneBelowFloorView)
+  // REMOVES rows the drain settled below the fold floor from the wire value
+  // entirely — the dock never sees them. A stale `belowFloor: true` field
+  // (from an older host's wire value mid-upgrade) is tolerated defensively:
+  // the row maps to a plain closing entry, no flag, no separate count.
+  const state = {
+    pending: {},
+    marks: [],
+    pendingArchives: [
+      { seq: 5, name: 'small', foldResultSeq: 9, belowFloor: true },
+      { seq: 20, name: 'big', foldResultSeq: 25 }
+    ]
+  }
+  const model = taskStackView(state)
+  assert.equal(model.belowFloorCount, undefined)
+  assert.deepEqual(model.closing, [{ seq: 5, name: 'small' }, { seq: 20, name: 'big' }])
+  assert.equal(tailSummary(model), '2 folding')
+  assert.equal(tailSummary(model, (key) => taskStackZh[key]), '2 个折叠中')
 })
 
 test('taskStackCss: host card geometry, no browser-default list markers', () => {
@@ -254,19 +291,40 @@ test('makeTaskStackDock: reads the live taskMarks projection through useProjecti
   // empty stack: the dock occupies no space at all
   assert.equal(renderToStaticMarkup(h(TaskStackDock, { useProjection: () => null })), '')
 
-  // live stack fixture
+  // live stack fixture — no t prop (a host that dispatches no locale seat):
+  // the dock prints its English built-ins
   let lastKey = ''
   const useProjection = (key) => { lastKey = key; return NESTED }
-  const live = renderToStaticMarkup(h(TaskStackDock, { useProjection, t: () => '' }))
+  const live = renderToStaticMarkup(h(TaskStackDock, { useProjection }))
   assert.equal(lastKey, 'taskMarks', 'dock reads the taskMarks projection key')
   assert.match(live, />outer</)
   assert.match(live, />inner</)
   assert.match(live, /tf_nameActive/)
   assert.match(live, /folding…/)
 
+  // a locale-declaring host hands the dock a bound reader: zh copy throughout
+  const zhLive = renderToStaticMarkup(h(TaskStackDock, { useProjection, t: (key) => taskStackZh[key] }))
+  assert.match(zhLive, /任务/)
+  assert.match(zhLive, /折叠中…/)
+  assert.match(zhLive, /3 个进行中 · 2 个折叠中 · 2 个待处理/)
+
   // v8 persisted shape (no pendingArchives) must not crash the dock
   const v8 = renderToStaticMarkup(h(TaskStackDock, { useProjection: () => ({ pending: {}, marks: [{ seq: 3, name: 'legacy' }] }) }))
   assert.match(v8, />legacy</)
+
+  // a row carrying a stale belowFloor flag (older host's wire value) is
+  // tolerated: it renders as a plain closing row with the folding suffix —
+  // current hosts prune settled rows before they ever reach the client
+  const floored = renderToStaticMarkup(h(TaskStackDock, {
+    useProjection: () => ({
+      pending: {},
+      marks: [],
+      pendingArchives: [{ seq: 5, name: 'small', foldResultSeq: 9, belowFloor: true }]
+    })
+  }))
+  assert.match(floored, />small</)
+  assert.match(floored, /folding…/)
+  assert.doesNotMatch(floored, /below fold floor/)
 
   // unescaped task names are host-untrusted text: react must escape them
   const evil = renderToStaticMarkup(h(TaskStackDock, {

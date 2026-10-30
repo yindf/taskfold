@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
 import path from 'node:path'
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { test } from 'node:test'
 import {
   parseEntryHeader,
@@ -15,6 +17,15 @@ import {
   ghReleaseArgs,
   manualAssetHint,
   ghCandidates,
+  npmrcAuthLine,
+  manualNpmHint,
+  parseRegQueryToken,
+  resolveNpmVersion,
+  checkNpmTarget,
+  assertClientDependencyResolvable,
+  publishOrder,
+  releaseAssetVerdict,
+  spawnFailure,
 } from '../scripts/release.mjs'
 
 // ── cmpSemver ─────────────────────────────────────────────────────────────
@@ -200,4 +211,189 @@ test('ghCandidates: PATH first, then the platform install locations', () => {
   assert.ok(mac.includes('/opt/homebrew/bin/gh'))
   const linux = ghCandidates('linux', {})
   assert.ok(linux.includes('/usr/bin/gh'))
+})
+
+// ── npm step helpers ──────────────────────────────────────────────────────
+
+test('npmrcAuthLine: one registry auth line with trailing newline, token verbatim', () => {
+  assert.equal(npmrcAuthLine('npm_abc123'), '//registry.npmjs.org/:_authToken=npm_abc123\n')
+  assert.equal(npmrcAuthLine('npm_x+y/z='), '//registry.npmjs.org/:_authToken=npm_x+y/z=\n')
+})
+
+test('manualNpmHint: names the version, the manual command, and the automation-token caveat', () => {
+  const hint = manualNpmHint('0.37.7', 'NPM_TOKEN expired')
+  assert.ok(hint.includes('0.37.7'))
+  assert.ok(hint.includes('npm publish --access public'))
+  assert.ok(hint.includes('Automation-type token'))
+})
+
+// ── npm repair command (`release.mjs npm`) ────────────────────────────────
+
+test('resolveNpmVersion: --version wins; otherwise the CHANGELOG top must be released', () => {
+  assert.deepEqual(resolveNpmVersion({ requested: '1.2.3', top: null }), { ok: true, version: '1.2.3' })
+  assert.deepEqual(
+    resolveNpmVersion({ requested: undefined, top: { version: '0.37.7', kind: 'released' } }),
+    { ok: true, version: '0.37.7' },
+  )
+  assert.equal(resolveNpmVersion({ requested: undefined, top: null }).ok, false)
+  assert.match(
+    resolveNpmVersion({ requested: undefined, top: { version: '0.38.0', kind: 'draft' } }).reason,
+    /unreleased draft \(0\.38\.0\)/,
+  )
+  // An explicit --version still names an already-released version while a draft
+  // is pending: the repair path must not be blocked by the next release's draft.
+  assert.deepEqual(
+    resolveNpmVersion({ requested: '0.37.7', top: { version: '0.38.0', kind: 'draft' } }),
+    { ok: true, version: '0.37.7' },
+  )
+  for (const bad of ['1.2', 'v1.2.3', '1.2.3-rc.1', '', 'nonsense']) {
+    assert.equal(resolveNpmVersion({ requested: bad, top: null }).ok, false, bad)
+  }
+})
+
+test('checkNpmTarget: package version, local tag, clean tree and tag-identical tree are all required', () => {
+  const base = { version: '0.37.7', packageVersion: '0.37.7', hasTag: true, treeMatches: true, dirty: [] }
+  assert.deepEqual(checkNpmTarget(base), { ok: true, version: '0.37.7' })
+  assert.match(checkNpmTarget({ ...base, packageVersion: '0.37.6' }).reason, /package\.json is v0\.37\.6, not v0\.37\.7/)
+  assert.match(checkNpmTarget({ ...base, hasTag: false }).reason, /tag v0\.37\.7 does not exist locally/)
+  assert.match(checkNpmTarget({ ...base, dirty: ['README.md', 'plugins/x.mjs'] }).reason, /dirty \(README\.md, plugins\/x\.mjs\)/)
+  assert.match(checkNpmTarget({ ...base, treeMatches: false }).reason, /differs from tag v0\.37\.7/)
+  // Precedence: the version mismatch is named first, the dirty tree before the
+  // tag comparison (a dirty tree is the cheaper thing to resolve).
+  assert.match(checkNpmTarget({ ...base, packageVersion: '0.37.6', dirty: ['x'], treeMatches: false }).reason, /package\.json/)
+  assert.match(checkNpmTarget({ ...base, dirty: ['x'], treeMatches: false }).reason, /working tree dirty/)
+})
+
+test('parseRegQueryToken: reads REG_SZ and REG_EXPAND_SZ, ignores everything else', () => {
+  const reg = ['', 'HKEY_CURRENT_USER\\Environment', '    NPM_TOKEN    REG_SZ    npm_abc123', ''].join('\r\n')
+  assert.equal(parseRegQueryToken(reg), 'npm_abc123')
+  assert.equal(parseRegQueryToken('    NPM_TOKEN    REG_EXPAND_SZ    npm_x+y/z=\n'), 'npm_x+y/z=')
+  assert.equal(parseRegQueryToken('    NPM_TOKEN    REG_DWORD    0x1\n'), undefined)
+  assert.equal(parseRegQueryToken('    OTHER_TOKEN    REG_SZ    value\n'), undefined)
+  assert.equal(parseRegQueryToken(''), undefined)
+  assert.equal(parseRegQueryToken(undefined), undefined)
+})
+
+// ── client dependency ship-guard ──────────────────────────────────────────
+//
+// 0.38.0 shipped `"dsh-taskfold-client": "file:./client"` and EVERY install
+// died (`ERR_PNPM_LINKED_PKG_DIR_NOT_FOUND`, the path resolved against the
+// consumer's workspace root). The unit suite cannot see that shape — inside
+// this repo the nested directory is simply there — so these tests pin the
+// guard that reads the declaration instead of the directory.
+
+/** A throwaway repo: root manifest + the nested client package beside it. */
+function fixtureRepo(rootManifest, clientManifest) {
+  const dir = mkdtempSync(path.join(tmpdir(), 'taskfold-guard-'))
+  writeFileSync(path.join(dir, 'package.json'), JSON.stringify(rootManifest, null, 2))
+  mkdirSync(path.join(dir, 'client'))
+  writeFileSync(path.join(dir, 'client', 'package.json'), JSON.stringify(clientManifest, null, 2))
+  return dir
+}
+
+const ROOT_OK = { name: 'dsh-taskfold', version: '0.38.0', dependencies: { 'dsh-taskfold-client': '^0.38.0' } }
+const CLIENT_OK = {
+  name: 'dsh-taskfold-client',
+  version: '0.38.0',
+  type: 'module',
+  exports: { '.': './index.mjs', './client': './taskfold-client.mjs', './package.json': './package.json' },
+  dsh: { client: { platform: 'web' } },
+}
+
+test('assertClientDependencyResolvable: accepts a registry range with a publishable client', () => {
+  const dir = fixtureRepo(ROOT_OK, CLIENT_OK)
+  assert.deepEqual(assertClientDependencyResolvable(dir), { spec: '^0.38.0', version: '0.38.0', name: 'dsh-taskfold-client' })
+  // `~` and exact pins are ranges this repo may declare.
+  const tilde = fixtureRepo({ ...ROOT_OK, dependencies: { 'dsh-taskfold-client': '~0.38.0' } }, CLIENT_OK)
+  assert.equal(assertClientDependencyResolvable(tilde).spec, '~0.38.0')
+})
+
+test('assertClientDependencyResolvable: every path specifier is refused, naming the consumer-side failure', () => {
+  for (const spec of ['file:./client', 'file:client', 'link:./client', 'workspace:*', 'workspace:^', 'portal:./client']) {
+    const dir = fixtureRepo({ ...ROOT_OK, dependencies: { 'dsh-taskfold-client': spec } }, CLIENT_OK)
+    assert.throws(() => assertClientDependencyResolvable(dir), /ship-guard: "dsh-taskfold-client" is declared as/, spec)
+  }
+  // The guard is about the resolver, so the message must say what the user saw.
+  const dir = fixtureRepo({ ...ROOT_OK, dependencies: { 'dsh-taskfold-client': 'file:./client' } }, CLIENT_OK)
+  assert.throws(() => assertClientDependencyResolvable(dir), /ERR_PNPM_LINKED_PKG_DIR_NOT_FOUND/)
+})
+
+test('assertClientDependencyResolvable: a missing declaration is refused (the row mounts by bare name)', () => {
+  const dir = fixtureRepo({ name: 'dsh-taskfold', version: '0.38.0' }, CLIENT_OK)
+  assert.throws(() => assertClientDependencyResolvable(dir), /declares no "dsh-taskfold-client" dependency/)
+})
+
+test('assertClientDependencyResolvable: the client must be publishable and mountable', () => {
+  const priv = fixtureRepo(ROOT_OK, { ...CLIENT_OK, private: true })
+  assert.throws(() => assertClientDependencyResolvable(priv), /"private": true — npm publish refuses/)
+  const misnamed = fixtureRepo(ROOT_OK, { ...CLIENT_OK, name: 'taskfold-client' })
+  assert.throws(() => assertClientDependencyResolvable(misnamed), /is named "taskfold-client"/)
+  const noPlatform = fixtureRepo(ROOT_OK, { ...CLIENT_OK, dsh: {} })
+  assert.throws(() => assertClientDependencyResolvable(noPlatform), /dsh\.client\.platform === "web"/)
+  const noExport = fixtureRepo(ROOT_OK, { ...CLIENT_OK, exports: { '.': './index.mjs' } })
+  assert.throws(() => assertClientDependencyResolvable(noExport), /exports no "\.\/client" bundle/)
+})
+
+test('assertClientDependencyResolvable: the declared range must include the released client version', () => {
+  const dir = fixtureRepo({ ...ROOT_OK, dependencies: { 'dsh-taskfold-client': '^0.39.0' } }, CLIENT_OK)
+  assert.throws(() => assertClientDependencyResolvable(dir), /does not include the client version 0\.38\.0/)
+})
+
+test('assertClientDependencyResolvable: an intended version is checked for what the release will be', () => {
+  const dir = fixtureRepo(ROOT_OK, CLIENT_OK)
+  /* `release` validates BEFORE it bumps: the client legitimately still carries
+   * the previous version at that moment, so reading it off disk must not decide
+   * anything — but the version about to be written is still judged. */
+  assert.equal(assertClientDependencyResolvable(dir, '0.38.0').version, '0.38.0')
+  assert.throws(() => assertClientDependencyResolvable(dir, '0.39.0'), /does not include this release's client version 0\.39\.0/)
+  assert.throws(() => assertClientDependencyResolvable(dir, '0.39'), /must be strict X\.Y\.Z/)
+  // A range that covers the next release is the shipped arrangement.
+  const bumped = fixtureRepo({ ...ROOT_OK, dependencies: { 'dsh-taskfold-client': '^0.38.1' } }, CLIENT_OK)
+  assert.equal(assertClientDependencyResolvable(bumped, '0.38.1').version, '0.38.1')
+})
+
+test('assertClientDependencyResolvable: publishing the tree itself demands lockstep', () => {
+  /* The `npm` path has the finalized tree in hand, so the client's own version
+   * is the release being published and must match it. */
+  const dir = fixtureRepo({ ...ROOT_OK, dependencies: { 'dsh-taskfold-client': '^0.38.0' } }, { ...CLIENT_OK, version: '0.37.0' })
+  assert.throws(() => assertClientDependencyResolvable(dir), /does not include the client version 0\.37\.0/)
+})
+
+test('publishOrder: the client publishes FIRST, the root second', () => {
+  const dir = fixtureRepo(ROOT_OK, CLIENT_OK)
+  const order = publishOrder(dir)
+  assert.deepEqual(order.map((t) => t.name), ['dsh-taskfold-client', 'dsh-taskfold'])
+  assert.equal(order[0].dir, path.join(dir, 'client'))
+  assert.equal(order[1].dir, dir)
+})
+
+// ── releaseAssetVerdict / spawnFailure (the post-release check) ───────────
+
+test('releaseAssetVerdict: only a present, non-empty asset counts as published', () => {
+  const payload = { tagName: 'v0.38.2', assets: [{ name: 'dsh-taskfold-0.38.2.tgz', size: 239143 }] }
+  assert.deepEqual(releaseAssetVerdict(payload, 'dsh-taskfold-0.38.2.tgz'), { ok: true, size: 239143 })
+  // An asset under a different name is not this release's tarball.
+  assert.match(releaseAssetVerdict(payload, 'dsh-taskfold-0.38.1.tgz').reason, /carries no/)
+  // Attached but empty is not an artifact either.
+  assert.match(releaseAssetVerdict({ assets: [{ name: 'a.tgz', size: 0 }] }, 'a.tgz').reason, /attached but empty/)
+  // The 0.38.1 shape: a Release that exists with nothing attached to it.
+  assert.match(releaseAssetVerdict({ assets: [] }, 'a.tgz').reason, /carries no/)
+  // Unreadable answers must never read as "present".
+  assert.match(releaseAssetVerdict({}, 'a.tgz').reason, /no asset list/)
+  assert.match(releaseAssetVerdict('not json', 'a.tgz').reason, /did not return JSON/)
+  assert.match(releaseAssetVerdict(null, 'a.tgz').reason, /no release object/)
+})
+
+test('releaseAssetVerdict: raw `gh --json` stdout is accepted as text', () => {
+  const text = JSON.stringify({ assets: [{ name: 'x.tgz', size: 12 }] })
+  assert.deepEqual(releaseAssetVerdict(text, 'x.tgz'), { ok: true, size: 12 })
+  assert.equal(releaseAssetVerdict(text, 'y.tgz').ok, false)
+})
+
+test('spawnFailure: timeouts, stderr and bare exit codes all say something', () => {
+  assert.equal(spawnFailure({ error: { code: 'ETIMEDOUT' } }), 'timed out')
+  assert.equal(spawnFailure({ status: 1, stderr: 'fatal: not a git repository\nmore noise' }), 'fatal: not a git repository')
+  assert.equal(spawnFailure({ status: 3, stderr: '' }), 'exit 3')
+  assert.equal(spawnFailure({ status: null, signal: 'SIGTERM' }), 'no exit status (SIGTERM)')
+  assert.equal(spawnFailure(undefined), 'no result')
 })

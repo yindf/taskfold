@@ -7,7 +7,7 @@
 //   node test/task-marks.test.mjs
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { applyTaskMarks, taskMarksStateSchema, closeTarget, validTaskName, deferredArchivePlan, siblingTaskMarkCalls, lastAssistantToolNames } from '../plugins/task-marks.mjs'
+import { applyTaskMarks, taskMarksStateSchema, closeTarget, validTaskName, deferredArchivePlan, siblingTaskMarkCalls, lastAssistantToolNames, BELOW_FLOOR_MARKER, taskEndCloseVerdict, spanEstimateAtClose } from '../plugins/task-marks.mjs'
 import { todoBridgeLine, shouldSuggestDecomposition, decomposeHintLine } from '../plugins/lifecycle-nudges.mjs'
 import { FOLD_SUMMARY_INSTRUCTION, DETAILED_CHECKPOINT_INSTRUCTION, buildFoldInstruction } from '../plugins/fold-instruction.mjs'
 
@@ -821,5 +821,59 @@ test('sibling guard: reads the LAST assistant message via both access paths', ()
     assert.deepEqual(siblingTaskMarkCalls(s, 'task_begin'), ['task_end'], (legacy ? 'events-snapshot' : 'eventAt') + ' path: the last message is the carrier')
     assert.deepEqual(lastAssistantToolNames(s), ['task_end', 'task_begin'], (legacy ? 'events-snapshot' : 'eventAt') + ' path: full call order')
   }
+})
+
+// ── 0.37.6 close-time verdict ("plan A") ─────────────────────────────────────
+// The fold-floor verdict for a closing task is made AT task_end execute
+// time and recorded IN the result text: BELOW_FLOOR_MARKER tells the
+// reducer to pop the mark without EVER queueing the archive. The verdict
+// is permanent by construction — it lives in the event log — replacing
+// the 0.37.5 sidecar ledger entirely.
+
+test('0.37.6 reducer: a marker-carrying close never queues an archive', () => {
+  const beginCall = { seq: 10, type: 'assistant/message', data: { message: { content: [{ type: 'tool-call', id: 'a1', name: 'task_begin', arguments: '{"name":"tiny"}' }] } } }
+  const endCall = { seq: 20, type: 'assistant/message', data: { message: { content: [{ type: 'tool-call', id: 'a2', name: 'task_end', arguments: '{"name":"tiny"}' }] } } }
+  let state = null
+  state = applyTaskMarks(state, beginCall)
+  state = applyTaskMarks(state, toolResult('a1', 'Task begun: tiny — 1 open.', 11))
+  state = applyTaskMarks(state, endCall)
+  state = applyTaskMarks(state, toolResult('a2',
+    'Task ended: tiny — all closed. ' + BELOW_FLOOR_MARKER + ' (~616 estimated tokens < 2000): this span will never fold — its original content stays on the surface.', 21))
+  assert.equal(state, null, 'no mark AND no archive row: the normalized empty state is null — the marker left nothing to fold')
+  // Control: the same close WITHOUT the marker queues as before.
+  let ctrl = null
+  ctrl = applyTaskMarks(ctrl, beginCall)
+  ctrl = applyTaskMarks(ctrl, toolResult('a1', 'Task begun: tiny — 1 open.', 11))
+  ctrl = applyTaskMarks(ctrl, endCall)
+  ctrl = applyTaskMarks(ctrl, toolResult('a2', 'Task ended: tiny — all closed. Archival queued — the span folds automatically.', 21))
+  assert.deepEqual(ctrl.pendingArchives, [{ seq: 10, name: 'tiny', foldResultSeq: 21 }], 'unmarked close: queued for the drain')
+})
+
+test('taskEndCloseVerdict: exact only on a solitary close with a resolvable span', () => {
+  const events = [
+    assistantCall(10, [{ id: 'a1', name: 'task_begin' }]),
+    toolResult('a1', 'Task begun: tiny — 1 open.', 11),
+    toolResult('b1', 'short span content', 14),
+    assistantCall(15, [{ id: 'a2', name: 'task_end' }])
+  ]
+  const session = { surface: { nodes: [10, 11, 14, 15] }, events }
+  const hit = taskEndCloseVerdict(session, 10, 100000)
+  assert.equal(hit.belowFloor, true, 'solitary close, tiny span, high floor: skip at close time')
+  assert.ok(hit.estTokens > 0 && hit.estTokens < 100000, 'the estimate is reported for the result text')
+  assert.equal(taskEndCloseVerdict(session, 10, 0).belowFloor, false, 'floor 0 folds everything — never a close-time skip')
+  // Non-solitary close: partner results have not landed, so the span the
+  // drain would measure is NOT the span visible now — no exact verdict.
+  const paired = [
+    ...events.slice(0, 3),
+    assistantCall(15, [{ id: 'a2', name: 'task_end' }, { id: 'a3', name: 'read' }])
+  ]
+  const session2 = { surface: { nodes: [10, 11, 14, 15] }, events: paired }
+  assert.equal(taskEndCloseVerdict(session2, 10, 100000).belowFloor, false, 'partner calls in the close message: queue, the drain measures the full span')
+  // Unresolvable span (anchor not on the surface): queue, never guess.
+  assert.equal(taskEndCloseVerdict({ surface: { nodes: [11, 14, 15] }, events }, 10, 100000).belowFloor, false)
+  // The estimator itself: start after the 'Task begun' result, end at the
+  // current tail (the close-carrying message), -1 when unresolvable.
+  assert.ok(spanEstimateAtClose(session, 10) > 0)
+  assert.equal(spanEstimateAtClose({ surface: { nodes: [11, 14, 15] }, events }, 10), -1)
 })
 

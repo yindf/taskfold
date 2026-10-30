@@ -1,0 +1,17 @@
+{
+  "name": "dsh-taskfold-client",
+  "version": "0.39.1",
+  "type": "module",
+  "main": "index.mjs",
+  "exports": {
+    ".": "./index.mjs",
+    "./client": "./taskfold-client.mjs",
+    "./locale/*": "./locale/*",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "client": {
+      "platform": "web"
+    }
+  }
+}

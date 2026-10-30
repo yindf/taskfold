@@ -27,7 +27,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import nodeFs from 'node:fs'
 
-const src = nodeFs.readFileSync(new URL('../plugins/compact-region.mjs', import.meta.url), 'utf8')
+const src = nodeFs.readFileSync(new URL('../plugins/taskfold.mjs', import.meta.url), 'utf8')
 const statsSrc = nodeFs.readFileSync(new URL('../plugins/compact-stats.mjs', import.meta.url), 'utf8')
 
 // Decode the single-quoted JS literal opening at `index`, so the assertions run
@@ -51,7 +51,7 @@ function literalAt(index) {
     if (c === "'") return out
     out += c
   }
-  throw new Error('unterminated literal in compact-region.mjs')
+  throw new Error('unterminated literal in taskfold.mjs')
 }
 
 function literalOpening(marker) {

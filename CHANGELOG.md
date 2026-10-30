@@ -1,7 +1,668 @@
 # Changelog
 
-All notable changes to this project are documented per commit series; versions
-here follow the preset/plugin generations (not npm releases yet).
+All notable changes to this project are documented per commit series. Since
+0.37.6 every release also ships to npm (`latest`) — before that, the npm copy
+lagged behind the channel branches on purpose.
+
+## 0.39.1 — dsh 0.2.1-rc.3: re-verified, no plugin change (2026-10-26)
+
+A patch step this time, and the package set barely moved: the dsh monorepo went
+0.2.1-rc.2 → 0.2.1-rc.3 and the `@deepseek-ai/*` closure grew from 306 to 307
+packages — one added (`dsh-client-ui-entry-customization`), none removed — so
+the host surface was re-probed rather than assumed. Per-file diffs of the 21
+packages this plugin touches show that the server-side ones — `dsh-app-boot`,
+`dsh-compaction-basic`, `dsh-llm`, `dsh-tools`, `dsh-system-prompt`,
+`dsh-session-projection`, `dsh-token-meter`, `dsh-agent-loop`, `dsh-session`,
+`dsh-session-persistence` — changed only their `package.json` version field,
+while the real code deltas are client-side (`dsh-client-ui-primitives`,
+`dsh-client-ui-conversation`, `dsh-client-modules`,
+`dsh-client-ui-plugin-manager`) plus the rebuilt `dsh-web-frontend` shell
+(`index-CN7NIWNw.js` → `index-BXV-oxvX.js`) and `dsh-web-app/cordis.patch.yml`.
+
+The compatibility gate re-checked with the real
+`evaluatePluginCompatibility` on 0.2.1-rc.3
+(`@deepseek-ai/dsh-app-boot@0.2.1-rc.3`, `getDshRuntimeVersion()` →
+`0.2.1-rc.3`): the existing `^0.2.0-rc.1` peer floor still passes — the gate's
+own `satisfies()` runs semver with `includePrerelease: true`, so a 0.2.x
+prerelease anywhere inside the caret's `<0.3.0-0` bound is admitted and no
+same-minor floor is required — v0.39.0 loads as-is, no code or manifest change.
+Three negative controls (peers forced to `^0.1.7-rc.1` together and singly; the
+real manifest judged against a 0.1.7-rc.1 runtime) are rejected with
+unmet-requirements objects, so the pass is not vacuous.
+
+Verification chain against the real 0.2.1-rc.3 packages: host-API shape probes —
+52/52 (`BasicCompactionEngine` default export with `compactRegion` arity 4 and
+`summarize` arity 3 on the prototype, subclassed exactly as the fold engine does
+it; `BlockAssembler` driven to a real `blocks()` result; the schemastery CJS
+chain plus this plugin's own `Config` metadata — `minSpanTokens` 0..1000000,
+default 2000, volatile, and `showTaskBar` default `false`, volatile, i.e.
+v0.39.0's opt-in default exactly as the host serves it; all seven services,
+three hooks (`agent/pre-step`, `agent/turn-stopping`,
+`compaction/summary-error`) and six methods it uses present; all four
+`@deepseek-ai` specifiers it references resolvable); the client-contract sweep —
+19/19 present, 0 absent (`conversation.input.dock`, `plugins.bundle.config`,
+configForms `whileServed`, `window.__ModuleLoader__`, `SettingsFormModel`,
+`settingsNumberField`, plus `slots`/`configForms`/`locale`,
+`inject(key, callback)` and `register(...)`, with the rebuilt shell's factory map
+supplying both specifiers the bundle requires and the served bundle matching
+`client/taskfold-client.mjs` for all 753 lines apart from the appended `;` and
+sourcemap); an end-to-end probe host (real 0.2.1-rc.3 build over a hash-pinned
+copy of this tree at 9e98e04, on an isolated `DSH_HOME`) with empty stderr and
+zero plugin-disable lines — checked against BOTH wordings, because 0.2.1+
+prints `disabling profile plugin ${label}` while 0.2.0 printed
+`disabling profile plugin row "<id>"` — whose `settings/describe` serves the
+`taskfold` namespace at `{"minSpanTokens":2000,"showTaskBar":false}` with
+`applies: live` and the plugin's own schema verbatim, and whose `--dump-config`
+lists both rows (`taskfold` → `dsh-taskfold/plugins`, `taskfold-client` →
+`dsh-taskfold-client`) with no disabled marker; and the offline suite — 14
+suites, 239 tests, 0 fail. The desktop payload this record was written in is
+already `0.2.1-rc.3` (`desktopVersion` in its runtime manifest), running this
+plugin with task marks, folds and `fold_recall` active. Not verified in the
+0.2.1-rc.3 probe: a real fold/summarization round trip (the isolated home had no
+model-provider credentials) — engine shape, subclassing, the resolver, the
+shim's construction and a driven `BlockAssembler` stand in for it. Both READMEs'
+"Supported dsh versions" records updated (the 0.2.1-rc.2 entry replaced per the
+one-entry-per-channel convention). Not applicable this time:
+`verify-cache.mjs --since-restart` — the fold envelope is untouched (no
+summarization input, prefix or drain change), so there is no new live-cache
+number to record.
+
+  - record 0.2.1-rc.3 as the verified rc-channel host in README.md + README.zh.md
+
+## 0.39.0 — the task-banner dock is hidden by default (2026-10-23)
+
+The task-stack dock — the banner beside the conversation input that lists the
+session's named tasks and their fold state — is now OPT-IN: `showTaskBar`'s
+schema default flipped `true` → `false`, so a profile that never touched the
+switch no longer gets the banner. Nothing else about the feature changed: the
+Taskfold card on the Plugins page still stages the same volatile Switch, and the
+client's rule is untouched — the dock is hidden on exactly a served `false`, so
+an unserved namespace or a missing ui-settings/configForms service still renders
+it instead of silently dropping the dock. Switching it back on restores the old
+behaviour verbatim; a profile that already persisted `showTaskBar: true` keeps
+its banner (the default only decides the profiles that never chose).
+
+The default lives in the host schema (`plugins/taskfold.mjs` — the Config field
+dsh-settings exposes, validates and persists through the active profile's
+Cordis patch), and both halves moved together: the field description, the
+comment in `plugins/fold-settings-ui.mjs`, the dock sections of both READMEs,
+and the regenerated `client/taskfold-client.mjs`. `test/client-bundle.test.mjs`
+now pins the pair rather than either half alone — a schema default of `true`
+would render the banner for every untouched profile, while a client that hid on
+anything but an explicit `false` would hide it where settings are unavailable —
+and it also asserts the committed bundle carries no unsubstituted placeholder.
+
+Regenerating that bundle surfaced a real defect in the published 0.38.3: the
+template's two `__DOCK_ID__` slots went through `String.replace`, which
+substitutes only the FIRST match, so the dock's registration id shipped as the
+literal `"__DOCK_ID__"` (the list slot validates `id`, and the only valid value
+is `task-stack`). The old default hid the bug — the mount-time registration is
+the first slot — while the now-default path (hidden at boot, then switched on)
+is exactly the one that reaches the second. `substitute()` now replaces every
+occurrence (split/join, literal insertion, so replacement-pattern characters in
+a value cannot reinterpret it), and `renderBundle` fails the build on any
+leftover `__[A-Z_]+__` placeholder, so the class cannot ship silently again.
+`test/client-bundle.test.mjs` locks both halves (two `id: "task-stack"`
+occurrences, zero leftovers) and keeps the guard itself under test.
+
+Verification: the default probed through the real `@deepseek-ai/schemastery`
+from the 0.2.1-rc.2 host — `Config({}).showTaskBar.get()` → `false`,
+`meta.default` → `false`, `meta.volatile` → `true`, with `minSpanTokens` still
+`2000` — and a fresh render of the bundle is byte-identical to the committed one
+(the release's own freshness gate, re-run here). Offline suite: 14 suites, 239
+tests, 239 pass, 0 fail. Not applicable this time: `verify-cache.mjs
+--since-restart` — the fold envelope is untouched (no summarization input,
+prefix or drain change), so there is no new live-cache number to record.
+
+  - the task-banner dock is hidden by default
+
+## 0.38.3 — dsh 0.2.1-rc.2: re-verified, no plugin change (2026-10-19)
+
+A minor step this time, and the package set moved with it: the dsh monorepo went
+0.2.0-rc.2 → 0.2.1-rc.2 in lockstep, but the `@deepseek-ai/*` closure grew from
+288 to 306 packages (28 added — `dsh-plugin-market`, `dsh-tool-terminal`,
+`dsh-tool-working-directory`, `dsh-experimental-session-search`, …; 10 removed —
+`dsh-hook-protocol`, `dsh-hooks-codex`/`dsh-hooks-claude-code`,
+`dsh-webhook`/`dsh-webhook-github`, `dsh-client-ui-slots`, `dsh-client-store`,
+`dsh-subagent-in-process-driver`, `dsh-invariants`,
+`dsh-experimental-schedule-bundle`), so the host surface was re-probed rather
+than assumed. The compatibility gate re-checked with the real
+`evaluatePluginCompatibility` on 0.2.1-rc.2 (`@deepseek-ai/dsh-app-boot@0.2.1-rc.2`,
+`getDshRuntimeVersion()` → `0.2.1-rc.2`): the existing `^0.2.0-rc.1` peer floor
+still passes — the gate's own `satisfies()` runs semver with
+`includePrerelease: true`, so a 0.2.x prerelease anywhere inside the caret's
+`<0.3.0-0` bound is admitted and no same-minor floor is required — v0.38.2 loads
+as-is, no code or manifest change. Three negative controls (peers forced to
+`^0.1.7-rc.1` together and singly; the real manifest judged against a
+0.1.7-rc.1 runtime) are rejected with unmet-requirements objects, so the pass
+is not vacuous.
+
+Verification chain against the real 0.2.1-rc.2 packages: host-API shape probes —
+52/52 (`BasicCompactionEngine` default export with `compactRegion` arity 4 and
+`summarize` arity 3 on the prototype, subclassed exactly as the fold engine does
+it; `BlockAssembler` driven to a real `blocks()` result; the schemastery CJS
+chain plus this plugin's own `Config` metadata; all seven services, three hooks
+(`agent/pre-step`, `agent/turn-stopping`, `compaction/summary-error`) and six
+methods it uses present; all four `@deepseek-ai` specifiers it references
+resolvable); the client-contract sweep — 19/19 (`conversation.input.dock`,
+`plugins.bundle.config`, configForms `whileServed`, `window.__ModuleLoader__`,
+`SettingsFormModel`, `settingsNumberField`, plus `slots`/`configForms`/`locale`,
+`inject(key, callback)` and `register(...)`, with the served bundle matching
+`client/taskfold-client.mjs` for all 752 lines apart from the appended `;` and
+sourcemap); an end-to-end probe host (real 0.2.1-rc.2 build over a hash-pinned
+copy of this tree at 4c7985b, on an isolated `DSH_HOME`) with empty stderr and
+zero plugin-disable lines — checked against BOTH wordings, because 0.2.1
+rewords the diagnostic from `disabling profile plugin row` to `disabling profile
+plugin` — whose `settings/describe` serves the `taskfold` namespace (the row id,
+not the historical `cmpct-region`) at
+`{"minSpanTokens":2000,"showTaskBar":true}` with `applies: live` and the
+plugin's own schema verbatim, and whose `--dump-config` lists both rows
+(`taskfold` → `dsh-taskfold/plugins`, `taskfold-client` → `dsh-taskfold-client`)
+with no disabled marker; and the offline suite — 14 suites, 236 tests, 0 fail.
+Not verified in the 0.2.1-rc.2 probe: a real fold/summarization round trip (the
+isolated home had no model-provider credentials) — engine shape, subclassing,
+the resolver, the shim's construction and a driven `BlockAssembler` stand in for
+it. Both READMEs'
+"Supported dsh versions" records updated (superseded 0.2.0-rc.2 entry replaced
+per the one-entry-per-channel convention).
+
+  - record 0.2.1-rc.2 as the verified rc-channel host in README.md + README.zh.md
+
+## 0.38.2 — install instructions that survive npm's release-age policy (2026-10-08)
+
+The install sections now lead with a **version-pinned** install
+(`dsh-taskfold@0.38.1`) instead of the bare package name, because dsh Desktop
+bundles pnpm 11, whose `minimumReleaseAge` supply-chain policy refuses a release
+younger than a fixed window. A bare `pnpm add dsh-taskfold` therefore resolves to
+the newest release *older* than that window — on 2026-10-08 that was 0.38.0,
+which cannot be installed at all, while the dialog's own version chip showed
+0.38.1. The failure surfaced as the pre-0.38.1 `file:./client` error and read
+like a packaging bug; it was the policy falling back onto a broken release.
+
+Pinning works because pnpm treats an explicit version as consent: it installs
+what was asked for and records it in the profile's `minimumReleaseAgeExclude`.
+The prebuilt tarball on the GitHub Release and a Git address both bypass the
+policy too, so the README lists all three routes — and drops the `@0.38.0`
+example that used to send readers straight into the broken version.
+
+  - README (en/zh): pin the version in the dialog and the CLI examples, and explain the policy, the misleading version chip, and the tarball/Git routes
+  - `dsh-taskfold@0.38.0` is deprecated on npm (`0.38.0 cannot be installed … use 0.38.1 or newer`)
+  - the missing GitHub Release for 0.38.1 was published from the existing tag, so `releases/latest` no longer points at an uninstallable version
+
+## 0.38.1 — publish the client half as its own npm package so consumers can install (2026-10-06)
+
+0.38.0 was uninstallable. The root manifest declared the browser half as
+`"dsh-taskfold-client": "file:./client"`, and pnpm resolves a path specifier
+against the workspace root of whoever is INSTALLING the package — not against
+the directory that declares it. So the nested `client/` directory was looked for
+one level above the profile and every install stopped at
+
+    ERR_PNPM_LINKED_PKG_DIR_NOT_FOUND
+    Could not install from "<profile>/client" as it does not exist.
+    This error happened while installing the dependencies of dsh-taskfold@0.38.0
+
+Both routes into a profile hit it, which is what made the release useless rather
+than merely awkward: `pnpm install dsh-taskfold@0.38.0` from the registry and
+`dsh plugin add github:yindf/taskfold` both died the same way, so no user could
+reach 0.38.0 without hand-writing a `pnpm.overrides` entry in their profile.
+
+The declaration itself is load-bearing and stays. The client row in
+`cordis.patch.yml` mounts its OWN package name, and `client-modules` accepts a
+row name only when it is path-like or an exact bare package name — a subpath of
+the root package is dropped outright, and a relative name renders as a raw
+`file:///` path with no title or introduction. A bare name therefore has to be
+resolvable through the CONSUMER's `node_modules`, which no specifier pointing
+inside a published package can be: `file:` and `link:` resolve against the
+consumer's workspace root, and `workspace:*` is not a member of anyone else's
+workspace. Only a registry version range is installable, so the browser half is
+now a package of its own.
+
+  - `dsh-taskfold-client` is published, with `"private": true` removed (npm
+    refuses to publish a private package, which would have left the version the
+    root depends on permanently absent); the root depends on it by range
+    (`^0.38.1`), replacing `file:./client`
+  - `scripts/release.mjs` publishes BOTH packages, CLIENT FIRST: the root's
+    manifest names the client's version, so a root published first would 404 for
+    every consumer until the client landed. Each package is probed and published
+    individually, so a re-run finishes whichever half is missing, and the loop
+    stops on any status but `published`/`already` — publishing the root over an
+    unpublished client is the exact failure that order exists to prevent
+  - new ship-guard `assertClientDependencyResolvable()`, run by `release` before
+    either manifest is written (validating the version the release is ABOUT to
+    write, not the tree as it stands) and by `npm` before it publishes: it
+    refuses a missing declaration, any `file:`/`link:`/`portal:`/`workspace:`
+    specifier, a non-range specifier, a private or misnamed client, a client
+    without `dsh.client.platform === "web"` or without the `./client` export, a
+    declared range that does not include the client's version, and a client
+    version that is not in lockstep with the release
+  - `spawnCaptured`/`npmSpawn` accept a working directory, so `npm publish` runs
+    in `client/` as well as in the repo root
+  - `test/release.test.mjs` is now 32 tests (was 25); `test/client-bundle.test.mjs`
+    pins the dependency's SHAPE instead of its old `file:./client` text — that
+    assertion was why the suite stayed green while the shipped package could not
+    be installed, since inside this repo the nested directory is simply there and
+    no unit test can see a consumer's resolver
+  - `npm test`: 14 suites, 0 failures
+
+Repair for anyone already on 0.38.0: drop the `pnpm.overrides` entry and install
+0.38.1. Publishing order for future releases is a rule, not a preference —
+`dsh-taskfold-client` first, then `dsh-taskfold`.
+
+## 0.38.0 — the release flow gains an npm repair command (2026-09-30)
+
+0.37.7 reached git, GitHub and npm only because its npm copy was published by
+hand. `release` runs the npm step while it still is `release` or a PENDING
+resume, and once the tag, the commit and the GitHub Release are pushed the state
+is CLEAN — so a release whose npm step was skipped (no token visible to the
+script at the time) or whose upload failed has no retry entry point at all.
+`node scripts/release.mjs npm [--version X.Y.Z]` is that entry point: it does
+nothing but publish to npm. It is idempotent through the existing registry probe
+(a version already there prints `nothing to publish` and exits 0), and unlike
+`release` — which must never let a failed upload look like a failed release —
+it exits 1 whenever it did not publish, because publishing is the whole point of
+running it.
+
+Its guards all follow from one fact: `npm publish` ships the WORKING TREE, never
+a tag. The target is `--version`, or else the CHANGELOG's top entry, which must
+be a released one (a draft is not a version the registry can already hold, so a
+draft top demands an explicit `--version`). It then refuses unless package.json's
+version, a local `v<version>` tag, a clean tree — untracked files included,
+since anything inside the `files` allowlist would be packed — and a tree
+identical to that tag all say this checkout really is that release.
+`assertClientBundleFresh()` runs before the publish, so a stale browser bundle
+cannot go out either. The tag-identity guard is the one worth having: without
+it, repairing a version npm missed from a branch that has moved on since would
+put unreleased files on the registry under a released version number.
+
+The token lookup gained a second source. `NPM_TOKEN` is still read from the
+process environment, and on Windows now falls back to the user-level variable
+(`reg query HKCU\Environment /v NPM_TOKEN`), because a host-launched shell
+snapshots its environment at start-up: a token set after that is invisible to
+the child while plainly set for the user — precisely what happened to 0.37.7,
+whose npm step reported "no token" in a process that could see none.
+
+  - `scripts/release.mjs`: new `npm [--version X.Y.Z]` subcommand — target version, the four guards, `assertClientBundleFresh()`, exit 1 on every outcome but `published`/`already`
+  - `publishToNpm` returns `'published' | 'already' | 'no-token' | 'refused' | 'failed'`; `release` still ignores it (npm must never fail a durable release), `npm` does not
+  - token fallback to the Windows user-level variable (`parseRegQueryToken`: `REG_SZ` and `REG_EXPAND_SZ`), so a stale shell environment no longer hides a token that exists
+  - new pure exports with tests: `resolveNpmVersion` (`--version` wins; a draft top demands it), `checkNpmTarget` (guard order: version → tag → dirty tree → tree differs from the tag), `parseRegQueryToken`; `test/release.test.mjs` is now 25 tests, `npm test` 14 suites / 0 failures
+  - verified on a clone checked out at the v0.37.7 tag with this script committed and the tag moved onto it: `release.mjs npm` hit the idempotent branch (`already on the registry — nothing to publish.`, exit 0) and the token fallback found the user-level variable; a clean tree carrying one commit the release does not was refused (exit 1) with the `git switch --detach v0.37.7` hint
+  - README (en/zh) release notes and `docs/design/release-flow.md` (`### npm`, the CLI contract, and the 2025-06 "no npm publish" decision marked retired) document the repair path
+
+## 0.37.7 — the Plugins page drops to two named rows, and the release flow publishes to npm (2026-09-30)
+
+The bundle patch declared THREE Loader rows, so the Plugins page listed three
+components for one package: `cmpct-region`, `cmpct-stats`, and
+`taskfold-client`. That was never a duplicate registration — the page renders
+one row per `insert` entry in `cordis.patch.yml` — but two of the three were
+avoidable. The observation tools moved out of their own row: `compact-stats.mjs`
+is now a PLAIN module exporting `registerStatsTools(ctx)`, and `taskfold.mjs`
+(the renamed `compact-region.mjs`, the bundle's single host row) calls it from
+`apply`. Same `ctx.tools` service, same plugin fiber, same two tools — one
+fewer Loader row. The remaining two rows cannot be merged into one: a client
+package is discovered by client-modules FROM a live Loader row, and two rows
+resolving the same package make it throw "resolves from multiple active Loader
+sources", which is why the browser half stays in the nested `client/` package
+with a row of its own.
+
+Both rows are named after the package. Row ids: `cmpct-region` → `taskfold`,
+while `taskfold-client` keeps its name. The host row's specifier moves from the
+relative `./plugins/compact-region.mjs` to the package SUBPATH
+`dsh-taskfold/plugins`, because `readPluginMeta()` returns undefined for
+anything that carries no package name and the boot rewrites a `./…` row name
+into a `file:///` URL before the page reads it — the relative form is why the
+page rendered a raw path with no title, description or icon. The subpath
+resolves through the profile's own `node_modules` (the `dsh plugin add` link)
+into this package's `exports` map, and the row then reads its own
+`<specifier>/locale/*.json` plus `<specifier>/package.json`: `plugins/locale/*.json`
+carries this row's title `Taskfold` and its one-line introduction, and
+`plugins/package.json` — the description fallback — is deliberately absent and
+unexported, so the row's copy can only come from that locale file while
+`package.json` and the package-level `locale/*.json` keep the longer blurb for
+the package page header and the npm listing.
+
+The client row mounts its own package NAME, `dsh-taskfold-client`, which is how
+the official bundles mount their halves (one component = one resolvable package,
+each carrying its own `locale/*.json`). Two host rules leave no other option:
+client-modules' `locatePkgJson()` accepts a path-like name or an exact bare
+package name and drops everything else — a subpath of the root package,
+`dsh-taskfold/client` included, never reaches the boot graph — while a path-like
+name can never be titled, because boot rewrites a `./…` row name into a `file:///`
+URL and `readPluginMeta()` returns undefined for any specifier that carries no
+package name. That path is what the page printed as this row's title. The name
+resolves without publishing a second npm package: `package.json` declares
+`"dsh-taskfold-client": "file:./client"`, and dsh-app-boot publishes a profile
+bundle's resolvable dependencies as `scope: 'profile'` resolution entries
+(`collectProfileScopePackages` → `dependencyClosure`, walking the bundle
+manifest's dependencies/peers). The nested `client/` package already ships inside
+the tarball, so npm/pnpm recreate that link on install; a working tree needs
+`pnpm install` (or the equivalent link) before the row resolves. `client/locale/*.json`
+titles the row `Taskfold Client` (`Taskfold 客户端` in Chinese) and carries its
+one-line introduction, while `client/package.json` still drops its own
+`description` so the row's copy can only come from that locale file. Both rows
+now render the same four lines — title, introduction, row id, module name —
+because `client.js` prints the id and the module name only when the title
+differs from them, and both titles are deliberately distinct from both, the way
+the official bundles' rows are shaped.
+
+The plugin's own `name` is `taskfold` (was `compact-region`).
+
+BREAKING for installs that already saved settings: a row id IS the config key
+of its Settings form (`dsh-settings` keys forms by entry id), so a previously
+saved fold floor / `showTaskBar` under `cmpct-region` is no longer read — the
+new `taskfold` row starts from the schema defaults (2000 / true). The old key
+stays harmless in `cordis.patch.yml`; delete it or re-enter the value on the
+Settings page. Anyone mounting this bundle beside a preset that still carries
+the historical `cmpct-region` / `cmpct-stats` rows must drop those rows first —
+tool names live in a shared registry and duplicate registration fails.
+
+  - `compact-stats.mjs` exports `registerStatsTools(ctx)`; its Cordis plugin object and row are gone
+  - `plugins/compact-region.mjs` → `plugins/taskfold.mjs`; exported plugin `name: 'taskfold'`
+  - `cordis.patch.yml`: host row `name: 'dsh-taskfold/plugins'` (was the relative `./plugins/taskfold.mjs`); client row `name: 'dsh-taskfold-client'` (was the relative `./client/index.mjs`); legacy `cmpct-*` row ids retired
+  - `package.json` `main`/`exports["."]`/`exports["./plugins"]` → `./plugins/taskfold.mjs`; new `plugins/locale/*.json` (title + one-line introduction, both languages) gives the host row its own copy
+  - new `dependencies` entry `"dsh-taskfold-client": "file:./client"`, plus `client/locale/*.json` (title + one-line introduction) and a description-free `client/package.json`: the client row mounts a resolvable bare name and renders as `Taskfold Client`, not as a `file:///` path
+  - test file renamed to `test/taskfold-stats.test.mjs`; `test/client-bundle.test.mjs` pins the host subpath, the declared component dependency, the client row's bare-name specifier, and both row locales — a title plus a short translated introduction, with the title distinct from the row id and the module name so both rows keep the same four-line shape
+  - client bundle regenerated (source comments only); `npm test` green (14 files)
+  - the package blurb (`package.json` plus `locale/{en,zh}.json`) and both row introductions rewritten rather than translated: the Chinese copy now reads as written Chinese instead of translated English, and each row says what its component actually does (the browser row names the task bar and the fold settings, not a calque of "browser half")
+  - the fold-floor settings card binds the renamed row id `taskfold` (`FOLD_SETTINGS_PLUGIN_NS`): dsh-settings serves one config form per profile entry and the card registers `whileServed`, so a stale namespace would have left the card permanently absent with no error anywhere — `test/client-bundle.test.mjs` now pins the constant to the host row's `id:` in `cordis.patch.yml`
+  - README (en/zh) localization + layout sections and `docs/design/task-stack-ui.md` describe the two named rows and the component-package shape; `docs/design-compact-stats.md` keeps the single-row shape
+
+npm rejoins the release pipeline: `node scripts/release.mjs release` (and its
+PENDING resume) now publishes the version to npm whenever the `NPM_TOKEN`
+environment variable is set. npm itself reads no token from the environment
+(`NODE_AUTH_TOKEN` is only honored through .npmrc templating), so the step
+writes a project-level `.npmrc` carrying the token, publishes with
+`--access public`, and removes the file in a finally; a pre-existing project
+.npmrc aborts the step rather than clobber it. The token must be
+**automation-type**: accounts with 2FA reject publish-time OTPs for granular
+tokens (verified live this cycle — EOTP on the granular token, first-try
+publish on the automation one). Idempotent: `npm view <pkg>@<version>` runs
+first and a version already on the registry is a no-op, so resumed and
+hand-rerun releases are safe. The npm step never fails the release — the tag,
+commit, and GitHub Release are durable before it runs; failures print a
+manual `npm publish` hint instead. npm caught up to 0.37.6 by hand this
+cycle; from the next release the pipeline owns it.
+
+  - release (and PENDING resume) gains the opt-in npm publish step (NPM_TOKEN)
+  - pure helpers `npmrcAuthLine` + `manualNpmHint` covered by offline tests
+  - README maintainers sections (en/zh) and the release-flow header comment document the step
+
+## 0.37.6 — the below-floor verdict moves into the Task-ended result ("plan A") (2026-09-30)
+
+The 0.37.5 sidecar ledger is gone. The plugin owns task_begin/task_end
+(compact-region registers both tools and renders their results), so the
+verdict is now made AT CLOSE TIME and recorded IN BAND: a solitary task_end
+(no partner tool calls in the carrying message — partner results have not
+landed yet and their unbounded size would make the estimate lie in the skip
+direction) measures the span right there (`spanEstimateAtClose` mirrors
+deferredArchivePlan's start walk; the surface tail is the end) via the same
+CJK-aware estimator, and a below-floor close renders the marker phrase
+"Closed below the fold floor" into the `Task ended` result. The reducer
+keys on that marker: the mark pops and the row is NEVER queued into
+pendingArchives — the verdict lives in the event log itself, permanent by
+construction, so there is no ledger to read, no reopen path to disable, and
+nothing for the dock to prune (below-floor closes never reach it; the
+"closed below floor" lifecycle counter likewise no longer sees them).
+Non-solitary closes and pre-0.37.6 rows fall back to the drain's in-memory
+below-floor settle (kept, with the prune view and the settle-aware apply
+push) — that fallback re-derives after a restart under the then-current
+floor, the documented 0.37.4 semantics. This also fixes a small lie the
+below-floor close used to tell the model: its result claimed "Archival
+queued — the span folds automatically" for a span that never folds; the
+below-floor result now says so and drops the report-gate instructions.
+Rationale: the session log is the single durable record; a verdict written
+into it needs no second store, and the only writer allowed to touch it —
+the plugin's own tool result — is exactly where the verdict is born.
+
+  - close-time fold-floor verdict recorded in the Task-ended result (BELOW_FLOOR_MARKER; reducer never queues marked closes)
+  - delete the floor-skips.jsonl ledger and permanentSkips (the log is the record)
+  - task_end result for below-floor closes stops promising an archival that never happens
+  - fallback path (non-solitary closes, old logs) keeps the drain's in-memory settle + dock prune
+
+## 0.37.5 — below-floor skips are permanent: persisted per session, never reopened (2026-09-30)
+
+First-principles correction, from live use: the plugin exists to keep context
+CHEAP, and retroactively folding spans a later, lower floor would admit
+surface rewrites the prefix cache never planned — every such rewrite
+invalidates the provider prefix cache behind it, a cost no small fold can
+repay. So the reopen machinery (0.37.0–0.37.4: lowering the floor re-settled
+previously skipped spans, both live and after every restart) is GONE. A
+below-floor settle is now an append-only verdict:
+
+- the drain writes each verdict to `floor-skips.jsonl` in the session's
+  taskfold artifact directory — a restart re-settles straight from the
+  ledger instead of re-measuring under whatever floor is current then
+  (degrades to memory-only when no artifact directory resolves)
+- no floor edit reopens a settled span: `reopenIfFloorLowered` and the
+  settle-time floor stamps are removed; the display key is published once
+  and never withdrawn
+- the lifecycle stack line unions the ledger's keys into its below-floor
+  count (intersected with the queued rows), so a permanently skipped row is
+  never counted as 'folding' after the floor drops below its span
+
+  - remove the floor-lowering reopen; below-floor settles are final for the
+    life of the session log
+  - persist below-floor verdicts to <artifact-dir>/taskfold/floor-skips.jsonl
+  - tests: reopen expectations inverted (lowering to 1 never folds a settled
+    span), restart simulation via a second drain over the same ledger,
+    memory-only degrade keeps the re-derive-from-current-floor behavior
+
+## 0.37.4 — below-floor settles vanish from the dock, and the prune now ships without waiting for the next task mark (2026-09-30)
+
+Follow-up to 0.37.3, driven by live use: the terminal 'closed · below fold
+floor' chip answered the honesty question but not the noise one — small
+tasks kept a permanent dock row and a permanent '{n} closed below floor'
+counter the user has no use for, and the labeled state itself only reached
+the client when a task-mark event happened to push it (a settle changes
+nothing in the event log, and the projection registry re-runs a wire view
+only when apply produced a NEW state reference — so the chip could lag a
+whole conversation). Two changes:
+
+- The wire view now PRUNES settled below-floor rows from the wire value
+  instead of flagging them: a span that will never fold has nothing worth a
+  dock row. The raw projection state keeps the rows (the drain re-settles
+  them after every restart; `archivesOf` reads the state, not the view), and
+  the dock drops the belowFloor field, suffix label, and separate counter —
+  closing rows are plain 'folding…' again, counted only as folding.
+- `makeSettleAwareApply` wraps the taskMarks reducer: on the first event
+  after the drain's settle registry mutates (settle or reopen bumps its
+  version), the wrapper returns a content-identical shallow copy — exactly
+  one extra state-reference move per mutation, which re-runs the pruned view
+  and pushes it. A below-floor task now disappears from the dock at the
+  next event after its settle, with no task-mark activity required; a
+  floor-lowering reopen restores the row the same way. Replay-safe: the
+  clone changes object identity only, never derived content.
+
+Restart window unchanged (one boundary): the registry is in-memory, so
+after a restart settled rows re-appear as 'folding…' until the drain's
+first pass re-settles them and the next event ships the prune.
+
+  - dock: below-floor rows/labels/counters removed (0.37.3 display work superseded)
+  - host: pruneBelowFloorView replaces annotateBelowFloorView; makeSettleAwareApply wired as the projection's apply
+  - tests: below-floor-view suite (prune/memo/reopen, wrapper clone-per-bump, null-state safety); task-stack-ui expectations updated
+
+## 0.37.3 — below-floor settles stop masquerading as 'folding…' (2026-09-30)
+
+Live regression from the 0.37.0 fold floor: a task closed below
+`minSpanTokens` (observed at 616 estimated tokens against the 2000 default)
+settles in the drain's MEMORY as closed-unfolded — zero LLM calls, by design
+— but nothing ever shadows its close result, so the projection keeps the row
+in `pendingArchives` forever and every consumer rendered it as a fold in
+flight: the dock chip read '发布 0.37.1 折叠中…' indefinitely and the
+lifecycle hint counted '1 folding' that would never be billed.
+
+  - the drain now publishes each below-floor settle into a bounded
+    display registry (composite `seq:name:foldResultSeq` key, withdrawn on
+    a floor-lowering reopen), and the taskMarks wire view annotates exactly
+    those rows `belowFloor: true` — reference-stable (the change feed's
+    Object.is gate stays quiet on unrelated commits) and memoized on the
+    state reference plus a registry version so settles between commits
+    re-annotate on the next view computation
+  - the dock renders flagged rows as terminal: '已关闭 · 低于折叠下限' /
+    'closed · below fold floor', a neutral rail dot, and a separate
+    '{n} closed below floor' count in the header tail — never inside the
+    folding count
+  - the lifecycle hint's stack line measures the queued archives freshly
+    (`belowFloorArchiveKeys`: same plan, same estimator, same floor as the
+    drain — restart-accurate immediately, unlike the in-memory registry)
+    and reports 'N closed below floor' apart from 'N folding'; the default
+    zero keeps the legacy byte-stable rendering
+  - unannotated rows (registry empty right after a restart, before the
+    drain's first pass) keep the legacy 'folding…' label — one boundary of
+    old semantics at worst
+
+## 0.37.2 — dsh 0.2.0-rc.2: re-verified, no plugin change (2026-09-30)
+
+A same-minor lockstep bump: the whole dsh monorepo moved 0.2.0-rc.1 →
+0.2.0-rc.2 with the package set unchanged (no additions, no removals), so this
+release is a re-verification, not a migration. The compatibility gate re-checked
+with the real `evaluatePluginCompatibility` on 0.2.0-rc.2: the existing
+`^0.2.0-rc.1` peer floor already covers rc.1 through the 0.2.0 final — v0.37.1
+loads as-is, no code or manifest change. Verification chain against the real
+0.2.0-rc.2 packages: host-API shape probes (`BasicCompactionEngine` default
+export with `compactRegion` on the prototype, `BlockAssembler` export,
+schemastery CJS entry); the client-contract sweep
+(`conversation.input.dock`, `plugins.bundle.config`, configForms
+`whileServed`, `window.__ModuleLoader__`, `SettingsFormModel`,
+`settingsNumberField` — all present); an end-to-end probe host whose
+`settings/describe` serves `cmpct-region` at
+`{"minSpanTokens":2000,"showTaskBar":true}` with `applies: live`; and the
+offline suite — 14 suites, 208 tests, 0 fail. Both READMEs' "Supported dsh
+versions" records updated (superseded rc.1 entry replaced; dist-tag note:
+`0.2.0-rc.2` now under both `latest` and `next`).
+
+  - record 0.2.0-rc.2 as the verified rc-channel host in README.md + README.zh.md
+
+## 0.37.1 — dsh 0.2.0-rc.1: peer floor bump, verified (2026-09-30)
+
+The dsh monorepo jumped 0.1.7-rc.2 → 0.2.0-rc.1 in lockstep (no package
+removals; five new telemetry/log packages). The compatibility gate rejects the
+0.37.0 manifest on the new host — `^0.1.7-rc.1`'s semver upper bound `<0.2.0`
+excludes the new minor — so this release bumps all three peerDependencies
+(`@deepseek-ai/dsh`, `@deepseek-ai/dsh-compaction-basic`, `@deepseek-ai/dsh-llm`)
+to `^0.2.0-rc.1`. Hosts still on 0.1.7-rc.* keep using v0.37.0, whose floor
+matches them. Verification on the real 0.2.0-rc.1 packages: the gate probe
+(`evaluatePluginCompatibility`: old range rejected, bumped range passes);
+host-API shape probes (`BasicCompactionEngine` default export with
+`compactRegion` on the prototype, `BlockAssembler` export, schemastery CJS
+entry); a client-contract sweep (`conversation.input.dock`,
+`plugins.bundle.config`, configForms `whileServed`, `window.__ModuleLoader__`,
+`SettingsFormModel`, `settingsNumberField` — all present); an end-to-end probe
+host whose `settings/describe` serves `cmpct-region` at
+`{"minSpanTokens":2000,"showTaskBar":true}` with `applies: live`; and the
+offline suite — 14 suites, 208 tests, 0 fail. Both READMEs' "Supported dsh
+versions" records updated (superseded 0.1.7-rc.2 entry replaced per the
+one-entry-per-channel convention; dist-tag note: `0.2.0-rc.1` under `next`,
+`latest` still 0.1.7-rc.2).
+
+  - bump dsh peerDependencies floors to ^0.2.0-rc.1 (all three host-surface packages)
+  - record 0.2.0-rc.1 as the verified rc-channel host in README.md + README.zh.md
+
+## 0.37.0 — user-configurable fold floor on the Plugins page: `minSpanTokens` (2026-09-28)
+
+Issue #2: folding a span too small to pay for itself wastes tokens — the
+summarization call (plus its prompt overhead) can approach the span's own
+size, and for tiny tasks the fold costs nearly what it saves. This release
+adds the floor as a first-class plugin setting: the mounted row exports a
+Config schema (attached to the plugin object itself — the loader's
+`unwrapExports` keeps only `exports.default`, so a named `export { Config }`
+never reaches `runtime.Config`) whose volatile `minSpanTokens` field the
+dsh-settings service exposes, validates, and persists through the active
+profile's Cordis patch. The shipped clients do NOT auto-render schemas
+(`autoGenerate` has no schema-driven client yet), so the browser half now
+ships its own "Taskfold" card — `plugins/fold-settings-ui.mjs`, inlined into
+the client bundle — that binds the namespace through `ctx.configForms` and
+registers into the Plugins page's `plugins.bundle.config` slot (keyed by the
+bundle's package name; the official-group `plugins.item` slot stays reserved
+for first-party companions) while the Host serves it. No environment
+variables, no restart:
+
+- The settings card also stages a second volatile field, `showTaskBar`
+  (default true): a Switch on the same card hides the task-stack dock beside
+  the conversation input. The dock registers unconditionally at mount and the
+  card's namespace watch hides/restores it live — an unserved namespace or a
+  missing settings service always means visible, so the dock keeps working on
+  deployments without ui-settings.
+- Every user-facing surface is now localized (en/zh): the settings card and
+  the task-stack dock read their copy through the locale service (dictionaries
+  `settings.taskfold` / `ui.taskfold`; the dock's slot registration declares
+  its namespace so the runtime dispatches a bound reader, with the English
+  dictionary as the built-in fallback for deployments without ui-settings),
+  and the package ships `locale/en.json` + `locale/zh.json` so the Plugins
+  page resolves the bundle's title/description per language instead of always
+  falling back to the English `package.json` description.
+- The browser bundle moved into its own nested package `client/`
+  (`dsh-taskfold-client`, one dedicated `taskfold-client` Loader row in
+  cordis.patch.yml): client-modules requires every package declaring
+  `dsh.client` to have exactly ONE owning Loader row, and with the two
+  legacy-stable host rows (cmpct-region/cmpct-stats) both resolving to the
+  root package it threw "resolves from multiple active Loader sources" and
+  dropped the whole browser half — dock included — from the boot graph. The
+  root package no longer declares `dsh.client`; the bundle is generated to
+  `client/taskfold-client.mjs`.
+
+- `minSpanTokens` (default `2000` — the measured break-even, see
+  `docs/fold-floor.md`; `0` = fold everything, the legacy behavior): the
+  minimum number of ESTIMATED TOKENS a planned region must
+  carry before a summarization call is billed. Below the floor the drain
+  settles the archive BEFORE building the engine — zero LLM work, tooSmall
+  semantics. The floor is re-read from the volatile config ref at every
+  drain pass, so a Settings edit applies at the next step boundary — and
+  LOWERING the floor reopens spans that already settled unfolded under
+  the higher one (their original content is still on the surface); other
+  settles remain final.
+- New pure module `plugins/fold-settings.mjs` (`foldFloorFromConfig`,
+  `estimateTokens`, `spanTokenEstimate`, `belowFoldFloor`): unwrapping is
+  total — an undefined config, a missing field, a throwing ref, or an
+  invalid value (non-integer, negative, absurdly large) all fall back to
+  the default floor (`2000`), never throws, so a bad edit can never
+  silently disable the floor (the drain resolves its per-pass floor
+  through the same `foldFloorFromConfig`, one normalization everywhere).
+  The estimate is POSITIONAL over the surface (which is not seq-ordered),
+  CJK-aware (`0.75` token per CJK char — Han, kana, and Hangul syllables
+  alike — and `4` chars per token otherwise; the rate constants already
+  embed the calibration: against 194 measured `shadowedTokenCount` values
+  from two weeks of live sessions the estimates read ~7% low, a
+  conservative direction), and an unmeasurable span is never
+  skipped: the floor protects against wasted calls, not against folds.
+  (Revision on the same unreleased entry: an earlier draft counted
+  SURFACE NODES — `minSpanNodes` — because span tokens were assumed
+  unknowable before the call; the token heuristic plus the calibration
+  data reversed that.)
+- schemastery (the Config schema library) cannot be imported statically —
+  the installed copy sits in a harness-owned node_modules tree plain ESM
+  resolution never crosses (the same constraint fold-engine.mjs resolves
+  for dsh-compaction-basic). The mounted row requires its CJS build
+  synchronously from a harness anchor instead; when no anchor resolves,
+  `Config` stays undefined and the plugin mounts exactly as before (the
+  form is simply absent, the floor keeps its default).
+- Review hardening (two-agent review of the branch before release):
+  the dock's slot registration no longer declares `locale:` (scoped
+  slots throw on locale-declaring entries when no locale face is
+  installed — the dock must render on every deployment); its
+  dictionaries register in a locale-only fiber (previously gated behind
+  `configForms`, so a locale-without-settings host printed raw keys) and
+  the reader reaches the dock through a lifetime-managed ref with
+  per-call English fallback inside the model. The estimator's CJK
+  classes gained Hangul syllables and dropped the per-character regex
+  (char-code range checks); the settings-card's dead `summary` view and
+  copy keys are gone; the release script bumps and stages the nested
+  `client/package.json` in lockstep with the root; the published package
+  now ships `docs/` (README/settings-card links to `docs/fold-floor.md`
+  resolve inside the tarball) and drops the unused `./client-package`
+  export.
+
+Offline suite: 14 suites, 208 tests, 0 fail (fold-drain floor tests: config/
+volatile-ref totality, the CJK-aware estimator incl. Hangul, positional
+token estimation/unmeasurable-span pass-through, an end-to-end
+below-floor settle with zero `compactRegion` attempts, a live
+settings-getter edit applying at the next pass, idempotent
+reopen/re-settle with no un-settle on raise, and drain-level malformed-
+settings normalization; client-bundle tests additionally pin the
+locale-free dock registration + locale-only dictionary fiber and the
+en/zh key parity of both dictionaries).
+
+- **Features**
+  - user-configurable fold floor on the Settings page: `minSpanTokens` closes spans below the bound unfolded, before any summarization call is billed; edits apply live, and lowering the floor reopens previously settled spans
 
 ## 0.36.1 — declare dsh peerDependencies so the host compatibility gate has a range to check (^0.1.7-alpha.2) (2026-09-26)
 
@@ -32,6 +693,71 @@ the same declaration anchored at `^0.1.7-rc.1`, released there as 0.36.0.)
   - backport channel-scoped release baselines from master so alpha can release beside newer master tags
 - **Docs**
   - the peer floor is enforced on 0.1.7 hosts - rewrite the bounds note for the peerDependencies declaration
+
+## 0.36.0 — declare dsh peerDependencies so the host compatibility gate has a range to check (^0.1.7-rc.1) (2026-09-26)
+
+dsh 0.1.7 hosts check a bundle's `peerDependencies` against the running
+harness version at install and at startup/recomposition; until now this
+plugin declared nothing, so every host — compatible or not — loaded it
+unconditionally. This release declares the whole host-coupling surface:
+`@deepseek-ai/dsh`, `@deepseek-ai/dsh-compaction-basic` (the engine base
+class), and `@deepseek-ai/dsh-llm` (BlockAssembler), all `^0.1.7-rc.1`.
+
+The floor sits on the oldest verified rc build deliberately: semver ranks
+a prerelease below its own release (`0.1.7-rc.1 < 0.1.7`), so a naive
+`^0.1.7` would reject the `0.1.7-rc.*` hosts this plugin is verified on.
+Checked with the real `evaluatePluginCompatibility` on 0.1.7-rc.2: this
+manifest passes, while a `^0.1.7` variant is correctly rejected with the
+allow-version exemption hint. Offline suite: 14 suites, 0 fail. The
+READMEs' bounds note now records the enforced floor. (The alpha branch
+carries the same declaration anchored at `^0.1.7-alpha.2` — its own
+verified floor — released separately on that branch.)
+
+- **Features**
+  - declare dsh peerDependencies so the host compatibility gate has a range to check (^0.1.7-rc.1)
+- **Docs**
+  - the peer floor is enforced on 0.1.7 hosts - rewrite the bounds note for the peerDependencies declaration
+
+## 0.35.2 — the alpha channel's functional line, merged into the rc channel (2026-09-24)
+
+Since the channel split, every functional fix had landed only on alpha
+(0.34.3–0.35.1) while the rc channel kept verifying and releasing on the
+0.34.2-era code. This release ports alpha's whole functional line onto master
+— 14 commits picked with `-x` provenance, channel docs resolved to master's
+own — so the rc build now carries everything the alpha build does.
+
+- **What came over**
+  - task-mark execute-time enforcement: one task-mark call per message, and
+    the standalone-call contract explicit in every prompt layer
+  - fold-drain hardening: the deferred archive END extended past parallel
+    close-call results; unsettled commits back off geometrically and chain
+    starved drain calls; the summarization guard raised 120s → 300s
+  - fold fixes: bounded preamble tolerance, build-time assembler fail-fast,
+    second-chance summary settle, stale HOLD filter
+  - prompt corrections: stale semantics, end-authority conflicts, standing
+    tokens trimmed; the handoff shape no longer ends the turn
+  - dsh 0.1.6-alpha.2 seam adaptations in fold-engine: recover-loop waterfall
+    + routed-config spread
+  - session format v4: shape-independent tool-result extraction, reducer and
+    archive-plan guards on v4 result linkage, v4 tool-role previews with
+    retiring fold titles
+  - the master-v0.34.2 twin content alpha's v0.35.1 release had absorbed
+    (task-stack-ui, taskfold-client)
+  - tests: both grammars pinned — v4 round trips, plan guards, previews,
+    legacy titles
+- **The merge is byte-exact.** `git diff 5755cc7 HEAD -- plugins test` is
+  empty — this branch's functional tree is identical to alpha's HEAD.
+- **Verified on dsh 0.1.7-rc.1** (README record updated):
+  - offline: 14 suites, 196 tests, 0 fail (up from 13/167 — the
+    prompt-contract suite and the grammar pins came with the merge)
+  - a host-API probe against the real rc.1 packages: 12/12
+  - live on the running rc.1 host: 6/6 folds pass `verify-cache
+    --since-restart` (93.9–96.3% prefix-cache hits), produced by the mounted
+    copy whose plugins files hash-match alpha's v0.34.7 release commit — the
+    same functional code this release carries, exercised live
+- **Version 0.35.2** sorts above alpha's 0.35.1 (whose tag never landed) and
+  keeps the channels' shared tag namespace collision-free; the host-jump
+  audit behind `0.1.7-rc.1` stands as recorded under 0.34.8.
 
 ## 0.35.1 — resume-derived results keep their linkage: stuck pending intents fixed (2026-09-23)
 
@@ -108,6 +834,68 @@ planned `'fold'` — the archive never ran, it was never invalid.
   `folding…`/`opening…` suffixes, so the glyph, its `tf_spin` animation
   and the glyph CSS classes are gone; the client bundle is regenerated to
   match.
+
+## 0.34.8 — dsh 0.1.7-rc.1 verified, and channel-scoped release baselines (2026-09-24)
+
+dsh's rc line jumped two hosts at once — from `0.1.5-rc.2` (the rc channel's
+last recorded host) to `0.1.7-rc.1` — so this verification round audited the
+larger step and found no plugin change needed. The same round fixed the release
+flow for a problem the channel split had left behind: master could not draft at
+all, because the script's "latest tag" was branch-global while the tag
+namespace is shared by both channels.
+
+- **Host upgrade verified — no plugin change.**
+  - the offline suite — 13 suites, 167 tests, 0 fail
+  - a byte-level audit of all 277 first-party `@deepseek-ai` packages common to
+    the 0.1.7-alpha.2 and 0.1.7-rc.1 install trees (alpha.2 being the last host
+    either channel of this plugin had live-verified): no package added or
+    removed, 221 differ only in their `package.json` version fields, 56 change
+    implementation files
+  - of the packages this plugin couples to, `dsh-compaction-basic`,
+    `dsh-session`, and `dsh-agent-loop` are byte-identical in implementation,
+    and `dsh-llm`'s only change is `lib/typert.host.js` (TYPERT type-registry
+    declarations, the `Team*` typing entries) while `lib/index.js` —
+    `BlockAssembler`, the chunk grammar, the export line — is byte-identical
+  - a host-API probe against the real rc.1 packages with this branch's own
+    `fold-engine` copy: engine class export, its `summarize` prototype,
+    ScopedEngine subclassing the actual rc.1 base class, `BlockAssembler` with
+    `push`/`blocks`, and the end-to-end fold path (prefix-anchored envelope
+    with host-head dedup, exactly one system message, the constructed heading
+    with its fenced line-numbered span index, usage passthrough) — 12/12
+  - a client-contract sweep: `conversation.input.dock`, `useProjection`,
+    `__ModuleLoader__`, and `slots.inject` occurrence-identical across both
+    trees (8 / 14 / 11 / 10), with the dock-registration lines themselves
+    character-identical inside the changed owner `dsh-client-ui-conversation`
+    and the bundle registry `dsh-client-modules` byte-identical
+  - live, on the running 0.1.7-rc.1 host: 2/2 folds pass
+    `verify-cache --since-restart` (96.3% and 96.2% prefix-cache hits) — folded
+    by the mounted alpha-channel copy (0.35.1); this branch's own code is
+    covered by the probe and the suite above
+  - one dist-tag note: `0.1.7-rc.1` ships under `next` while `latest` still
+    resolves to `0.1.5-rc.3`, so a bare `npx @deepseek-ai/dsh web` keeps
+    running rc.3 — only `@0.1.7-rc.1` (or `@next`) reaches the new build
+- **Release flow: the tag baseline is now per-branch, and taken versions are
+  refused at draft.** `draft` on master died with "latest tag v0.34.7 is not
+  an ancestor of HEAD": `latestTag()` was branch-global, and the channel split
+  shares one tag namespace — alpha owns `v0.34.3`–`v0.34.7`, and, from before
+  the split, the `v0.34.2` tag itself, while master's own 0.34.2 release commit
+  is untagged (a version twin). Now `latestTag()` lists only tags reachable
+  from HEAD (`--merged`), and `baselineTag()` lets the other branch's tag stand
+  in as this branch's baseline exactly when the branch's own newest tag is
+  below `package.json` and the missing version is tagged somewhere — globally
+  unique, exactly one tag, just not here. A reachable tag above package.json,
+  or a version below it with no tag anywhere, stays a rejection; the ancestry
+  tripwire now guards only the branch's own tag. `draft` also refuses a target
+  version whose tag already exists ("pass --version with a free number")
+  instead of dying at `git tag` deep inside `release` — which is why this
+  release is 0.34.8: 0.34.3–0.34.7 are alpha's, and 0.34.8 is master's next
+  free number below alpha's 0.35.x line.
+
+**Verification** — offline suite 13 suites / 167 tests / 0 fail; host-API
+probe 12/12 against the real rc.1 packages; live `verify-cache
+--since-restart` 2/2 folds pass (96.3% / 96.2% prefix-cache hits) on the
+running 0.1.7-rc.1 host; the taken-version guard probed both ways (0.34.3
+refused with exit 1, 0.34.8 accepted).
 
 ## 0.34.7 — dsh 0.1.7-alpha.1 session format v4 — flattened tool-result messages (draft 2026-09-22, amended 2026-09-23) (2026-09-23)
 
@@ -457,7 +1245,45 @@ access paths read the LAST assistant message. The summarization request
 envelope is untouched (guard and prompt text only), so the prefix-cache
 verification deltas of previous releases carry over unchanged.
 
-## 0.34.2 — settle deferred archives on the first fold, never drop a starved drain (2026-09-12)
+## 0.34.2 — agent-level fold single flight + resume-linkage hardening, backported from the alpha channel (2026-09-23)
+
+Two live-verified fixes backported from the alpha channel's 0.35.0/0.35.1
+releases, adapted to this rc baseline (the alpha incident data is quoted
+verbatim for the record):
+
+- **fold drain: agent-level single flight.** The drain's running guard is now
+  keyed by session id instead of a process-wide boolean, and the backoff
+  clock (`drainPass`) became per-session — one session's fold no longer makes
+  any other session's drain wait, and one session's step boundaries no longer
+  advance another session's backoff schedule. Origin (alpha, dsh
+  0.1.7-alpha.2): a subagent session whose only two drain opportunities (the
+  pre-step and turn-stopping hooks of its final step) both fell inside a
+  sibling session's 37.5 s fold window; the starved retry needed a step
+  boundary that a settled subagent never produces, so the archive row stayed
+  queued forever. Sessions in one process now fold concurrently; every path
+  they touch is per-session by construction (closingTasks is keyed by session
+  id, artifacts are written per session, the durable event-log lock is per
+  session). Same-session reentry — theoretical, the host loop serializes one
+  session's dispatch — merges into one chained pass instead of being dropped.
+- **taskMarks: shape-independent tool-result linkage + stateVersion 11.**
+  `toolResultEntries` (new in events.mjs) reads every event grammar: v3
+  block-level `tool-result` blocks, v4 message-level `toolCallId` on the
+  tool-role message, and the resume-derived shape where the message keeps
+  only `source.callId`. The reducer and the archive-plan guards pair through
+  it. Origin (live on dsh 0.1.7-alpha.2): sessions re-opened after a restart
+  fed the projection resume-derived events; every mark call/result pair
+  failed to pair and the dock showed one stuck `opening…`/`closing…` row per
+  call ever made (19 rows on one session, 40 on another), with the poisoned
+  state checkpointing itself back into the projection cache. stateVersion 11
+  discards those persisted v10 rows; `source.callId` is accepted only for
+  `source.kind === 'tool'`, so a source-bearing non-tool message can never
+  masquerade as a result.
+- **task banner: the spinner glyph is gone.** The rotating glyph said
+  "animation" where the rail dot, the bold name, and the `folding…` suffix
+  already carry the state; static, it read as a broken spinner. Status
+  expression is unchanged otherwise.
+
+**The alpha channel released this same version number on 2026-09-12.** The rc backport above reports the fixes live-verified there; the alpha channel's own 0.34.2 record is kept below so the channel history stays complete:
 
 Two compaction bugs found live on dsh 0.1.5 (the wxgame workspace, plugin
 v0.34.0), both stemming from the same operational shape: the host's task

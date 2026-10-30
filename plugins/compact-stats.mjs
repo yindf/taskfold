@@ -1,12 +1,20 @@
 /**
- * list_folds / fold_recall — fold index and artifact regeneration tools
- * (plugin-bundle form, sibling of compact-region).
+ * list_folds / fold_recall — fold index and artifact regeneration tools.
  *
- * Read-only companion to compact-region: reports what compaction did for THIS
- * session by scanning the live event log (sessionEvents accessor), and
- * recalls the ORIGINAL content of folded entries on demand. Events survive
- * folds — the surface is a projection — so nothing is ever lost, only
- * projected away. Seqs are stable archive ids (surface positions shift).
+ * PLAIN MODULE, NOT A PLUGIN: this file ships the read-only observation half
+ * of the taskfold bundle and declares NO Loader row. taskfold.mjs imports
+ * registerStatsTools() from here and mounts it on the ONE host row, so the
+ * bundle's patch declares a single component instead of one per file (the
+ * old `compact-stats` / `compact-region` split put two rows on the Plugins
+ * page for one package). The module boundary is kept for readability and for
+ * the offline unit tests, which import the exported pure helpers directly.
+ *
+ * Read-only companion to the lifecycle half in taskfold.mjs: reports what
+ * compaction did for THIS session by scanning the live event log
+ * (sessionEvents accessor), and recalls the ORIGINAL content of folded
+ * entries on demand. Events survive folds — the surface is a projection — so
+ * nothing is ever lost, only projected away. Seqs are stable archive ids
+ * (surface positions shift).
  *
  * Fold NUMBERING is chronological (1-based, order of collectFolds): the
  * number list_folds prints is exactly the number fold_recall({ fold: N })
@@ -235,129 +243,132 @@ export function renderFoldList(stats) {
   return lines
 }
 
-export default {
-  name: 'compact-stats',
-  inject: ['tools'],
-  apply(ctx) {
-    ctx.tools.register({
-      name: 'list_folds',
-      description: 'Fold index for THIS session: chronological fold number (the exact number fold_recall consumes), shadowed tokens, and title — use it to pick a fold_recall target or audit what compaction saved.',
-      parameters: { type: 'object', properties: {} },
-      output: {
-        schema: { type: 'object', additionalProperties: true },
-        render(args, value) {
-          if (value.ok !== true) {
-            return [{ type: 'text', text: 'list_folds failed: ' + String(value.error === undefined ? 'unknown error' : value.error) }]
-          }
-          return [{ type: 'text', text: renderFoldList(value).join('\n') }]
+/**
+ * Register the observation tools on an existing context. Called by
+ * taskfold.mjs (the bundle's single mounted host row), which owns the
+ * injection contract — `ctx.tools` must already be live, and this module
+ * never touches any other service.
+ * @param ctx - the mounted plugin's context (tools only).
+ */
+export function registerStatsTools(ctx) {
+  ctx.tools.register({
+    name: 'list_folds',
+    description: 'Fold index for THIS session: chronological fold number (the exact number fold_recall consumes), shadowed tokens, and title — use it to pick a fold_recall target or audit what compaction saved.',
+    parameters: { type: 'object', properties: {} },
+    output: {
+      schema: { type: 'object', additionalProperties: true },
+      render(args, value) {
+        if (value.ok !== true) {
+          return [{ type: 'text', text: 'list_folds failed: ' + String(value.error === undefined ? 'unknown error' : value.error) }]
         }
-      },
-      async execute(args, exec) {
-        const agent = exec.agent
-        if (agent === undefined) return { ok: false, error: 'list_folds requires an agent context' }
-        let session
-        try {
-          session = agent.session
-          if (session === null || typeof session !== 'object') return { ok: false, error: 'no session on the agent context' }
-        } catch (err) {
-          return { ok: false, error: 'failed to read the session: ' + (err !== null && typeof err === 'object' && err.message ? String(err.message) : String(err)) }
-        }
-        try {
-          const stats = collectStats(sessionEvents(session), session.surface.nodes.length)
-          return { ok: true, ...stats }
-        } catch (err) {
-          return { ok: false, error: 'failed to scan the event log: ' + (err !== null && typeof err === 'object' && err.message ? String(err.message) : String(err)) }
-        }
+        return [{ type: 'text', text: renderFoldList(value).join('\n') }]
       }
-    })
+    },
+    async execute(args, exec) {
+      const agent = exec.agent
+      if (agent === undefined) return { ok: false, error: 'list_folds requires an agent context' }
+      let session
+      try {
+        session = agent.session
+        if (session === null || typeof session !== 'object') return { ok: false, error: 'no session on the agent context' }
+      } catch (err) {
+        return { ok: false, error: 'failed to read the session: ' + (err !== null && typeof err === 'object' && err.message ? String(err.message) : String(err)) }
+      }
+      try {
+        const stats = collectStats(sessionEvents(session), session.surface.nodes.length)
+        return { ok: true, ...stats }
+      } catch (err) {
+        return { ok: false, error: 'failed to scan the event log: ' + (err !== null && typeof err === 'object' && err.message ? String(err.message) : String(err)) }
+      }
+    }
+  })
 
-    ctx.tools.register({
-      name: 'fold_recall',
-      description: 'Regenerate the artifact FILE for one fold: every span message — for task folds, from just after the last result of the task_begin message through the last result of the task_end message; for auto-compaction folds, the compacted region — full original content (role + content blocks) — written as JSONL into this session\u0027s own artifact directory (the session\u0027s durable directory; OS tmp as fallback), one message per line, numbered. Each committed fold summary\u0027s trailing Fold archive section carries the artifact path; use this tool when that file has since been removed — pass the fold number, get a fresh file path plus the complete span preview (every message, one line each), then read/grep it with any file tool. Line overload: pass the optional second parameter line (a preview line number) to return ONLY that numbered message — its exact original content — directly in the result, with no file written; line numbers match the span preview and the JSONL artifact. Range overload: pass from and to (inclusive 1-based line numbers, at most 10 lines, mutually exclusive with line) to return those exact original messages in one call, no file written — it matches the L<N>-<M> range citations fold summaries carry. Use list_folds for the fold index. Changes no session state; without line or from/to, the only write is the fresh JSONL file itself.',
-      parameters: {
-        type: 'object',
-        properties: {
-          fold: { type: 'integer', description: 'Fold number (1-based, chronological) from list_folds.' },
-          line: { type: 'integer', description: 'Optional: return ONLY this line — the exact original message at this 1-based position, matching the span preview numbering and the JSONL artifact line. No file is written.' },
-          from: { type: 'integer', description: 'Optional: with to, the inclusive 1-based start of a line range (at most 10 lines) whose exact original messages return in one call. Mutually exclusive with line; no file is written.' },
-          to: { type: 'integer', description: 'Optional: with from, the inclusive 1-based end of a line range (at most 10 lines). Mutually exclusive with line; no file is written.' }
-        },
-        required: ['fold']
+  ctx.tools.register({
+    name: 'fold_recall',
+    description: 'Regenerate the artifact FILE for one fold: every span message — for task folds, from just after the last result of the task_begin message through the last result of the task_end message; for auto-compaction folds, the compacted region — full original content (role + content blocks) — written as JSONL into this session\u0027s own artifact directory (the session\u0027s durable directory; OS tmp as fallback), one message per line, numbered. Each committed fold summary\u0027s trailing Fold archive section carries the artifact path; use this tool when that file has since been removed — pass the fold number, get a fresh file path plus the complete span preview (every message, one line each), then read/grep it with any file tool. Line overload: pass the optional second parameter line (a preview line number) to return ONLY that numbered message — its exact original content — directly in the result, with no file written; line numbers match the span preview and the JSONL artifact. Range overload: pass from and to (inclusive 1-based line numbers, at most 10 lines, mutually exclusive with line) to return those exact original messages in one call, no file written — it matches the L<N>-<M> range citations fold summaries carry. Use list_folds for the fold index. Changes no session state; without line or from/to, the only write is the fresh JSONL file itself.',
+    parameters: {
+      type: 'object',
+      properties: {
+        fold: { type: 'integer', description: 'Fold number (1-based, chronological) from list_folds.' },
+        line: { type: 'integer', description: 'Optional: return ONLY this line — the exact original message at this 1-based position, matching the span preview numbering and the JSONL artifact line. No file is written.' },
+        from: { type: 'integer', description: 'Optional: with to, the inclusive 1-based start of a line range (at most 10 lines) whose exact original messages return in one call. Mutually exclusive with line; no file is written.' },
+        to: { type: 'integer', description: 'Optional: with from, the inclusive 1-based end of a line range (at most 10 lines). Mutually exclusive with line; no file is written.' }
       },
-      output: {
-        schema: { type: 'object', additionalProperties: true },
-        render(args, value) {
-          if (value.ok !== true) {
-            return [{ type: 'text', text: 'fold_recall failed: ' + String(value.error === undefined ? 'unknown error' : value.error) }]
-          }
-          if (value.from !== undefined && value.to !== undefined) {
-            // One raw JSON per line, each prefixed by its TRUE line number —
-            // same byte-for-byte fidelity as the line overload, no
-            // pretty-print inflation.
-            const body = value.lines.map((l) => l.line + ' ' + JSON.stringify(l.message)).join('\n')
-            return [{ type: 'text', text: 'Fold #' + value.fold + ' lines ' + value.from + '-' + value.to + ' of ' + value.entries + ':\n' + body }]
-          }
-          if (value.line !== undefined) {
-            const role = value.message !== null && typeof value.message === 'object' && typeof value.message.role === 'string' ? value.message.role : '?'
-            // Single-line JSON: byte-for-byte the artifact line this
-            // position denotes — and no pretty-print inflation.
-            return [{ type: 'text', text: 'Fold #' + value.fold + ' line ' + value.line + ' of ' + value.entries + ' (role: ' + role + '):\n' + JSON.stringify(value.message) }]
-          }
-          return [{ type: 'text', text: 'Artifact regenerated (' + value.entries + ' messages): ' + value.file + (Array.isArray(value.preview) && value.preview.length > 0 ? '\n' + value.preview.join('\n') : '') + '\nRead or grep it with any file tool.' }]
+      required: ['fold']
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: true },
+      render(args, value) {
+        if (value.ok !== true) {
+          return [{ type: 'text', text: 'fold_recall failed: ' + String(value.error === undefined ? 'unknown error' : value.error) }]
         }
-      },
-      async execute(args, exec) {
-        const agent = exec.agent
-        if (agent === undefined) return { ok: false, error: 'fold_recall requires an agent context' }
-        let session
-        try {
-          session = agent.session
-          if (session === null || typeof session !== 'object') return { ok: false, error: 'no session on the agent context' }
-        } catch (err) {
-          return { ok: false, error: 'failed to read the session: ' + (err !== null && typeof err === 'object' && err.message ? String(err.message) : String(err)) }
+        if (value.from !== undefined && value.to !== undefined) {
+          // One raw JSON per line, each prefixed by its TRUE line number —
+          // same byte-for-byte fidelity as the line overload, no
+          // pretty-print inflation.
+          const body = value.lines.map((l) => l.line + ' ' + JSON.stringify(l.message)).join('\n')
+          return [{ type: 'text', text: 'Fold #' + value.fold + ' lines ' + value.from + '-' + value.to + ' of ' + value.entries + ':\n' + body }]
         }
-        const foldNo = args !== null && typeof args === 'object' ? args.fold : undefined
-        if (!Number.isInteger(foldNo)) return { ok: false, error: 'pass fold: N (1-based; see list_folds for the index)' }
-        try {
-          const folds = collectFolds(sessionEvents(session))
-          if (foldNo < 1 || foldNo > folds.length) return { ok: false, error: 'invalid fold ' + foldNo + ' (valid: 1..' + folds.length + ')' }
-          const f = folds[foldNo - 1]
-          if (f.shadowedSeqs === undefined) return { ok: false, error: 'fold #' + foldNo + ' carries no shadowedSeqs; regeneration unavailable for it' }
-          if (typeof session.deriveEventMessage !== 'function' || typeof session.eventAt !== 'function') {
-            return { ok: false, error: 'this dsh version does not expose deriveEventMessage/eventAt; cannot regenerate exact context' }
-          }
-          const messages = []
-          for (const seq of f.shadowedSeqs) {
-            const message = session.deriveEventMessage(session.eventAt(seq))
-            if (message !== null && message !== undefined) messages.push(message)
-          }
-          // Range overload: one call returns a cited L<N>-<M> slice of exact
-          // originals — no artifact file is written for this lookup either.
-          const wanted = args !== null && typeof args === 'object' ? args.line : undefined
-          const rangeFrom = args !== null && typeof args === 'object' ? args.from : undefined
-          const rangeTo = args !== null && typeof args === 'object' ? args.to : undefined
-          if (wanted !== undefined && (rangeFrom !== undefined || rangeTo !== undefined)) {
-            return { ok: false, error: 'line and from/to are mutually exclusive — pass one or the other' }
-          }
-          if (rangeFrom !== undefined || rangeTo !== undefined) {
-            const picked = artifactLines(messages, rangeFrom, rangeTo)
-            if (picked.ok !== true) return { ok: false, error: 'fold #' + foldNo + ' (' + messages.length + ' lines): ' + picked.error }
-            return { ok: true, fold: foldNo, from: rangeFrom, to: rangeTo, entries: messages.length, lines: picked.lines }
-          }
-          if (wanted !== undefined) {
-            const picked = artifactLineAt(messages, wanted)
-            if (picked.ok !== true) return { ok: false, error: 'fold #' + foldNo + ' (' + messages.length + ' lines): ' + picked.error }
-            return { ok: true, fold: foldNo, line: wanted, entries: messages.length, message: picked.message }
-          }
-          const nameKey = f.title !== undefined ? f.title : 'fold-' + foldNo
-          const file = writeSpanArtifact(messages, nameKey, { sessionDir: sessionArtifactDir(ctx, session), sessionKey: session.id })
-          if (file === undefined) return { ok: false, error: 'failed to write the JSONL artifact (session dir or tmp fallback)' }
-          const preview = renderSpanPreview(messages)
-          return { ok: true, fold: foldNo, entries: messages.length, file, preview }
-        } catch (err) {
-          return { ok: false, error: 'failed to regenerate: ' + (err !== null && typeof err === 'object' && err.message ? String(err.message) : String(err)) }
+        if (value.line !== undefined) {
+          const role = value.message !== null && typeof value.message === 'object' && typeof value.message.role === 'string' ? value.message.role : '?'
+          // Single-line JSON: byte-for-byte the artifact line this
+          // position denotes — and no pretty-print inflation.
+          return [{ type: 'text', text: 'Fold #' + value.fold + ' line ' + value.line + ' of ' + value.entries + ' (role: ' + role + '):\n' + JSON.stringify(value.message) }]
         }
+        return [{ type: 'text', text: 'Artifact regenerated (' + value.entries + ' messages): ' + value.file + (Array.isArray(value.preview) && value.preview.length > 0 ? '\n' + value.preview.join('\n') : '') + '\nRead or grep it with any file tool.' }]
       }
-    })
-  }
+    },
+    async execute(args, exec) {
+      const agent = exec.agent
+      if (agent === undefined) return { ok: false, error: 'fold_recall requires an agent context' }
+      let session
+      try {
+        session = agent.session
+        if (session === null || typeof session !== 'object') return { ok: false, error: 'no session on the agent context' }
+      } catch (err) {
+        return { ok: false, error: 'failed to read the session: ' + (err !== null && typeof err === 'object' && err.message ? String(err.message) : String(err)) }
+      }
+      const foldNo = args !== null && typeof args === 'object' ? args.fold : undefined
+      if (!Number.isInteger(foldNo)) return { ok: false, error: 'pass fold: N (1-based; see list_folds for the index)' }
+      try {
+        const folds = collectFolds(sessionEvents(session))
+        if (foldNo < 1 || foldNo > folds.length) return { ok: false, error: 'invalid fold ' + foldNo + ' (valid: 1..' + folds.length + ')' }
+        const f = folds[foldNo - 1]
+        if (f.shadowedSeqs === undefined) return { ok: false, error: 'fold #' + foldNo + ' carries no shadowedSeqs; regeneration unavailable for it' }
+        if (typeof session.deriveEventMessage !== 'function' || typeof session.eventAt !== 'function') {
+          return { ok: false, error: 'this dsh version does not expose deriveEventMessage/eventAt; cannot regenerate exact context' }
+        }
+        const messages = []
+        for (const seq of f.shadowedSeqs) {
+          const message = session.deriveEventMessage(session.eventAt(seq))
+          if (message !== null && message !== undefined) messages.push(message)
+        }
+        // Range overload: one call returns a cited L<N>-<M> slice of exact
+        // originals — no artifact file is written for this lookup either.
+        const wanted = args !== null && typeof args === 'object' ? args.line : undefined
+        const rangeFrom = args !== null && typeof args === 'object' ? args.from : undefined
+        const rangeTo = args !== null && typeof args === 'object' ? args.to : undefined
+        if (wanted !== undefined && (rangeFrom !== undefined || rangeTo !== undefined)) {
+          return { ok: false, error: 'line and from/to are mutually exclusive — pass one or the other' }
+        }
+        if (rangeFrom !== undefined || rangeTo !== undefined) {
+          const picked = artifactLines(messages, rangeFrom, rangeTo)
+          if (picked.ok !== true) return { ok: false, error: 'fold #' + foldNo + ' (' + messages.length + ' lines): ' + picked.error }
+          return { ok: true, fold: foldNo, from: rangeFrom, to: rangeTo, entries: messages.length, lines: picked.lines }
+        }
+        if (wanted !== undefined) {
+          const picked = artifactLineAt(messages, wanted)
+          if (picked.ok !== true) return { ok: false, error: 'fold #' + foldNo + ' (' + messages.length + ' lines): ' + picked.error }
+          return { ok: true, fold: foldNo, line: wanted, entries: messages.length, message: picked.message }
+        }
+        const nameKey = f.title !== undefined ? f.title : 'fold-' + foldNo
+        const file = writeSpanArtifact(messages, nameKey, { sessionDir: sessionArtifactDir(ctx, session), sessionKey: session.id })
+        if (file === undefined) return { ok: false, error: 'failed to write the JSONL artifact (session dir or tmp fallback)' }
+        const preview = renderSpanPreview(messages)
+        return { ok: true, fold: foldNo, entries: messages.length, file, preview }
+      } catch (err) {
+        return { ok: false, error: 'failed to regenerate: ' + (err !== null && typeof err === 'object' && err.message ? String(err.message) : String(err)) }
+      }
+    }
+  })
 }
