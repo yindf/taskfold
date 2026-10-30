@@ -571,10 +571,47 @@ function cloneTaskMarks(state) {
 
 // ── ctx-keyed state accessors (shared by the tools, the drain, nudges) ─────
 
+/**
+ * Registration handle delivered by a host whose `register()` is awaitable
+ * (dsh 0.2.2-alpha.2 returns a callable thenable that resolves to a handle
+ * carrying stateOf(session); the two-argument registry read is deprecated
+ * there and logs one warning per key on first use). Keyed by ctx: one plugin
+ * fiber owns one registration. rc hosts register synchronously and return an
+ * effect disposer — awaiting it yields that function, which has no stateOf,
+ * so nothing is ever bound and the legacy registry path below stays in force.
+ */
+const taskMarksHandles = new WeakMap()
+
+/**
+ * Bind a registration handle for `ctx` when the host actually delivered one.
+ * Feature detection rather than version sniffing: only a value carrying
+ * `stateOf` binds. A missing/odd handle (rc hosts, failed registration) is a
+ * no-op, and every accessor then falls back to the legacy registry read —
+ * old-host behavior is byte-identical.
+ */
+export function bindTaskMarksHandle(ctx, handle) {
+  if (ctx === null || typeof ctx !== 'object') return
+  if (handle !== null && (typeof handle === 'object' || typeof handle === 'function') && typeof handle.stateOf === 'function') {
+    taskMarksHandles.set(ctx, handle)
+  }
+}
+
+/**
+ * Read this ctx's taskMarks projection state for `session`, preferring the
+ * bound registration handle. Throws exactly like the registry call when the
+ * host cannot answer; every accessor wraps this in its own try/catch and
+ * returns empty on failure.
+ */
+function taskMarksState(ctx, session) {
+  const handle = taskMarksHandles.get(ctx)
+  if (handle !== undefined) return handle.stateOf(session)
+  return ctx.sessionProjections.stateOf(session, TASK_MARKS_KEY)
+}
+
 /** Current open marks for one session: [{ seq, name }], empty when none. */
 export function marksOf(ctx, session) {
   try {
-    const state = ctx.sessionProjections.stateOf(session, TASK_MARKS_KEY)
+    const state = taskMarksState(ctx, session)
     if (state === undefined || state === null) return []
     return Array.isArray(state.marks) ? state.marks : []
   } catch (err) {
@@ -589,7 +626,7 @@ export function marksOf(ctx, session) {
  */
 export function archivesOf(ctx, session) {
   try {
-    const state = ctx.sessionProjections.stateOf(session, TASK_MARKS_KEY)
+    const state = taskMarksState(ctx, session)
     if (state === undefined || state === null) return []
     return Array.isArray(state.pendingArchives) ? state.pendingArchives : []
   } catch (err) {
@@ -637,7 +674,7 @@ export function belowFloorArchiveKeys(ctx, session, minSpanTokens) {
  */
 export function pendingOf(ctx, session) {
   try {
-    const state = ctx.sessionProjections.stateOf(session, TASK_MARKS_KEY)
+    const state = taskMarksState(ctx, session)
     if (state === undefined || state === null) return []
     const pending = state.pending
     if (pending === null || typeof pending !== 'object') return []

@@ -57,7 +57,7 @@
  */
 import { sessionEvents } from './events.mjs'
 import { registerStatsTools } from './compact-stats.mjs'
-import { TASK_MARKS_KEY, taskMarksStateSchema, applyTaskMarks, validTaskName, closeTarget, normalizeName, marksOf, archivesOf, pendingOf, belowFloorArchiveKeys, pendingArchiveKey, lastSurfaceAssistantSeq, siblingTaskMarkCalls, BELOW_FLOOR_MARKER, taskEndCloseVerdict } from './task-marks.mjs'
+import { TASK_MARKS_KEY, taskMarksStateSchema, applyTaskMarks, validTaskName, closeTarget, normalizeName, marksOf, archivesOf, pendingOf, belowFloorArchiveKeys, pendingArchiveKey, lastSurfaceAssistantSeq, siblingTaskMarkCalls, BELOW_FLOOR_MARKER, taskEndCloseVerdict, bindTaskMarksHandle } from './task-marks.mjs'
 import { DETAILED_CHECKPOINT_INSTRUCTION } from './fold-instruction.mjs'
 import { createFoldEngine } from './fold-engine.mjs'
 import { createArchiveDrain } from './fold-drain.mjs'
@@ -253,7 +253,7 @@ export default {
     // the next task-mark event.
     const belowFloorKeys = new Set()
     belowFloorKeys.version = 0
-    ctx.sessionProjections.register({
+    const registration = ctx.sessionProjections.register({
       key: TASK_MARKS_KEY,
       stateSchema: taskMarksStateSchema,
       init: () => null,
@@ -264,6 +264,16 @@ export default {
         view: pruneBelowFloorView(belowFloorKeys)
       }
     })
+    // The registration returns different things per host: 0.2.2-alpha.2
+    // returns a callable thenable that DELIVERS a handle ({ stateOf(session) })
+    // when awaited — the two-argument registry read is deprecated there — while
+    // rc.3 returns an effect disposer (a function) that yields nothing useful.
+    // Await it defensively and bind only a real handle: bindTaskMarksHandle
+    // feature-detects, so rc hosts keep the legacy registry read unchanged.
+    // The thenable is deliberately NOT returned (apply() must stay synchronous;
+    // cordis treats a returned promise as an Invalid effect), and the rejection
+    // handler keeps a broken registration from becoming an unhandled rejection.
+    Promise.resolve(registration).then((handle) => bindTaskMarksHandle(ctx, handle), () => {})
 
     // Per-session closing declaration: the drain stashes the task name it is
     // closing, keyed by sessionId, so concurrent folds in OTHER sessions of

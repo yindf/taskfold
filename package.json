@@ -45,9 +45,9 @@
     "dsh-taskfold-client": "^0.39.0"
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh": "^0.2.2-alpha.2",
-    "@deepseek-ai/dsh-compaction-basic": "^0.2.2-alpha.2",
-    "@deepseek-ai/dsh-llm": "^0.2.2-alpha.2"
+    "@deepseek-ai/dsh": "^0.2.0-rc.1",
+    "@deepseek-ai/dsh-compaction-basic": "^0.2.0-rc.1",
+    "@deepseek-ai/dsh-llm": "^0.2.0-rc.1"
   },
   "files": [
     "plugins",

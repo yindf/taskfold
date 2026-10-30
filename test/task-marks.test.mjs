@@ -7,7 +7,7 @@
 //   node test/task-marks.test.mjs
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { applyTaskMarks, taskMarksStateSchema, closeTarget, validTaskName, deferredArchivePlan, siblingTaskMarkCalls, lastAssistantToolNames, BELOW_FLOOR_MARKER, taskEndCloseVerdict, spanEstimateAtClose } from '../plugins/task-marks.mjs'
+import { applyTaskMarks, taskMarksStateSchema, closeTarget, validTaskName, deferredArchivePlan, siblingTaskMarkCalls, lastAssistantToolNames, BELOW_FLOOR_MARKER, taskEndCloseVerdict, spanEstimateAtClose, bindTaskMarksHandle, marksOf, archivesOf, pendingOf, TASK_MARKS_KEY } from '../plugins/task-marks.mjs'
 import { todoBridgeLine, shouldSuggestDecomposition, decomposeHintLine } from '../plugins/lifecycle-nudges.mjs'
 import { FOLD_SUMMARY_INSTRUCTION, DETAILED_CHECKPOINT_INSTRUCTION, buildFoldInstruction } from '../plugins/fold-instruction.mjs'
 
@@ -875,5 +875,66 @@ test('taskEndCloseVerdict: exact only on a solitary close with a resolvable span
   // current tail (the close-carrying message), -1 when unresolvable.
   assert.ok(spanEstimateAtClose(session, 10) > 0)
   assert.equal(spanEstimateAtClose({ surface: { nodes: [11, 14, 15] }, events }, 10), -1)
+})
+
+// ── awaited-registration handle (dsh 0.2.2-alpha.2) ─────────────────────────
+// alpha.2 deprecates the registry's two-argument stateOf(session, key): every
+// first read of a key logs a warning. register() there returns a callable
+// thenable; awaiting it delivers a handle whose stateOf(session) reads the
+// same state. The accessors feature-detect a bound handle and otherwise keep
+// the legacy registry read — rc hosts (effect-disposer returns) are untouched.
+
+test('bindTaskMarksHandle: a bound handle serves marksOf/archivesOf/pendingOf without the deprecated registry read', () => {
+  const legacyReads = []
+  const state = {
+    marks: [{ seq: 10, name: 'alpha' }],
+    pendingArchives: [{ seq: 10, name: 'alpha', foldResultSeq: 21 }],
+    pending: { c9: { kind: 'end', anchorSeq: 20 } }
+  }
+  const ctx = {
+    sessionProjections: {
+      stateOf: (session, key) => {
+        legacyReads.push([session.id, key])
+        throw new Error('legacy registry read must not be used once a handle is bound')
+      }
+    }
+  }
+  const session = { id: 's-handle' }
+  const handleReads = []
+  bindTaskMarksHandle(ctx, { stateOf: (s) => { handleReads.push(s.id); return state } })
+
+  assert.deepEqual(marksOf(ctx, session), [{ seq: 10, name: 'alpha' }])
+  assert.deepEqual(archivesOf(ctx, session), [{ seq: 10, name: 'alpha', foldResultSeq: 21 }])
+  assert.deepEqual(pendingOf(ctx, session), [{ callId: 'c9', kind: 'end', anchorSeq: 20 }])
+  assert.equal(legacyReads.length, 0, 'no deprecated two-argument stateOf(session, key) read')
+  assert.deepEqual(handleReads, ['s-handle', 's-handle', 's-handle'], 'each accessor reads through handle.stateOf(session)')
+})
+
+test('bindTaskMarksHandle: without a real handle (rc effect disposer) the legacy registry path is unchanged', () => {
+  const legacyReads = []
+  const state = { marks: [{ seq: 4, name: 'rc' }], pendingArchives: [], pending: {} }
+  const ctx = {
+    sessionProjections: {
+      stateOf: (session, key) => {
+        legacyReads.push([session.id, key])
+        return state
+      }
+    }
+  }
+  // rc.3's register() returns the fiber effect disposer (a function); awaiting
+  // it yields that same function, which carries no stateOf — bind skips it.
+  bindTaskMarksHandle(ctx, () => {})
+  bindTaskMarksHandle(ctx, null)
+  bindTaskMarksHandle(ctx, { stateOf: 'not-a-function' })
+
+  const session = { id: 's-legacy' }
+  assert.deepEqual(marksOf(ctx, session), [{ seq: 4, name: 'rc' }])
+  assert.deepEqual(archivesOf(ctx, session), [])
+  assert.deepEqual(pendingOf(ctx, session), [])
+  assert.deepEqual(legacyReads, [
+    ['s-legacy', TASK_MARKS_KEY],
+    ['s-legacy', TASK_MARKS_KEY],
+    ['s-legacy', TASK_MARKS_KEY]
+  ], 'all three accessors fall back to stateOf(session, TASK_MARKS_KEY)')
 })
 
