@@ -4,6 +4,87 @@ All notable changes to this project are documented per commit series. Since
 0.37.6 every release also ships to npm (`latest`) — before that, the npm copy
 lagged behind the channel branches on purpose.
 
+## 0.40.0 — dsh 0.2.2-alpha.2: the alpha channel rejoins the rc line, and the host surface is re-verified (2026-10-30)
+
+The alpha channel had stood still since 0.36.1 (verified on dsh 0.1.7-alpha.2,
+2026-09-26) while the rc channel moved through 0.37.0–0.39.1. dsh's alpha
+channel is alive again — 0.2.2-alpha.2, published 2026-10-27 — and this release
+is the alpha branch catching up: the whole rc line is merged in (merge
+`d1451a5`), so both channels share one implementation again. The CHANGELOG
+below this entry is the union of the two channels' histories (86 versioned
+entries, strictly descending), and with the rc line come the features alpha
+users never received: the Plugins-page `minSpanTokens` floor and `showTaskBar`
+switch (0.37.0–0.39.0), the below-floor verdicts and permanent skips
+(0.37.3–0.37.6), the browser half as its own `dsh-taskfold-client` registry
+package (0.38.1), and the npm / GitHub-Release publishing flow
+(0.37.7–0.38.3).
+
+The host surface was measured on the real 0.2.2-alpha.2 package set rather than
+inferred. A clean install is 652 packages and 331 `@deepseek-ai` packages
+(rc.3: 307) — 25 added, one removed, 303 version-changed — and 182 of them
+carry real code changes (40 change only their version field; schemastery
+`3.18.6-alpha.1` is code-identical to rc.3's `3.18.5`, while cordis moved to
+`4.0.6-alpha.1`). The compatibility gate is the same function, byte for byte
+(`evaluatePluginCompatibility` still runs `semver.satisfies(..., {
+includePrerelease: true })`), and it rejects the alpha branch's previous floor:
+v0.36.1 (`^0.1.7-alpha.2`) is refused on 0.2.2-alpha.2 with all three peers
+unmet, which is exactly why this release exists. The new floor is `^0.2.0-rc.1`
+— the rc line's own floor — because the two branches now carry the same code:
+`^0.2.0-rc.1` admits `0.2.2-alpha.2` (and every 0.2.x prerelease inside the
+caret) and keeps `0.2.1-rc.x` hosts installable when npm's `latest` flips to
+this alpha-channel build, which the bare-name install follows. Three negative
+controls (peers forced to the old floor together and singly, plus the real
+manifest judged against a 0.1.7-alpha.2 runtime) are rejected with
+unmet-requirements objects, so the pass is not vacuous.
+
+Verification chain against the real 0.2.2-alpha.2 packages: host-API shape
+probes 56/56 (`BasicCompactionEngine` default export with `compactRegion`
+arity 4 and `summarize` arity 3, subclassed exactly as the fold engine does it;
+`BlockAssembler` driven to a real `blocks()` result, unchanged from rc.3; the
+schemastery CJS chain plus this plugin's own `Config` metadata —
+`minSpanTokens` 0..1000000 default 2000 volatile, `showTaskBar` default false
+volatile; all seven services, three hooks (`agent/pre-step`,
+`agent/turn-stopping`, `compaction/summary-error`) and six methods present; all
+four `@deepseek-ai` specifiers resolvable); the client-contract sweep 19/19
+present, 0 absent (`conversation.input.dock`, `plugins.bundle.config`,
+configForms `whileServed`, `window.__ModuleLoader__`, `SettingsFormModel`,
+`settingsNumberField`, `slots` / `configForms` / `locale`, `inject(key,
+callback)` and `register(...)`, with the rebuilt shell still supplying both
+specifiers the bundle requires); an end-to-end probe host (real 0.2.2-alpha.2
+build over a hash-pinned copy of this tree, on an isolated `DSH_HOME`): stderr
+0 bytes, zero plugin-disable lines against both wordings, `--dump-config`
+lists both rows (`taskfold` → `dsh-taskfold/plugins`, `taskfold-client` →
+`dsh-taskfold-client`) with no disabled marker, `settings/describe` serves the
+`taskfold` namespace at `{"minSpanTokens":2000,"showTaskBar":false}` with
+`applies: live`, the boot graph carries 72 entries with `dsh-taskfold-client`
+owning its row, and the served bundle equals `client/taskfold-client.mjs` for
+all 753 lines apart from the appended `;` and the sourcemap reference; and the
+offline suite — 14 suites, 241 tests, 0 fail.
+
+One code change was needed — the only one: since 0.2.2-alpha.2 the
+session-projection registry marks `ctx.sessionProjections.stateOf(session,
+key)` deprecated (it warns once per key, and hands the new shape out as the
+handle an awaited `register()` resolves to). `task-marks.mjs` reads the
+`taskMarks` projection in three accessors, so the registration's thenable is
+observed (`Promise.resolve(registration).then((handle) => ...)` — never
+returned from `apply()`, which would read as an invalid cordis effect) and the
+handle is bound per context in a WeakMap; the accessors prefer
+`handle.stateOf(session)` and fall back to the registry read on hosts whose
+`register()` returns only a disposer (rc.3 and older), so behavior on those
+hosts is unchanged. Two offline cases pin both shapes. Not applicable this
+time: `verify-cache.mjs --since-restart` — the fold envelope (summarization
+input, prefix, drain) is untouched, so there is no new live-cache number to
+record; the headless-twin recipe remains the route when it is.
+
+- **Features**
+  - the alpha channel rejoins the rc line: v0.39.1's code, merged into alpha
+- **Fixes**
+  - read task marks through the awaited registration handle, keeping the registry fallback for older hosts
+- **Docs**
+  - record dsh 0.2.2-alpha.2 as the verified alpha-channel host in README.md + README.zh.md
+- **Chores**
+  - move the dsh-taskfold-client dependency range to ^0.40.0 for this release
+
 ## 0.39.1 — dsh 0.2.1-rc.3: re-verified, no plugin change (2026-10-26)
 
 A patch step this time, and the package set barely moved: the dsh monorepo went

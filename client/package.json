@@ -1,6 +1,6 @@
 {
   "name": "dsh-taskfold-client",
-  "version": "0.39.1",
+  "version": "0.40.0",
   "type": "module",
   "main": "index.mjs",
   "exports": {
