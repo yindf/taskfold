@@ -61,7 +61,7 @@ Whichever way you install, restart dsh afterwards.
 
 ### Channels, the npm package, and support
 
-[`dsh-taskfold`](https://www.npmjs.com/package/dsh-taskfold) on npm is a **prebuilt** package — it skips dsh's `allowBuilds` build approval, and since 0.37.6 the release pipeline publishes it in step with the channel branches. The bare name follows npm's `latest`, i.e. whichever channel released last; pin `@version` for determinism, or enter the branch's Git address.
+[`dsh-taskfold`](https://www.npmjs.com/package/dsh-taskfold) on npm is a **prebuilt** package — it skips dsh's `allowBuilds` build approval, and since 0.37.6 the release pipeline publishes it for the **rc channel** (`master`) only: the alpha channel's releases ship as GitHub Releases and never reach npm. The bare name therefore follows the rc channel's newest release; pin `@version` for determinism, or enter the branch's Git address.
 
 `master` carries the rc channel and `alpha` carries the alpha channel: this branch records the rc channel's support range (see [Supported dsh versions](#supported-dsh-versions)) and the alpha channel's record lives on the [alpha branch](https://github.com/yindf/taskfold/blob/alpha/README.md#supported-dsh-versions).
 

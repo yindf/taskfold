@@ -61,7 +61,7 @@ dsh plugin --profile web add "github:yindf/taskfold#alpha"
 
 ### 通道、npm 包与支持范围
 
-npm 上的 [`dsh-taskfold`](https://www.npmjs.com/package/dsh-taskfold) 是**预构建包**——免去 dsh 的 `allowBuilds` 构建授权，0.37.6 起由发布流程随通道分支同步发布。裸包名取的是 npm 的 `latest`，也就是**最后发布**的那条通道；要确定性就用 `@版本` 钉住，或直接填分支的 Git 地址。
+npm 上的 [`dsh-taskfold`](https://www.npmjs.com/package/dsh-taskfold) 是**预构建包**——免去 dsh 的 `allowBuilds` 构建授权；0.37.6 起由发布流程发布，但**只发 rc 通道（`master`）**：alpha 通道的发版只出 GitHub Release，从不进 npm。裸包名因此跟随 rc 通道的最新版本；要确定性就用 `@版本` 钉住，或直接填分支的 Git 地址。
 
 `master` 分支承载 rc 通道、`alpha` 分支承载 alpha 通道：本分支记录 rc 通道的支持范围（见[支持的 dsh 版本](#支持的-dsh-版本)），alpha 通道的记录在 [alpha 分支的 README](https://github.com/yindf/taskfold/blob/alpha/README.zh.md#支持的-dsh-版本)。
 
