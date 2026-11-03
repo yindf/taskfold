@@ -1,10 +1,10 @@
 # Changelog
 
 All notable changes to this project are documented per commit series. Since
-0.37.6 every release also ships to npm (`latest`) — before that, the npm copy
-lagged behind the channel branches on purpose.
+0.37.6 the rc channel's releases (`master`) also ship to npm (`latest`); the
+alpha channel ships GitHub Releases only, never npm.
 
-## 0.39.2 — a degraded close queues nothing and stops showing a stuck fold row (2026-11-03)
+## 0.40.1 — a degraded close queues nothing and stops showing a stuck fold row (2026-11-03)
 
 A task closed *without folding* could leave a permanent `folding…` row in the
 dock and a lifecycle counter that never went down. Reported live and
@@ -71,6 +71,13 @@ because a later compaction happened to shadow their close results.
     (already on master before this fix)
   - tests: `issue-3-degraded-close.test.mjs` (new, wired into `npm test`) plus
     reducer/drain/wire-view/counter cases in the existing suites
+
+Cut as **0.40.1**, not the next rc patch (0.39.2): the alpha channel's 0.40.0 is
+npm's current `latest`, and npm refuses to move that tag DOWN, so the rc
+channel's fix takes the next free number above it. Alpha releases ship as GitHub
+Releases only and never publish to npm — so from here the bare `dsh-taskfold`
+name follows the rc channel again, and both READMEs now say so (they claimed
+"latest = whichever channel released last").
 
 ## 0.39.1 — dsh 0.2.1-rc.3: re-verified, no plugin change (2026-10-26)
 
