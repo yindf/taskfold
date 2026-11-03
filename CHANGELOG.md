@@ -4,6 +4,74 @@ All notable changes to this project are documented per commit series. Since
 0.37.6 every release also ships to npm (`latest`) — before that, the npm copy
 lagged behind the channel branches on purpose.
 
+## 0.39.2 — a degraded close queues nothing and stops showing a stuck fold row (2026-11-03)
+
+A task closed *without folding* could leave a permanent `folding…` row in the
+dock and a lifecycle counter that never went down. Reported live and
+reproduced on 0.38.3/0.39.0 (`plugins/task-marks.mjs` is byte-identical between
+them): when AUTO compaction shadowed a task's `task_begin` anchor while the task
+was still open, the later `task_end` took the degraded path and rendered
+"Mark no longer on the surface; task closed without folding." — the log ended
+with `task stack — empty; 3 folding`.
+
+Three layers disagreed about that close. The TOOL layer queues nothing by
+design (the verdict *is* the result). The REDUCER keyed on the rendered prefix
+`Task ended: ` alone, so it popped the mark **and** pushed a `pendingArchives`
+row anyway. The DRAIN then verdicts that row `drop` — and the drop settled it
+in memory only, while the dock renders `closing` rows straight from the
+projection. Nothing could ever clean it up: the anchor was shadowed *before*
+the row existed, so the compaction that would have witnessed it is already in
+the log, and the compaction-witness closure the reducer does have never fires.
+The same mechanism explained three older tasks that *did* disappear — only
+because a later compaction happened to shadow their close results.
+
+- **Reducer**: a close whose result ENDS WITH the degraded verdict sentence
+  (`UNFOLDED_CLOSE_MARKER`) queues no archive — the mark is popped, the row is
+  not, exactly like `BELOW_FLOOR_MARKER`. Matched by POSITION, never `indexOf`:
+  the tool embeds this task's name AND every still-open sibling's in the same
+  result, so a task named e.g. `… task closed without folding audit` would
+  otherwise suppress a legitimate archive silently, with no fold attempt ever
+  billed. Both degraded wordings are covered — the tool layer queues nothing in
+  either case, and the design record (D-R2) has an engine-less close degrading
+  to close-only, no fold.
+- **Drain**: every TERMINAL settle now publishes its composite display key, not
+  just the below-floor one — the `drop` verdict, a fold that committed nothing,
+  and the give-up after two summary rejections all leave the row queued while
+  the dock kept drawing it as folding. `markArchiveSettled` absorbs the
+  publish, so the invariant is structural: settled ⇒ never displayed, or
+  counted, as folding.
+- **Hint**: the stack line's terminal split gains a `dropped` bucket
+  (`terminalArchiveKeys` classifies by PLAN, fresh from the log, so it is right
+  on the first render after a restart; `terminalSplit` unions in the rows this
+  process's drain has already settled, which no plan can see). Closed-unfolded
+  rows now read `N closed unfolded` instead of `N folding`, and the dock and the
+  hint agree on every settle path.
+- **Not taken**: the issue's alternative of recovering the shadowed region from
+  the compaction chain and folding it anyway. After the reducer fix no
+  degraded-close row is ever queued, so that branch would be unreachable — and
+  it would contradict the close result the model already read while risking a
+  region that swallows live surface nodes. The reported class (a row that can
+  never fold must not display or count as folding) is closed for EVERY drop
+  reason instead, not just the anchor-shadowed one.
+- **Verified**: `npm test` 15 suites / 251 tests / 0 failures, plus a new
+  end-to-end regression suite that drives the real seams (`applyTaskMarks`,
+  `createArchiveDrain`, `pruneBelowFloorView`, `taskStackView`,
+  `taskStackLine`) — it fails 6/6 against the pre-fix tree with the issue's own
+  symptoms and passes 6/6 after. Independent adversarial review could not
+  falsify "a drop verdict is permanent", the counter arithmetic, single-counting
+  in `terminalSplit`, or no-regression for a normal deferred fold.
+
+  - host: `UNFOLDED_CLOSE_MARKER` + the reducer guard; `terminalArchiveKeys`
+    (`belowFloorArchiveKeys` reimplemented over it, semantics unchanged)
+  - drain: `markArchiveSettled(session, entry)` settles *and* publishes; the
+    four terminal call sites route through it
+  - hint: `taskStackLine`'s 5th parameter (`dropped`) + `terminalSplit`; the
+    pre-0.40.0 rendering without it stays byte-stable
+  - docs: README records dsh 0.2.1-rc.5 as the verified rc-channel host
+    (already on master before this fix)
+  - tests: `issue-3-degraded-close.test.mjs` (new, wired into `npm test`) plus
+    reducer/drain/wire-view/counter cases in the existing suites
+
 ## 0.39.1 — dsh 0.2.1-rc.3: re-verified, no plugin change (2026-10-26)
 
 A patch step this time, and the package set barely moved: the dsh monorepo went
