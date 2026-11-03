@@ -20,9 +20,12 @@
  *
  * Close semantics (v3): LIFO — only the INNERMOST open task can be closed;
  * closing a blocked or unknown name fails atomically. Degraded closes: a
- * shadowed anchor still CLOSES the task, unfolded. The deferredArchivePlan()
- * pure function (task-marks.mjs) carries the message gate; the pre-step
- * auto-folder (fold-drain.mjs) is an I/O shell around it.
+ * shadowed anchor still CLOSES the task, unfolded, and queues NOTHING — the
+ * result carries UNFOLDED_CLOSE_MARKER and the reducer mirrors it (issue #3:
+ * a row on an off-surface anchor can never fold, so queueing one left a
+ * permanent 'folding…' row and a stuck 'N folding' counter). The
+ * deferredArchivePlan() pure function (task-marks.mjs) carries the message
+ * gate; the pre-step auto-folder (fold-drain.mjs) is an I/O shell around it.
  *
  * The SYSTEM folds [begin assistant message .. close result] INCLUSIVE —
  * begin..end exactly, nothing after the end. The deliverable (written after
@@ -57,11 +60,11 @@
  */
 import { sessionEvents } from './events.mjs'
 import { registerStatsTools } from './compact-stats.mjs'
-import { TASK_MARKS_KEY, taskMarksStateSchema, applyTaskMarks, validTaskName, closeTarget, normalizeName, marksOf, archivesOf, pendingOf, belowFloorArchiveKeys, pendingArchiveKey, lastSurfaceAssistantSeq, siblingTaskMarkCalls, BELOW_FLOOR_MARKER, taskEndCloseVerdict } from './task-marks.mjs'
+import { TASK_MARKS_KEY, taskMarksStateSchema, applyTaskMarks, validTaskName, closeTarget, normalizeName, marksOf, archivesOf, pendingOf, terminalArchiveKeys, pendingArchiveKey, lastSurfaceAssistantSeq, siblingTaskMarkCalls, BELOW_FLOOR_MARKER, taskEndCloseVerdict } from './task-marks.mjs'
 import { DETAILED_CHECKPOINT_INSTRUCTION } from './fold-instruction.mjs'
 import { createFoldEngine } from './fold-engine.mjs'
 import { createArchiveDrain } from './fold-drain.mjs'
-import { todoBridgeLine, taskStackLine, recentWorkCallCount, lastAssistantHasTodoWrite, roundsSinceFoldOutcome, shouldSuggestDecomposition, decomposeHintLine, innermostMark, taskAgeRounds, closePressureLine, CLOSE_PRESSURE_MIN_ROUNDS } from './lifecycle-nudges.mjs'
+import { todoBridgeLine, taskStackLine, terminalSplit, recentWorkCallCount, lastAssistantHasTodoWrite, roundsSinceFoldOutcome, shouldSuggestDecomposition, decomposeHintLine, innermostMark, taskAgeRounds, closePressureLine, CLOSE_PRESSURE_MIN_ROUNDS } from './lifecycle-nudges.mjs'
 import { lifecycleMessage, planLifecycleInjection, renderLifecycleBody } from './lifecycle-injection.mjs'
 import { DEFAULT_MIN_SPAN_TOKENS, MIN_SPAN_TOKENS_MAX, foldFloorFromConfig } from './fold-settings.mjs'
 import nodePath from 'node:path'
@@ -113,12 +116,14 @@ try {
 } catch (err) { Config = undefined }
 
 /**
- * Wire-view factory for the taskMarks projection: below-floor settles are
- * PRUNED, not labeled. A span the drain settled under the fold floor will
- * never fold — its close is final and its chip carries nothing worth a
- * dock row — so the view drops those pendingArchives rows from the wire
- * value entirely. The RAW projection state keeps them (the drain re-settles
- * them after every restart; archivesOf reads the state, not this view).
+ * Wire-view factory for the taskMarks projection: TERMINAL settles are
+ * PRUNED, not labeled. A span the drain settled — below the fold floor, or
+ * with a plan that verdicts 'drop' (issue #3: the begin anchor or the close
+ * result left the surface), or a fold that gave up — will never fold: its
+ * close is final and its chip carries nothing worth a dock row, so the view
+ * drops those pendingArchives rows from the wire value entirely. The RAW
+ * projection state keeps them (the drain re-settles them after every restart;
+ * archivesOf reads the state, not this view).
  * Reference-stable — the change feed's Object.is gate must not fire on
  * unrelated commits — unless at least one row is pruned, in which case it
  * returns a shallow copy with those rows removed. Memoized on the state
@@ -240,17 +245,17 @@ export default {
     // rows forever. The host treats a version mismatch as a full replay, not
     // a load failure, so the replay converges those rows through the
     // close-result witness.
-    // Below-floor settle registry, shared with the drain (writes) and the
-    // wire view below (reads): rows the drain settled below the fold floor
-    // are terminal — they never fold, so the projection keeps them listed
-    // in pendingArchives forever (no compaction event ever shadows their
-    // close result) and the dock would misreport them as perpetually
-    // 'folding…'. The view PRUNES exactly those rows from the wire value
-    // (the raw state keeps them — the drain re-settles them after every
-    // restart). `version` is bumped by the drain on every mutation; the
-    // settle-aware apply wrapper below turns that bump into a state-reference
-    // move so the pruned view is recomputed and pushed without waiting for
-    // the next task-mark event.
+    // Terminal settle registry, shared with the drain (writes) and the
+    // wire view below (reads): rows the drain settled — below the fold floor,
+    // or with a 'drop' plan verdict (issue #3) — are terminal. They never
+    // fold, so the projection keeps them listed in pendingArchives forever
+    // (no compaction event ever shadows their close result) and the dock
+    // would misreport them as perpetually 'folding…'. The view PRUNES exactly
+    // those rows from the wire value (the raw state keeps them — the drain
+    // re-settles them after every restart). `version` is bumped by the drain
+    // on every mutation; the settle-aware apply wrapper below turns that bump
+    // into a state-reference move so the pruned view is recomputed and pushed
+    // without waiting for the next task-mark event.
     const belowFloorKeys = new Set()
     belowFloorKeys.version = 0
     ctx.sessionProjections.register({
@@ -688,16 +693,20 @@ export default {
       // latch (planLifecycleInjection) re-publishes only when the stack
       // really moved — which is exactly when the hint's target may have too.
       if (lines.length > 0) {
-        // Below-floor rows are counted apart from 'folding': they are
-        // terminal (closed, never folding), so the hint must not claim a
+        // Below-floor and dropped rows are counted apart from 'folding': both
+        // are terminal (closed, never folding), so the hint must not claim a
         // fold is in flight for them. Freshly measured over the QUEUED rows
         // only — since 0.37.6 a below-floor close never queues at all (the
-        // verdict rides its Task-ended result), so this catches just the
-        // fallback rows: unmarked closes (older logs, non-solitary close
-        // messages) that the drain settles in memory.
+        // verdict rides its Task-ended result) and since 0.40.0 an
+        // anchor-degraded close never queues either (issue #3) — plus the rows
+        // this process's drain has ALREADY settled: a fold that committed
+        // nothing, or a summarization it gave up on, leaves a row whose plan
+        // still reads 'fold' yet will never fold again, and the dock has
+        // already pruned it (terminalSplit documents the two sources).
         const queued = archivesOf(ctx, session)
-        const belowFloor = belowFloorArchiveKeys(ctx, session, foldFloorFromConfig(config))
-        lines.push(taskStackLine(marks, queued, pendingOf(ctx, session), belowFloor.size))
+        const terminal = terminalArchiveKeys(ctx, session, foldFloorFromConfig(config))
+        const split = terminalSplit(queued, terminal, (seq) => drain.isSettledArchive(session, seq))
+        lines.push(taskStackLine(marks, queued, pendingOf(ctx, session), split.belowFloor, split.dropped))
       }
       return lines
     }

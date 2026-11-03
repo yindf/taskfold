@@ -207,13 +207,15 @@ export function createArchiveDrain({ ctx, engineFor, closingTasks, settings, bel
   // a plain value (tests). Anything falsy folds everything — the exact
   // pre-0.37.0 behavior.
   const foldSettings = typeof settings === 'function' ? settings : () => settings
-  // Display-side mirror of the floor settles (taskfold.mjs hands the
-  // SAME Set to the projection view annotator): a below-floor settle is
-  // TERMINAL — the row will never fold, yet the projection keeps listing it
-  // in pendingArchives (its close result is never shadowed), so the dock
-  // needs the verdict to stop rendering it as perpetually 'folding…'.
-  // Bounded display cache: past the cap it just starts over (one boundary
-  // of mislabeling at worst, and only after four thousand settles).
+  // Display-side mirror of the TERMINAL settles (taskfold.mjs hands the
+  // SAME Set to the projection view annotator): a settled row will never
+  // fold again in this process, yet the projection keeps listing it in
+  // pendingArchives (no later event ever removes it), so the dock needs the
+  // verdict to stop rendering it as perpetually 'folding…' and the lifecycle
+  // hint needs it to stop counting it as folding (issue #3: a degraded close
+  // left a permanent 'folding…' row and 'N folding' until the end of the
+  // session). Bounded display cache: past the cap it just starts over (one
+  // boundary of mislabeling at worst, and only after four thousand settles).
   const settleKeys = belowFloorKeys instanceof Set ? belowFloorKeys : null
   const SETTLE_KEY_CAP = 4096
   const settledArchives = new Map() // session.id → Set<seq>
@@ -257,28 +259,36 @@ export function createArchiveDrain({ ctx, engineFor, closingTasks, settings, bel
   }
 
   /**
-   * Settle one below-floor span (0.37.6 FALLBACK path): in-memory settle
-   * plus the display-key publish (the dock prunes the row). This now runs
-   * only for rows WITHOUT the close-time marker in their 'Task ended: '
-   * result — pre-0.37.6 logs and non-solitary closes; a marked close never
-   * enters pendingArchives at all, so the drain never sees it. The settle
-   * is in-memory: a restart re-measures those legacy rows under the
-   * current floor (documented; the marker path is the permanent one).
+   * Settle one archive row TERMINALLY: the in-memory settle (this process
+   * never re-drains that row) PLUS the display-key publish, so the dock prunes
+   * the row and the lifecycle hint stops counting it as folding.
+   *
+   * Every settle path here is terminal by construction: the below-floor
+   * verdict (0.37.6 FALLBACK — rows WITHOUT the close-time marker in their
+   * 'Task ended: ' result, i.e. pre-0.37.6 logs and non-solitary closes; a
+   * marked close never enters pendingArchives at all), the plan's 'drop'
+   * verdict (anchor or close result off-surface — permanent, the event that
+   * shadowed it is already in the log), a fold that committed nothing, and the
+   * give-up after two consecutive summary rejections. The row stays in the
+   * projection's raw pendingArchives either way (nothing removes it), so
+   * WITHOUT the publish the dock drew a permanent 'folding…' row and the hint
+   * counted 'N folding' for the rest of the session (issue #3, observed live:
+   * 'task stack — empty; 3 folding').
+   *
+   * The settle itself is in-memory: a restart re-plans those rows (the
+   * marker/queue paths are the permanent ones).
    */
-  function markFloorSettled(session, entry) {
-    markArchiveSettled(session, entry.seq)
+  function markArchiveSettled(session, entry) {
+    const seq = entry.seq
+    let set = settledArchives.get(session.id)
+    if (set === undefined) { set = new Set(); settledArchives.set(session.id, set); capSessions(settledArchives, session.id) }
+    set.add(seq)
+    clearAttempt(session, seq)
     if (settleKeys !== null) {
       if (settleKeys.size >= SETTLE_KEY_CAP) settleKeys.clear()
       settleKeys.add(pendingArchiveKey(entry))
       settleKeys.version += 1
     }
-  }
-
-  function markArchiveSettled(session, seq) {
-    let set = settledArchives.get(session.id)
-    if (set === undefined) { set = new Set(); settledArchives.set(session.id, set); capSessions(settledArchives, session.id) }
-    set.add(seq)
-    clearAttempt(session, seq)
   }
 
   function clearArchiveFailure(session, name) {
@@ -355,7 +365,13 @@ export function createArchiveDrain({ ctx, engineFor, closingTasks, settings, bel
           continue
         }
         if (plan.action === 'drop') {
-          markArchiveSettled(session, entry.seq)
+          // Terminal by construction: the anchor (or the close result) is no
+          // longer on the surface, and the event that removed it is already in
+          // the log, so no later pass can turn this row into a fold. Settle it
+          // AND publish the display key — without the publish the row stayed
+          // in pendingArchives forever and the dock drew a permanent
+          // 'folding…' row while the hint kept counting it (issue #3).
+          markArchiveSettled(session, entry)
           clearArchiveFailure(session, entry.name)
           continue
         }
@@ -369,7 +385,7 @@ export function createArchiveDrain({ ctx, engineFor, closingTasks, settings, bel
         // reopened by a lower floor or a restart — retro-folding settled
         // spans would invalidate the prefix cache behind them.
         if (belowFoldFloor(plan, session.surface.nodes, { minSpanTokens: floorNow }, events)) {
-          markFloorSettled(session, entry)
+          markArchiveSettled(session, entry)
           clearArchiveFailure(session, entry.name)
           continue
         }
@@ -394,7 +410,7 @@ export function createArchiveDrain({ ctx, engineFor, closingTasks, settings, bel
           // the entry joins the shared backoff schedule and a HOLD line
           // names the state while it stands.
           if (result === null || !archivesOf(ctx, session).some((p) => p.seq === entry.seq)) {
-            markArchiveSettled(session, entry.seq)
+            markArchiveSettled(session, entry)
             clearArchiveFailure(session, entry.name)
           } else {
             const attempt = recordAttempt(session, entry.seq, entry.name)
@@ -413,7 +429,7 @@ export function createArchiveDrain({ ctx, engineFor, closingTasks, settings, bel
             // backoff schedule with a HOLD line and re-bills exactly once.
             const attempt = recordAttempt(session, entry.seq, entry.name)
             if (attempt.attempts >= 2) {
-              markArchiveSettled(session, entry.seq)
+              markArchiveSettled(session, entry)
               clearArchiveFailure(session, entry.name)
               continue
             }

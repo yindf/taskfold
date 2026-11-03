@@ -694,3 +694,38 @@ test('a below-floor fallback settle is in-memory only — a restart re-measures 
   await third.drain.processDeferredArchives(third.agent, undefined)
   assert.deepEqual(third.folds, [[20, 21]], 'lowered floor after restart: the unmarked row folds (marker closes never would)')
 })
+
+test('a drop verdict publishes its display key — the stuck row stops rendering (issue #3)', async () => {
+  // The legacy shape (as queued by <=0.39.1): the close queued a row, and only
+  // LATER did AUTO compaction shadow the begin anchor — before the drain ever
+  // planned the entry. deferredArchivePlan cannot resolve a region from an
+  // off-surface anchor and verdicts 'drop'; the drain then settled the row in
+  // memory. Before 0.40.0 that settle published NO display key, so the row
+  // stayed in pendingArchives forever (no compaction event can ever list a
+  // vanished anchor again), the dock drew a permanent 'folding…' row and the
+  // lifecycle hint counted it as folding for the rest of the session.
+  const h = harness([
+    assistantCall(10, [{ id: 'a1', name: 'task_begin' }]),
+    toolResult(11, 'a1', BEGUN('ghost', '1 open.')),
+    toolResult(14, 'w1', 'work'),
+    assistantCall(20, [{ id: 'a2', name: 'task_end' }]),
+    toolResult(21, 'a2', ENDED('ghost', 'all closed. Archival queued.')),
+    assistantText(25, 'deliverable')
+  ])
+  const row = h.state().pendingArchives.find((p) => p.name === 'ghost')
+  assert.ok(row, 'the close queued the archive')
+  // AUTO compaction shadows the anchor and its begin result on the SURFACE;
+  // the event log keeps both (the surface is a position list, not the log).
+  h.session.surface.nodes = h.session.surface.nodes.filter((n) => n !== 10 && n !== 11)
+  await h.drain.processDeferredArchives(h.agent, undefined)
+  assert.deepEqual(h.attempts, [], 'no summarization call is billed for an unfoldable row')
+  assert.deepEqual(h.folds, [], 'the anchor is gone from the surface: no region is resolvable')
+  assert.ok(h.drain.isSettledArchive(h.session, 10), 'the row settles')
+  assert.deepEqual(h.state().pendingArchives.map((p) => p.name), ['ghost'], 'the raw projection row persists — nothing in the log removes it')
+  assert.ok(h.belowFloorKeys.has(pendingArchiveKey(row)), 'the drop publishes the composite display key: the wire view prunes the row and the hint stops counting it')
+  // The row really is unfoldable in every later pass too — the publish is a
+  // terminal verdict, not a premature hide.
+  await h.drain.processDeferredArchives(h.agent, undefined)
+  assert.deepEqual(h.attempts, [], 'still no call billed')
+  assert.ok(h.belowFloorKeys.has(pendingArchiveKey(row)), 'the display key stays published')
+})

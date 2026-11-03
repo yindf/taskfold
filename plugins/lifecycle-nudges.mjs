@@ -7,6 +7,7 @@
  * happen four times per render.
  */
 import { messageOf, blocksOf, taskResultEventText } from './events.mjs'
+import { pendingArchiveKey } from './task-marks.mjs'
 
 const TASK_TOOL_RE = /^(task_begin|task_end|task_fold|list_folds|fold_recall|todo_write)$/
 
@@ -34,17 +35,31 @@ export function todoBridgeLine(openNames) {
  * the hint channel compares published text verbatim (planLifecycleInjection),
  * so a number that drifts per round would re-arm the latch every round.
  * Names are model-authored text and are quoted with double quotes escaped.
+ *
+ * TERMINAL rows (belowFloor, dropped) are counted APART from 'folding': they
+ * are queued-looking but will never fold, so claiming a fold is in flight for
+ * them would be a lie that never retracts. `dropped` (issue #3) are rows whose
+ * plan verdict is 'drop' — the begin anchor or the close result is gone from
+ * the surface — i.e. exactly the rows a DEGRADED close used to leave stuck in
+ * the projection, rendering 'N folding' for the rest of the session.
  */
-export function taskStackLine(marks, archives, pending, belowFloor = 0) {
+export function taskStackLine(marks, archives, pending, belowFloor = 0, dropped = 0) {
   const names = (Array.isArray(marks) ? marks : [])
     .filter((m) => m !== null && typeof m === 'object' && typeof m.name === 'string' && m.name !== '')
     .map((m) => '"' + m.name.replace(/"/g, "'") + '"')
   const valid = (a) => a !== null && typeof a === 'object' && typeof a.name === 'string' && a.name !== ''
   const total = (Array.isArray(archives) ? archives : []).filter(valid).length
-  // Below-floor rows are queued-looking but terminal: they will never fold,
-  // so they must not be reported as folding. Counted apart (never negative,
-  // even if the fresh measurement and the archive list disagree momentarily).
-  const folding = Math.max(0, total - (Number.isInteger(belowFloor) && belowFloor > 0 ? belowFloor : 0))
+  // Below-floor and dropped rows are queued-looking but terminal: they will
+  // never fold, so they must not be reported as folding. Counted apart (never
+  // negative, even if the fresh measurement and the archive list disagree
+  // momentarily); the below-floor bucket keeps its historical precedence when
+  // both are over-reported, and both buckets stay bounded by `total`.
+  const below = Math.max(0, Number.isInteger(belowFloor) && belowFloor > 0 ? belowFloor : 0)
+  const gone = Math.max(0, Number.isInteger(dropped) && dropped > 0 ? dropped : 0)
+  const folding = Math.max(0, total - below - gone)
+  const terminal = total - folding
+  const belowCount = Math.min(below, terminal)
+  const goneCount = terminal - belowCount
   let begin = 0
   let end = 0
   for (const p of (Array.isArray(pending) ? pending : [])) {
@@ -54,12 +69,53 @@ export function taskStackLine(marks, archives, pending, belowFloor = 0) {
   }
   const counts = []
   if (folding > 0) counts.push(folding + ' folding')
-  if (total - folding > 0) counts.push((total - folding) + ' closed below floor')
+  if (belowCount > 0) counts.push(belowCount + ' closed below floor')
+  if (goneCount > 0) counts.push(goneCount + ' closed unfolded')
   if (begin > 0) counts.push(begin + ' begin pending')
   if (end > 0) counts.push(end + ' end pending')
   const tail = counts.length > 0 ? counts.join(', ') : 'nothing folding or pending'
   if (names.length === 0) return 'Task lifecycle: task stack — empty; ' + tail + '.'
   return 'Task lifecycle: task stack — ' + names.length + ' open, outermost first: ' + names.join(' > ') + '; ' + tail + '.'
+}
+
+/**
+ * The terminal split taskStackLine's two counts come from, over the QUEUED
+ * archive rows: how many of them can never fold, and why. Two independent
+ * sources, because neither can see both cases:
+ *
+ *  - PLAN (`terminalArchiveKeys`, task-marks.mjs): the region is below the
+ *    fold floor, or the plan verdicts 'drop' (the begin anchor or the close
+ *    result left the surface). Fresh from the surface + log on every call, so
+ *    it holds on the very first render after a restart, before any drain pass
+ *    has run — and it is what classifies the row a DEGRADED close used to
+ *    leave stuck (issue #3).
+ *  - DRAIN (`isSettled`, fold-drain.mjs' own registry): a fold that committed
+ *    nothing, or a summarization the drain gave up on after two rejections,
+ *    settles a row whose PLAN still reads 'fold'. Nothing in the event log
+ *    records that verdict, so no fresh computation can see it — but the drain
+ *    never retries the row and its settle published the display key that
+ *    prunes the row from the dock. Without this half the hint kept claiming a
+ *    fold was in flight for a row the dock had already dropped, i.e. the two
+ *    surfaces disagreed forever.
+ *
+ * Rows below the floor are counted ONCE, in the below-floor bucket: the floor
+ * settle goes through the same drain path, so its key sits in both sources.
+ * Inputs are read defensively (the state can hold legacy or malformed rows);
+ * a non-function isSettled simply drops that source.
+ */
+export function terminalSplit(archives, terminal, isSettled) {
+  const belowFloor = new Set()
+  const dropped = new Set()
+  const planBelow = terminal !== null && typeof terminal === 'object' && terminal.belowFloor instanceof Set ? terminal.belowFloor : null
+  const planDropped = terminal !== null && typeof terminal === 'object' && terminal.dropped instanceof Set ? terminal.dropped : null
+  for (const row of (Array.isArray(archives) ? archives : [])) {
+    if (row === null || typeof row !== 'object' || typeof row.name !== 'string' || row.name === '') continue
+    const key = pendingArchiveKey(row)
+    if (planBelow !== null && planBelow.has(key)) { belowFloor.add(key); continue }
+    if (planDropped !== null && planDropped.has(key)) { dropped.add(key); continue }
+    if (typeof isSettled === 'function' && isSettled(row.seq) === true) dropped.add(key)
+  }
+  return { belowFloor: belowFloor.size, dropped: dropped.size }
 }
 
 /**

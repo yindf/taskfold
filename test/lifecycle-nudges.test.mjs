@@ -11,7 +11,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   innermostMark, latestNestedOutcomeSeq, taskAgeRounds, closePressureLine,
-  decomposeHintLine, shouldSuggestDecomposition, taskStackLine,
+  decomposeHintLine, shouldSuggestDecomposition, taskStackLine, terminalSplit,
   DECOMPOSE_NUDGE_MIN_ROUNDS, DECOMPOSE_NUDGE_MAX_ROUNDS
 } from '../plugins/lifecycle-nudges.mjs'
 
@@ -178,4 +178,65 @@ test('taskStackLine: below-floor rows are terminal — counted apart, never as f
   // An over-large count can never produce a negative folding term.
   assert.equal(taskStackLine([], archives, [], 99).includes('2 closed below floor.'), true)
   assert.equal(taskStackLine([], archives, [], 99).includes('folding'), false)
+})
+
+test('taskStackLine: dropped rows are terminal too — never counted as folding (issue #3)', () => {
+  // A row whose plan verdicts 'drop' (its begin anchor or close result left the
+  // surface) will never fold, yet it stays in pendingArchives. Counting it as
+  // folding is what produced the permanent 'task stack — empty; 3 folding'.
+  const archives = [
+    { seq: 40, name: 'a', foldResultSeq: 41 },
+    { seq: 50, name: 'b', foldResultSeq: 51 },
+    { seq: 60, name: 'c', foldResultSeq: 61 }
+  ]
+  assert.equal(taskStackLine([], archives, []), 'Task lifecycle: task stack — empty; 3 folding.')
+  // One dropped row: two really folding, one terminal.
+  const one = taskStackLine([], archives, [], 0, 1)
+  assert.equal(one.includes('2 folding, 1 closed unfolded.'), true, one)
+  // Mixed: the floor bucket keeps its historical precedence and wording, the
+  // dropped bucket is named apart (the two verdicts have different causes).
+  const mixed = taskStackLine([], archives, [], 1, 1)
+  assert.equal(mixed.includes('1 folding, 1 closed below floor, 1 closed unfolded.'), true, mixed)
+  // Garbage and over-large counts clamp: never negative, never more than the
+  // rows actually queued, and the floor bucket absorbs first (byte-stable with
+  // the pre-0.40.0 rendering).
+  assert.equal(taskStackLine([], archives, [], 0, 99).includes('3 closed unfolded.'), true)
+  assert.equal(taskStackLine([], archives, [], 0, 99).includes('folding'), false)
+  assert.equal(taskStackLine([], archives, [], 99, 99).includes('3 closed below floor.'), true)
+  assert.equal(taskStackLine([], archives, [], -1, -1).includes('3 folding.'), true)
+  assert.equal(taskStackLine([], archives, [], 'x', 'y').includes('3 folding.'), true)
+  // Both buckets empty → the legacy line, byte for byte.
+  assert.equal(taskStackLine([], archives, [], 0, 0), 'Task lifecycle: task stack — empty; 3 folding.')
+})
+
+test('terminalSplit: plan-based terminals AND drain-settled rows, counted once each', () => {
+  // Three queued rows: one below the floor (both sources see it — the floor
+  // settle goes through the drain too), one 'drop'-planned, one whose plan
+  // still reads 'fold' but which the drain has already settled (a fold that
+  // committed nothing, or a give-up after two summary rejections).
+  const archives = [
+    { seq: 10, name: 'small', foldResultSeq: 21 },
+    { seq: 30, name: 'ghost', foldResultSeq: 41 },
+    { seq: 50, name: 'stuck', foldResultSeq: 61 },
+    { seq: 70, name: 'normal', foldResultSeq: 81 }
+  ]
+  const key = (row) => row.seq + ':' + row.name + ':' + row.foldResultSeq
+  const plan = { belowFloor: new Set([key(archives[0])]), dropped: new Set([key(archives[1])]) }
+  const settled = new Set([10, 50]) // the floor settle AND the invisible one
+  const isSettled = (seq) => settled.has(seq)
+  const split = terminalSplit(archives, plan, isSettled)
+  assert.deepEqual(split, { belowFloor: 1, dropped: 2 }, 'the below-floor row is counted in ONE bucket, the drain-settled one joins dropped')
+  // The whole point: the hint and the dock agree — the three terminal rows are
+  // not claimed as folds in flight, and the genuinely queued one still is.
+  assert.equal(taskStackLine([], archives, [], split.belowFloor, split.dropped), 'Task lifecycle: task stack — empty; 1 folding, 1 closed below floor, 2 closed unfolded.')
+  // Restart shape: the drain registry is empty and only the log-derived plan
+  // classifies — both surfaces say 'folding' for the settled-but-live row
+  // again, in agreement, until the drain settles it anew.
+  const cold = terminalSplit(archives, plan, () => false)
+  assert.deepEqual(cold, { belowFloor: 1, dropped: 1 })
+  assert.equal(taskStackLine([], archives, [], cold.belowFloor, cold.dropped), 'Task lifecycle: task stack — empty; 2 folding, 1 closed below floor, 1 closed unfolded.')
+  // Defensive: garbage rows, absent sources and non-function predicates never throw.
+  assert.deepEqual(terminalSplit([null, 'x', { seq: 1 }, { seq: 2, name: '' }], null, null), { belowFloor: 0, dropped: 0 })
+  assert.deepEqual(terminalSplit(archives, undefined, 42), { belowFloor: 0, dropped: 0 })
+  assert.deepEqual(terminalSplit(null, plan, isSettled), { belowFloor: 0, dropped: 0 })
 })

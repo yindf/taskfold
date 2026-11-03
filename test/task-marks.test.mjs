@@ -7,7 +7,7 @@
 //   node test/task-marks.test.mjs
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { applyTaskMarks, taskMarksStateSchema, closeTarget, validTaskName, deferredArchivePlan, siblingTaskMarkCalls, lastAssistantToolNames, BELOW_FLOOR_MARKER, taskEndCloseVerdict, spanEstimateAtClose } from '../plugins/task-marks.mjs'
+import { applyTaskMarks, taskMarksStateSchema, closeTarget, validTaskName, deferredArchivePlan, siblingTaskMarkCalls, lastAssistantToolNames, BELOW_FLOOR_MARKER, UNFOLDED_CLOSE_MARKER, terminalArchiveKeys, belowFloorArchiveKeys, pendingArchiveKey, TASK_MARKS_KEY, taskEndCloseVerdict, spanEstimateAtClose } from '../plugins/task-marks.mjs'
 import { todoBridgeLine, shouldSuggestDecomposition, decomposeHintLine } from '../plugins/lifecycle-nudges.mjs'
 import { FOLD_SUMMARY_INSTRUCTION, DETAILED_CHECKPOINT_INSTRUCTION, buildFoldInstruction } from '../plugins/fold-instruction.mjs'
 
@@ -875,5 +875,91 @@ test('taskEndCloseVerdict: exact only on a solitary close with a resolvable span
   // current tail (the close-carrying message), -1 when unresolvable.
   assert.ok(spanEstimateAtClose(session, 10) > 0)
   assert.equal(spanEstimateAtClose({ surface: { nodes: [11, 14, 15] }, events }, 10), -1)
+})
+
+// ── 0.40.0 degraded close: nothing is queued (issue #3) ─────────────────────
+// When the task_begin anchor was shadowed by AUTO compaction while the task
+// was still open, task_end returns 'Mark no longer on the surface; task
+// closed without folding.' and queues NOTHING by design. The reducer used to
+// key on the 'Task ended: ' prefix alone and queue a row anyway — and a row
+// whose anchor is off-surface can never fold: the compaction that removed the
+// anchor is already in the log, so no LATER compaction event ever lists it in
+// shadowedSeqs, and the drain's re-plan verdicts 'drop' (settling the row in
+// memory only). The row then stayed in pendingArchives forever: the dock drew
+// a permanent 'folding…' row and the lifecycle hint counted it as folding for
+// the rest of the session (observed live: 'task stack — empty; 3 folding').
+
+test('0.40.0 reducer: a degraded close never queues an archive (issue #3)', () => {
+  const beginCall = assistantCall(10, [{ id: 'a1', name: 'task_begin' }])
+  const endCall = assistantCall(20, [{ id: 'a2', name: 'task_end' }])
+  const run = (text) => {
+    let state = null
+    state = applyTaskMarks(state, beginCall)
+    state = applyTaskMarks(state, toolResult('a1', 'Task begun: ghost — 1 open.', 11))
+    state = applyTaskMarks(state, endCall)
+    return applyTaskMarks(state, toolResult('a2', text, 21))
+  }
+  // Both degraded texts are the tool's OWN render shapes (taskfold.mjs,
+  // task_end.render), verbatim: the verdict sentence is appended LAST.
+  const anchorDegraded = 'Task ended: ghost — all closed. Mark no longer on the surface; task closed without folding.'
+  const engineDegraded = 'Task ended: ghost — all closed. Engine unavailable; task closed without folding.'
+  for (const text of [anchorDegraded, engineDegraded]) {
+    assert.equal(text.endsWith(UNFOLDED_CLOSE_MARKER + '.'), true, 'the verdict rides the tail: ' + text)
+    assert.equal(run(text), null, 'mark popped AND no archive row: the normalized empty state is null — nothing is left to fold')
+  }
+  // FALSE POSITIVE GUARD: the normal close embeds this task's name and every
+  // still-open sibling's, so a name CONTAINING the verdict phrase must never
+  // suppress a real archive — an indexOf match would swallow it silently, with
+  // no fold attempt ever billed.
+  const named = 'Task ended: ghost — 1 open: ' + UNFOLDED_CLOSE_MARKER + ' audit. Archival queued — the span folds automatically.'
+  assert.ok(named.indexOf(UNFOLDED_CLOSE_MARKER) !== -1 && !named.endsWith(UNFOLDED_CLOSE_MARKER + '.'), 'the phrase rides mid-text, exactly as a name would')
+  assert.deepEqual(run(named).pendingArchives, [{ seq: 10, name: 'ghost', foldResultSeq: 21 }], 'a sibling name carrying the phrase must not suppress the archive')
+  // Control: the plain close without any marker queues as always.
+  assert.deepEqual(run('Task ended: ghost — all closed. Archival queued — the span folds automatically.').pendingArchives, [{ seq: 10, name: 'ghost', foldResultSeq: 21 }], 'unmarked close: queued for the drain')
+})
+
+test('0.40.0 terminalArchiveKeys: dropped rows are terminal at ANY floor, below-floor rows only under one', () => {
+  // Three closed tasks in one log: one whose anchor was shadowed by AUTO
+  // compaction while it stood open (the degraded-close shape, replayed from a
+  // legacy log that DID queue the row), one small span under a huge floor, and
+  // one ordinary queued row.
+  const events = [
+    assistantCall(10, [{ id: 'a1', name: 'task_begin' }]),
+    toolResult('a1', 'Task begun: dropped — 1 open.', 11),
+    assistantCall(12, [{ id: 'a2', name: 'task_end' }]),
+    toolResult('a2', 'Task ended: dropped — all closed. Archival queued.', 13),
+    assistantCall(20, [{ id: 'b1', name: 'task_begin' }]),
+    toolResult('b1', 'Task begun: small — 1 open.', 21),
+    assistantCall(22, [{ id: 'b2', name: 'task_end' }]),
+    toolResult('b2', 'Task ended: small — all closed. Archival queued.', 23),
+    assistantCall(30, [{ id: 'c1', name: 'task_begin' }]),
+    toolResult('c1', 'Task begun: ordinary — 1 open.', 31),
+    assistantCall(32, [{ id: 'c2', name: 'task_end' }]),
+    toolResult('c2', 'Task ended: ordinary — all closed. Archival queued.', 33),
+    { seq: 40, type: 'assistant/message', data: { message: { content: [{ type: 'text', text: 'report' }] } } }
+  ]
+  let state = null
+  for (const e of events) state = applyTaskMarks(state, e)
+  assert.deepEqual(state.pendingArchives.map((p) => p.name), ['dropped', 'small', 'ordinary'], 'all three closed tasks queued (legacy shape: the reducer queued before 0.40.0)')
+  // AUTO compaction removed the 'dropped' anchor and its begin result from the
+  // surface. The row stays in the projection (nothing shadows it later).
+  const session = {
+    events,
+    surface: { nodes: [12, 13, 20, 21, 22, 23, 30, 31, 32, 33, 40] }
+  }
+  const ctx = { sessionProjections: { stateOf: (_s, key) => (key === TASK_MARKS_KEY ? state : undefined) } }
+  const all = terminalArchiveKeys(ctx, session, 100000)
+  const droppedKey = pendingArchiveKey(state.pendingArchives[0])
+  const smallKey = pendingArchiveKey(state.pendingArchives[1])
+  assert.deepEqual([...all.dropped], [droppedKey], 'the off-surface anchor is a DROP verdict — terminal by construction')
+  assert.deepEqual([...all.belowFloor].sort(), [smallKey, pendingArchiveKey(state.pendingArchives[2])].sort(), 'floor 100000: both foldable spans sit below it')
+  // Floor 0 folds everything — but it cannot revive a dropped row: the event
+  // that would reveal the anchor again does not exist.
+  const zero = terminalArchiveKeys(ctx, session, 0)
+  assert.equal(zero.belowFloor.size, 0, 'floor 0 folds everything — nothing is below it')
+  assert.deepEqual([...zero.dropped], [droppedKey], 'a drop verdict is terminal at ANY floor, floor 0 included')
+  // The narrow issue-#2 accessor keeps its old semantics exactly.
+  assert.deepEqual(belowFloorArchiveKeys(ctx, session, 0), new Set())
+  assert.deepEqual([...belowFloorArchiveKeys(ctx, session, 100000)].sort(), [smallKey, pendingArchiveKey(state.pendingArchives[2])].sort())
 })
 

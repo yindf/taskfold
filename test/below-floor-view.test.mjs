@@ -47,6 +47,21 @@ test('pruneBelowFloorView: null state and rows without pendingArchives pass thro
   assert.equal(view(noArchives), noArchives)
 })
 
+test('pruneBelowFloorView: a DROP-verdict key prunes exactly like a floor settle (issue #3)', () => {
+  // 0.40.0: the drain publishes the display key for EVERY terminal settle, not
+  // only below-floor ones. A row whose plan verdicts 'drop' (the begin anchor
+  // or the close result is off-surface) can never fold, so it must leave the
+  // wire value the same way — the dock's permanent 'folding…' row was exactly
+  // this row, still listed while the drain had already settled it.
+  const registry = new Set()
+  registry.version = 0
+  const view = pruneBelowFloorView(registry)
+  const state = stateOf([row(10, 'ghost', 21), row(20, 'big', 25)])
+  registry.add('10:ghost:21') // published by markArchiveSettled on the drop branch
+  registry.version += 1
+  assert.deepEqual(view(state).pendingArchives, [row(20, 'big', 25)], 'the dropped row is pruned; the foldable one stays')
+})
+
 test('makeSettleAwareApply: a registry bump turns the next apply into a fresh reference', () => {
   const registry = new Set()
   registry.version = 0

@@ -44,12 +44,48 @@ export const TASK_MARKS_KEY = 'taskMarks'
 export const BELOW_FLOOR_MARKER = 'Closed below the fold floor'
 
 /**
- * Composite identity of one pendingArchives row, shared by the two consumers
- * that need to agree on WHICH rows are below the fold floor: the drain's
- * settle registry (writes; fold-drain.mjs) and the projection view annotator
- * (reads; taskfold.mjs). Keyed by (seq, name, foldResultSeq) so a
- * cross-session collision needs all three to match — and the worst case is a
- * chip briefly mislabeled until that session's own drain pass re-settles it.
+ * Marker carried by a DEGRADED 'Task ended: ' result — a close that queued
+ * NOTHING. Both degraded wordings end with it (taskfold.mjs):
+ *
+ *   Task ended: <name> — <open>. Mark no longer on the surface; task closed
+ *   without folding.                     ← AUTO compaction took the anchor
+ *   Task ended: <name> — <open>. Engine unavailable; task closed without
+ *   folding.                              ← no fold engine at close time
+ *
+ * The reducer (issue #3, 0.40.0) mirrors the tool layer's intent: the mark is
+ * popped and NO pendingArchives row is queued. For the anchor case a queued
+ * row can never fold — the compaction that shadowed the anchor is already in
+ * the log, so no LATER compaction event ever lists that anchor in
+ * shadowedSeqs — and the drain's re-plan then verdicts 'drop', which used to
+ * settle the row in memory only. The row therefore stayed in the projection
+ * forever: the dock drew a permanent 'folding…' row and the lifecycle hint
+ * counted it as folding for the rest of the session (live: 'task stack —
+ * empty; 3 folding'). The engine wording is legacy-only (today's execute
+ * returns `unfolded: 'anchor'` and nothing else), and the same verdict
+ * applies: the tool queued nothing, so the reducer queues nothing.
+ *
+ * Matched as text.endsWith(MARKER + '.'), never indexOf: the tool embeds THIS
+ * task's name and the names of every task still open in the result, so a name
+ * containing the phrase would otherwise suppress a LEGITIMATE archive — the
+ * 'Archival queued' close would silently never fold, with no attempt billed.
+ * The verdict sentence is always the tail by construction, so the position
+ * check is exact.
+ *
+ * Keyed on the result TEXT, exactly like BELOW_FLOOR_MARKER: the verdict is
+ * the event itself, permanent by construction — no sidecar ledger, nothing to
+ * re-derive on replay.
+ */
+export const UNFOLDED_CLOSE_MARKER = 'task closed without folding'
+
+/**
+ * Composite identity of one pendingArchives row, shared by the consumers that
+ * must agree on WHICH rows are terminal — they can never fold, so they must
+ * not be displayed or counted as folding: the drain's settle registry (writes;
+ * fold-drain.mjs), the projection view annotator (reads; taskfold.mjs), and
+ * the lifecycle hint's counter (reads; taskfold.mjs → lifecycle-nudges.mjs).
+ * Keyed by (seq, name, foldResultSeq) so a cross-session collision needs all
+ * three to match — and the worst case is a chip briefly mislabeled until that
+ * session's own drain pass re-settles it.
  */
 export function pendingArchiveKey(entry) {
   return entry.seq + ':' + entry.name + ':' + (Number.isInteger(entry.foldResultSeq) ? entry.foldResultSeq : 0)
@@ -508,11 +544,19 @@ export function applyTaskMarks(state, event) {
         // measured at close time and verdicted below the floor — the verdict
         // is this very event, so the row is never queued at all.
         const belowFloor = text.indexOf(BELOW_FLOOR_MARKER) !== -1
+        // EXCEPT (0.40.0) DEGRADED closes: the tool could not resolve a
+        // region (the anchor left the surface, or no fold engine) and queued
+        // NOTHING, so no row may be queued here either — an anchor-keyed row
+        // that is already off-surface is unfoldable by construction and would
+        // stick in pendingArchives forever (issue #3). endsWith, never
+        // indexOf: a task NAME may contain the phrase, and indexOf would
+        // silently suppress a legitimate archive (see the marker's doc).
+        const unfolded = text.endsWith(UNFOLDED_CLOSE_MARKER + '.')
         for (let i = next.marks.length - 1; i >= 0; i -= 1) {
           if (next.marks[i].name === name) {
             const popped = next.marks[i]
             next.marks.splice(i, 1)
-            if (!belowFloor) {
+            if (!belowFloor && !unfolded) {
               if (next.pendingArchives === undefined) next.pendingArchives = []
               next.pendingArchives.push({ seq: popped.seq, name: popped.name, foldResultSeq: seq })
             }
@@ -598,33 +642,54 @@ export function archivesOf(ctx, session) {
 }
 
 /**
- * Composite keys (pendingArchiveKey) of the session's queued archives whose
- * planned region sits BELOW the given fold floor — the rows the drain will
- * settle closed-unfolded, never billing a summarization call (issue #2).
+ * Terminal ("will never fold") keys of the session's queued archives, split by
+ * verdict — the rows the drain settles closed-unfolded without ever billing a
+ * summarization call:
+ *   belowFloor: the planned region sits below the fold floor (issue #2);
+ *   dropped:    the plan's verdict is { action: 'drop' } — the begin anchor or
+ *               the close result is off-surface, or the row contradicts the
+ *               log (issue #3). Every drop reason is PERMANENT: the event that
+ *               would have to re-open the row (revealing the anchor or the
+ *               close result again) cannot exist, so the drain never re-plans
+ *               a dropped row into a fold.
  * Freshly computed from the surface + event log on every call, so it is
  * accurate immediately after a restart (the drain's own settle registry is
  * in-memory and re-populates only at the first step boundary). Floor <= 0
- * folds everything, so no row can be below it. Total and defensive like the
- * other accessors: an unmeasurable span (-1 from spanTokenEstimate) folds,
- * so it is NOT below-floor.
+ * folds everything, so no row can be below it — a DROPPED row stays terminal
+ * at any floor, including 0. Total and defensive like the other accessors: an
+ * unmeasurable span (-1 from spanTokenEstimate) folds, so it is NOT
+ * below-floor.
  */
-export function belowFloorArchiveKeys(ctx, session, minSpanTokens) {
-  const keys = new Set()
-  if (!Number.isInteger(minSpanTokens) || minSpanTokens <= 0) return keys
+export function terminalArchiveKeys(ctx, session, minSpanTokens) {
+  const out = { belowFloor: new Set(), dropped: new Set() }
   let nodes
   let events
   try {
     nodes = session.surface.nodes
     events = sessionEvents(session)
   } catch (err) {
-    return keys
+    return out
   }
   for (const entry of archivesOf(ctx, session)) {
     if (entry === null || typeof entry !== 'object') continue
     const plan = deferredArchivePlan(entry, nodes, events)
-    if (belowFoldFloor(plan, nodes, { minSpanTokens }, events)) keys.add(pendingArchiveKey(entry))
+    if (plan.action === 'drop') {
+      out.dropped.add(pendingArchiveKey(entry))
+      continue
+    }
+    if (belowFoldFloor(plan, nodes, { minSpanTokens }, events)) out.belowFloor.add(pendingArchiveKey(entry))
   }
-  return keys
+  return out
+}
+
+/**
+ * Narrow, name-stable accessor (issue #2): keys of the session's queued
+ * archives whose planned region sits BELOW the fold floor. Reimplemented over
+ * terminalArchiveKeys — byte-identical semantics, floor <= 0 included.
+ */
+export function belowFloorArchiveKeys(ctx, session, minSpanTokens) {
+  if (!Number.isInteger(minSpanTokens) || minSpanTokens <= 0) return new Set()
+  return terminalArchiveKeys(ctx, session, minSpanTokens).belowFloor
 }
 
 /**
